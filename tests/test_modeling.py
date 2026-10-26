@@ -117,7 +117,7 @@ def test_sketch_areas():
 def test_sketch_offset():
     assert Rectangle(20, 10).offset(1).area == approx(22 * 12 - (4 - math.pi))
     assert Rectangle(20, 10).offset(-1).area == approx(18 * 8)
-    assert Rectangle(20, 10).offset(1, round=False).area == approx(22 * 12)
+    assert Rectangle(20, 10).offset(1, corners="sharp").area == approx(22 * 12)
 
 
 def test_extrude_variants():

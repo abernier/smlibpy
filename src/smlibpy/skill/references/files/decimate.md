@@ -36,9 +36,9 @@ edges sharper than `feature_angle` (a cylinder's rims stay sharp at 30, and are 
 - The kernel breaks ties in an order that depends on memory, so counts differ by a few
   triangles from run to run.
 - `ModelingError` where the kernel collapses the mesh far below the count asked: it does with
-  the long thin triangles of a coarse mesh of a part (a cone at the default tolerance: 4
-  triangles at 5 %). Mesh such a part with a larger tolerance instead of decimating it, or
-  decimate a finer mesh. With `tolerance=` such steps are not taken.
+  the long thin triangles of a coarse mesh of a part (`Cone(10, 0, 20).mesh().decimate(0.95)`:
+  0 triangles where about 6 were asked). Mesh such a part with a larger tolerance instead of
+  decimating it, or decimate a finer mesh. With `tolerance=` such steps are not taken.
 - `ModelingError` where a closed mesh would come back open or an open mesh with another border
   (a tube of long triangles has all its points on its rims, and cannot keep them).
 - The kernel can leave folds: smlibpy removes triangles on the same points back to back,

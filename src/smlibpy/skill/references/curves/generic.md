@@ -27,6 +27,8 @@ open surfaces (an open wire extruded or revolved gives a `Shell`).
   `to_arcs()` lines and arcs; `fit_curve(points, tolerance=...)` a curve near many points.
   `edge.through(p)` bends an edge through a point, `edge.match(end=...)` moves its ends. See
   `Edge.md` (selection) and `Wire.md`.
+- `trim`, `extend` and `offset` are also functions that take the edge (or wire) first:
+  `trim(e, 0.2, 0.5)`, `extend(e, 2)`, `offset(w, 3)`.
 
 ## Wires
 

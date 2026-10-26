@@ -2,7 +2,7 @@
 
 A deformation moves every point of space, and the whole body with it: all faces, edges and
 vertices go through the same map, so the result is again a closed solid with the same
-faces, edges and vertices::
+faces, edges and vertices (split where ``start`` and ``end`` limit the deformation)::
 
     from smlibpy import *
 
@@ -26,7 +26,8 @@ map moves it to::
 
 Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result
 has that geometry: a plate bent about an axis gets exact cylinders (so ``bends()``, ``unfold``
-and selections such as ``faces().cylinders()`` see them), a tapered cylinder an exact cone, the
+and selections such as ``faces().cylinders()`` see them; for bends of up to 90 degrees and of 120,
+135, 180, 240 and 270, NURBS at other angles), a tapered cylinder an exact cone, the
 turned ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves
 in place keep what they were; a cylinder, cone, sphere or torus about a twist's axis maps onto
 itself and stays as it was (seam and all). The other faces are NURBS. Lattices and tapers are polynomial
@@ -54,7 +55,7 @@ from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Vector, Vector
 if TYPE_CHECKING:
     from .shapes import Edge, Part, Shell, Wire
 
-__all__ = ["twist", "taper", "bend", "unroll", "Lattice", "MAX_DEGREE"]
+__all__ = ["twist", "taper", "bend", "unroll", "deform", "Lattice", "MAX_DEGREE"]
 
 #: Highest degree of an exact result. A face whose exact image would need a higher degree
 #: (a sphere in a 4 x 4 x 4 lattice needs 18) is approximated within the tolerance instead.
@@ -637,7 +638,9 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
     The bend axis lies ``radius`` from the neutral layer on the side the part bends toward;
     the part must not reach it. Plane faces across the bend become exact cylinders about the
     bend axis (and lines across it circles), so a bent plate is a sheet metal part to
-    :func:`smlibpy.bends` and :func:`smlibpy.unfold`; the K-factor its neutral layer gives
+    :meth:`Part.bends` and :func:`smlibpy.unfold`. That holds for bends of up to 90 degrees and
+    of 120, 135, 180, 240 and 270; at other angles the faces are NURBS within ``tolerance``, which
+    ``bends()`` and ``unfold`` do not take for bends. The K-factor its neutral layer gives
     (where it lies in the thickness) is kept with it. For sheet metal, :func:`smlibpy.fold`
     bends at a line with an inside radius and a K-factor, with flat legs on both sides.
 
@@ -993,6 +996,14 @@ class Lattice:
         moved = int(np.count_nonzero(np.linalg.norm(self.offsets, axis=-1) > 0))
         nx, ny, nz = self._counts
         return f"Lattice({nx} x {ny} x {nz} points, {moved} moved, box {self.box})"
+
+
+def deform(shape: Any, lattice: Lattice, *, tolerance: float | None = None) -> Any:
+    """Deform a part, a sheet, a curve or points with a lattice: ``lattice.apply(shape)`` (see
+    :class:`Lattice` and :meth:`smlibpy.Part.deform`)."""
+    if not isinstance(lattice, Lattice):
+        raise TypeError(f"deform takes a Lattice, not a {type(lattice).__name__}")
+    return lattice.apply(shape, tolerance=tolerance)
 
 
 def _check_folding(shape: Any, piece: dict) -> None:

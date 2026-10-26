@@ -11,7 +11,7 @@ as combinations of shapes are drawn with :class:`~smlibpy.Profile`.
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from ._kernel import k, kernel_call
 from ._planar import Arc2, Corner, GeometryError, Line2, Seg, assemble, cis, describe, fmt, signed_area, simplify
@@ -272,7 +272,8 @@ def ArcSlot(radius: float, width: float, angle: float, *, rotation: float = 0.0,
     return _aligned(build([(loop, [])], Frame(Plane.XY), name="ArcSlot"), align, default_centered=False)
 
 
-def Stroke(path: Edge | Wire, width: float, *, ends: str = "round", corners: str = "round") -> Sketch:
+def Stroke(path: Edge | Wire, width: float, *, ends: Literal["round", "flat"] = "round",
+           corners: Literal["round", "sharp", "chamfer"] = "round") -> Sketch:
     """The region a pen ``width`` wide covers along a path: a slot between two centers
     (``Stroke(Line(a, b), 6)``), a slot along an arc, a rib from its centerline, a groove along a
     spline. Lines and arcs give exact lines and arcs; splines and ellipses their offsets

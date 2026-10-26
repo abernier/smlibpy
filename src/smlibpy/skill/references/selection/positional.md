@@ -26,9 +26,9 @@ On a `Box`, each selector gives 1 face, 4 edges and 4 vertices.
 - Ties return all of them: two separate blocks of equal height give 2 faces for `top()`;
   `box.edges().top()` gives the 4 top edges.
 - Tie tolerance is 1e-4 mm, fixed: tops at z=5 and z=5.000025 tie, z=5.0005 wins alone.
-- Circles that are not horizontal: a cylinder lying along X has both rim midpoints at z=+10 (its
-  radius), so `edges().top()` returns both rims and `edges().bottom()` returns none. Sort such
-  circles by `arc_center` instead: `edges().circles().sort_by(lambda e: e.arc_center.x)`.
+- Circles that are not horizontal: `Cylinder(10, 40).rotate(Y, 90)` has both rim midpoints at
+  z=+10 (its radius), so `edges().top()` and `edges().bottom()` both return both rims. Sort
+  such circles by `arc_center` instead: `edges().circles().sort_by(lambda e: e.arc_center.x)`.
 - Curved faces: the centroid of a full cylinder face lies on its axis. A horizontal cylinder's
   `faces().top()` returns all three faces (all centroids at z=0).
 - A face with a large hole has its centroid shifted away from the hole; compare faces by

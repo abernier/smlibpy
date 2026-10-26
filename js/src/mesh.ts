@@ -53,8 +53,11 @@ export class RepairReport {
 }
 
 export class Mesh {
+  /** The points, an array of [x, y, z]. */
   vertices: Float64Array
+  /** The triangles, as indices into `vertices`. */
   triangles: Uint32Array
+  /** A normal at each point, or null. */
   normals: Float32Array | null
   _poly: PolyHandle | null
   _key: string | null
@@ -121,6 +124,7 @@ export class Mesh {
     return out
   }
 
+  /** The total area of the triangles. */
   get area(): number {
     const v = this.vertices
     const t = this.triangles
@@ -156,6 +160,7 @@ export class Mesh {
     return s / 6
   }
 
+  /** The box along the axes around the mesh's points; RangeError for an empty mesh. */
   bbox(): BoundBox {
     const v = this.vertices
     const lo = [Infinity, Infinity, Infinity]

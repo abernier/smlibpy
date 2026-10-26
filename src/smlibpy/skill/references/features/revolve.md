@@ -21,8 +21,7 @@ cylinders, oblique lines cones, arcs centred on the axis spheres, other arcs tor
 `faces().cylinders()`, `Face.radius` and `Face.axis`, drafts and STEP files
 (`CYLINDRICAL_SURFACE`, `TOROIDAL_SURFACE`, ...) work on lathe parts. Spline edges (and arcs
 whose circle reaches over the axis) give `revolution` faces, which have an `axis` but no
-`radius`. Before 0.5.0 a full turn gave `revolution` faces for every wall and arcs never gave
-tori.
+`radius`.
 
 ## The lathe setup
 Draw the half profile in XY with x = radius and y = height, place it on `Plane.front` and

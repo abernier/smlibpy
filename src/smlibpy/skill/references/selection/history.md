@@ -22,7 +22,7 @@ through its operations:
 | copies (`named`, `colored`, `solids()`, `heal`, `to_nurbs`) | keep their marks |
 | Booleans, `split` | keep theirs; both halves of a split face keep the parent's; a face merged from two (coplanar tops of a union) descends from both; the curves where the bodies meet, and the cut faces of a split, are new |
 | fillet, chamfer | keep theirs; the rounds and bevels (and their edges) are new |
-| shell, offset, thicken | the offset faces descend from their source faces; rims and blends are new |
+| shell, offset, thicken | the offset faces descend from their source faces; the faces that join them (blends, the rim of an outward shell, the sides of a thickened sheet) are new; the rim of an inward shell descends from the opening face |
 | imprint | the pieces of split faces keep the parent's; the pieces inside a tool part or sketch region also descend from the tool |
 | draft, twist, taper, bend, `remove_fillets`, `remove_faces`, `cells()`, sheet-metal folds and flanges | keep the marks of the faces they change or extend; faces they add are new |
 | moved, turned, mirrored, scaled copies, patterns | **new marks**: a copy is a shape of its own |

@@ -268,7 +268,7 @@ test('old names keep working', () => {
   approx(RoundedRectangle(80, 50, 6).area, Rectangle(80, 50, { fillet: 6 }).area, 1e-12)
   approx(RoundedRectangle(40, 20, 0).area, 800)
   raises(() => RoundedRectangle(40, 20, 10.0001), RangeError, /corner radius is larger than half the shorter side/)
-  approx(Rectangle(40, 20).offset(2, { round: false }).area, 44 * 24)
+  approx(Rectangle(40, 20).offset(2, { corners: 'sharp' }).area, 44 * 24)
   assert.ok(FilletPolyline([0, 0], [20, 0], [20, 10], [0, 10], { radius: 2, close: true }).length > 0)
   approx(makeFace(Polyline([0, 0], [10, 0], [0, 10], { close: true })).area, 50)
   approx(Slot(30, 8).area, 22 * 8 + 16 * PI)
@@ -504,7 +504,7 @@ test('offset changes the topology where it must', () => {
   for (const shrink of [() => Rectangle(40, 20).offset(-10), () => ring.offset(-2.5), () => Slot(40, 10).offset(-6)]) {
     raises(shrink, ModelingError, /removes the whole region/)
   }
-  raises(() => Rectangle(10, 10).offset(1, { corners: 'miter' }), RangeError, /corners is 'round', 'sharp' or 'chamfer'/)
+  raises(() => Rectangle(10, 10).offset(1, { corners: 'miter' as never }), RangeError, /corners is 'round', 'sharp' or 'chamfer'/)
   assert.deepEqual(types(Ellipse(15, 8).offset(2)), ['bspline']) // splines and ellipses: the kernel's offset
 })
 

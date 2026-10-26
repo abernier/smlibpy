@@ -101,6 +101,8 @@ CONVENTIONS
 - Shapes are values: operations return new shapes and never change their input. `a + b` fuses, \
 `a - b` cuts, `a & b` intersects. Place with .translate(), .rotate(), .moved(Location) or a \
 pattern (`GridLocations(...) * Cylinder(...)`).
+- Every operation is a method and a function of the same name: part.draft(faces, 3, Plane.XY) is \
+draft(part, faces, 3, Plane.XY); fillet(edges, r) and chamfer(edges, d) take the edges alone.
 - Select faces and edges by geometry, not by index: part.faces().top(), \
 part.edges().parallel_to(Z), part.faces().cylinders().largest(). Indices change when the model changes.
 - Sketches are planar regions drawn on XY: shapes (Rectangle(w, h, fillet=r), Circle, Slot, ...) combined \

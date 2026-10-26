@@ -33,10 +33,11 @@ save([bracket, cover], "assembly.smp")   # both, with their names and colors
 ```
 
 Every writer and reader has a twin that works in memory, for web services, notebooks and
-databases: `to_step`, `to_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `to_usd`, `to_brep`,
-`to_smb` and `to_smp` give the file's contents (text as `str`, binary formats as `bytes`),
-`from_step`, `from_step_model`, `from_stl`, `from_dxf`, `from_dxf_wires`, `from_usd`, `from_brep`,
-`from_iges`, `from_smb` and `from_smp` read them, with the keywords of the file functions.
+databases: `to_step`, `to_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `to_svg`, `to_usd`,
+`to_brep`, `to_smb` and `to_smp` give the file's contents (text as `str`, binary formats as
+`bytes`), `from_step`, `from_step_model`, `from_stl`, `from_dxf`, `from_dxf_wires`, `from_usd`,
+`from_brep`, `from_iges`, `from_smb` and `from_smp` read them, with the keywords of the file
+functions.
 `to_file(shapes, name)` and `from_file(data, name)` pick the format from a file name's
 extension, as `export` and `load` do from a path:
 
@@ -68,8 +69,8 @@ splits the same way).
 All bodies go into one product (named `name`, by default after the file), each body a solid
 with its own name. With `assembly=True` each body becomes a product of its own, named as the
 body, in an assembly called `name`, so other CAD systems list the parts by name and can move
-or replace them one by one (the `assembly.step` above). A body listed more than once (the
-same object, `[bolt, bolt]`) is written once and placed as often. The bodies keep their
+or replace them one by one (the `assembly.step` above). In an assembly, a body listed more than
+once (the same object, `[bolt, bolt]`) is written once and placed as often. The bodies keep their
 coordinates: each product is placed at the assembly's origin.
 
 `unit` is the unit of the file: `"mm"` (default), `"cm"`, `"m"`, `"um"` or `"inch"`. The
@@ -127,9 +128,10 @@ would show the body twice. The test suite checks the files with the BrepArray ru
 validator (usd-brep's `brep_validator`, through `tools/oracles/usd_validator.py`) and with OpenUSD,
 and with the validator itself (`validate_file`: the BrepArray rules and the asset validator's
 general USD rules) where it is installed: `pip install "usd-validation-nvidia[usd]"` on any
-platform, or `usd-brep[validation]`. CI's Linux, macOS and JavaScript jobs install it and fail
-without it. Every file passes the BrepArray rules; of the general rules only
-`UsdAsciiPerformanceChecker` complains, which asks for large arrays in binary (crate) files.
+platform, or `usd-brep[validation]`. CI's macOS job, its Linux x86_64 job on Python 3.12 and its
+JavaScript job install it and fail without it. Every file passes the BrepArray rules; of the
+general rules only `UsdAsciiPerformanceChecker` complains, which asks for large arrays in binary
+(crate) files.
 A prim's name is the body's name with every character but ASCII letters, digits and `_` as
 `_` (`"Größe"` is the prim `Gr__e`); the name itself is the prim's `displayName`, which
 viewers show and `import_usd` gives back. Faces and edges keep their types: planes, cylinders,

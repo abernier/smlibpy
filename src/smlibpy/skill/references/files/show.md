@@ -21,7 +21,7 @@ Opens shapes in an interactive 3D viewer (three.js): orbit, pan, zoom, `F` to fr
   the browser unless `open_browser=False`).
 
 ## The page
-- One self-contained HTML file (29 kB for a simple part). The model is embedded as GLB.
+- One self-contained HTML file (22 kB for the plate below). The model is embedded as GLB.
 - three.js 0.170.0 is loaded from `cdn.jsdelivr.net`, so viewing needs internet access.
 - An info line at the bottom: `Part · 7 faces · volume 18 797.9 · 60 × 40 × 8` for one shape,
   `4 shapes` for several.
@@ -35,10 +35,11 @@ Opens shapes in an interactive 3D viewer (three.js): orbit, pan, zoom, `F` to fr
 
 ## Example
 ```python
+plate = Box(60, 40, 8) - Cylinder(4, 10)
+cover = Box(60, 40, 2).translate(0, 0, 10).named("cover")
 page = show(plate, cover, title="plate", path="plate.html", open_browser=False)
 print(page)   # plate.html
 ```
-(`plate` from `render.md`, `cover` from `export_glb.md`.)
 
 ## Related
 `render` (PNG, no browser), `export_glb`.

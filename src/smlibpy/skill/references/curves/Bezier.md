@@ -30,7 +30,8 @@ control points are **not** on the curve: `Bezier((0, 0), (10, 20), (20, 0))` pea
 
 ## Errors
 - `ValueError: a Bézier curve needs at least two control points`.
-- `KernelError: Bezier failed (SM_ERR)` for 19 or more control points, or a weight <= 0.
+- `KernelError: Bezier failed (SM_ERR)` for 19 or more control points (`SM_ERR_INVALID_INPUT`
+  from 34), or a weight <= 0.
 - `KernelError: Bezier failed (SM_ERR_INVALID_INPUT)` when the number of weights differs
   from the number of control points.
 

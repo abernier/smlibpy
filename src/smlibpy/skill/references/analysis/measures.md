@@ -11,7 +11,7 @@ The single numbers of each shape type. All are exact-geometry integrations (see 
 | `Sketch` | - | region area, holes removed | area centroid | - | tight |
 | `Face` | - | area | area centroid (may lie off the face) | - | tight |
 | `Wire` | - | - | length-weighted average of edge midpoints | sum of edges | union of edges |
-| `Edge` | - | - | point halfway along the edge | arc length | tight on bodies |
+| `Edge` | - | - | point halfway along the edge | arc length | tight |
 | `Vertex` | - | - | the point | - | the point |
 | `ShapeList` | - | - | plain average of the members' centers | - | union |
 
@@ -47,8 +47,9 @@ The single numbers of each shape type. All are exact-geometry integrations (see 
   (`part.edges(seams=True)`), 2 without; seams do not change `area` or `volume`.
 - `Sketch.area` stays the same wherever the sketch is placed (`.on(tilted_plane)`); its
   `center()` moves with it.
-- A standalone spline edge's `bbox()` (made with `Spline`, not taken from a body) is sampled
-  at 33 points and can be too small (0.07 mm on a 35 mm wavy spline). A body's bbox is exact.
+- A standalone spline edge's `bbox()` (made with `Spline`, not taken from a body) is exact too:
+  its ends and the points where its tangent is square to an axis (a wavy spline over 35 mm:
+  within 2e-8 of the extremes of 40,000 points along it, never inside them).
 
 ## Example
 

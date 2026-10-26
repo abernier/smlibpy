@@ -170,7 +170,7 @@ test('extend lines, arcs, ellipses and splines by the distance', () => {
   approx(arc.length, 7.5 * Math.PI)
   near(arc.end, [-Math.sqrt(50), Math.sqrt(50), 0])
   const el = EllipticalArc([0, 0], 20, 10, 0, 90)
-  for (const end of ['start', 'end', 'both']) {
+  for (const end of ['start', 'end', 'both'] as const) {
     const x = el.extend(5, { end })
     assert.equal(x.geomType, 'ellipse')
     approx(x.length, el.length + (end === 'both' ? 10 : 5), 0, 1e-8)
@@ -178,10 +178,10 @@ test('extend lines, arcs, ellipses and splines by the distance', () => {
   assert.throws(() => CenterArc([0, 0], 10, 0, 300).extend(11), /whole circle/)
   assert.throws(() => CenterArc([0, 0], 10, 0, 360).extend(1), /closed edge/)
   const s = Spline([0, 0], [10, 10], [20, 0])
-  for (const continuity of ['G1', 'G2', 'natural']) approx(s.extend(5, { continuity }).length, s.length + 5, 0, 1e-8)
+  for (const continuity of ['G1', 'G2', 'natural'] as const) approx(s.extend(5, { continuity }).length, s.length + 5, 0, 1e-8)
   const g1 = s.extend(5, { end: 'both' })
   assert.ok(g1.end.distanceTo(s.end.add(s.tangentAt(1).mul(5))) < 1e-9)
-  assert.throws(() => s.extend(1, { continuity: 'C2' }), /continuity/)
+  assert.throws(() => s.extend(1, { continuity: 'C2' as never }), /continuity/)
 })
 
 test('wires join into one edge', () => {
@@ -270,7 +270,7 @@ test('offsets of paths with curves match the exact path', () => {
   const fitted = arcLikePath(true)
   assert.ok(segOfEdge(fitted.edges()[1], wireFrame(fitted.edges(), null, 'test')) instanceof Curve2)
   for (const d of [1.5, -1.5]) {
-    for (const corners of ['round', 'sharp', 'chamfer']) {
+    for (const corners of ['round', 'sharp', 'chamfer'] as const) {
       const a = exact.offset(d, { corners })
       const b = fitted.offset(d, { corners })
       approx(b.length, a.length, 0, 1e-4)
@@ -285,7 +285,7 @@ test('closed wires with splines offset like their region', () => {
   const lens = new Wire([Spline([0, 0], [10, 6], [20, 0]), Spline([20, 0], [10, -6], [0, 0])])
   const region = lens.toSketch()
   for (const d of [1, -1, 2]) {
-    for (const corners of ['round', 'sharp']) approx(lens.offset(d, { corners }).toSketch().area, region.offset(d, { corners }).area, 1e-5)
+    for (const corners of ['round', 'sharp'] as const) approx(lens.offset(d, { corners }).toSketch().area, region.offset(d, { corners }).area, 1e-5)
   }
   const u = new Wire([Line([0, 0], [0, 20]), Line([0, 20], [8, 20]), Line([8, 20], [8, 0])])
   approx(u.offset(-3).length, 36)
@@ -302,8 +302,8 @@ test('strokes follow splines', () => {
   const exact = arcLikePath(false)
   const fitted = arcLikePath(true)
   const fband = 2 * fitted.length * 1e-6 * fitted.bbox().diagonal // (the fitted arc's sides: the kernel's offsets)
-  for (const corners of ['round', 'sharp', 'chamfer']) {
-    for (const ends of ['round', 'flat']) approx(Stroke(fitted, 3, { ends, corners }).area, Stroke(exact, 3, { ends, corners }).area, 0, fband)
+  for (const corners of ['round', 'sharp', 'chamfer'] as const) {
+    for (const ends of ['round', 'flat'] as const) approx(Stroke(fitted, 3, { ends, corners }).area, Stroke(exact, 3, { ends, corners }).area, 0, fband)
   }
   const loop = Spline([0, 0], [20, 0], [20, 10], [10, 10], [10, -10])
   const st = Stroke(loop, 1)
@@ -486,7 +486,7 @@ test('DXF with lines and arcs only', () => {
   assert.ok(!kinds.has('SPLINE') && !kinds.has('ELLIPSE') && kinds.has('ARC') && kinds.has('CIRCLE'))
   const back = fromDxfWires(text)
   approx(back.reduce((a, w) => a + w.length, 0), s.length + region.edges()[0].length + 6 * Math.PI, 1e-4)
-  assert.throws(() => toDxf(s, { curves: 'lines' }), /curves is 'exact' or 'arcs'/)
+  assert.throws(() => toDxf(s, { curves: 'lines' as never }), /curves is 'exact' or 'arcs'/)
 })
 
 // -- C11 ---------------------------------------------------------------------------------------------
@@ -643,6 +643,7 @@ test('conic arcs are exact; flat spirals', () => {
   assert.ok(groove.isValid())
   approx(groove.volume, 0.5 * s.length, 1e-3)
   assert.throws(() => Spiral(5, 5, 3), /must differ/)
+  assert.throws(() => Spiral(2, 20, 0.5), /fitCurve through points of the spiral makes it/) // (less than a turn, a large change of radius)
 })
 
 // -- C15 ---------------------------------------------------------------------------------------------
@@ -723,4 +724,18 @@ test('points along long helices take time in proportion to their turns', () => {
   const points = Array.from({ length: 21 }, (_, i) => h.pointAt(i / 20))
   assert.ok(performance.now() - started < 5000)
   assert.ok(Math.abs(points[10].z - 250) < 1e-3 && Math.abs(Math.hypot(points[10].x, points[10].y) - 3) < 1e-3)
+})
+
+test('a wire rounds one corner given alone', () => {
+  const w = Polyline([0, 0], [20, 0], [20, 20])
+  const one = w.fillet(2, [20, 0])
+  assert.equal(one.edges().length, 3)
+  approx(one.length, 36 + Math.PI)
+  approx(w.fillet(2, w.vertices()[1]).length, one.length)
+  approx(w.fillet(2, [[20, 0]]).length, one.length)
+})
+
+test('a wire offset that collapses says so', () => {
+  // (the inside of a strip 2 wide, moved 2 inward: its short sides shrink to nothing)
+  assert.throws(() => Polyline([0, 0], [40, 0], [40, 2], [0, 2], { close: true }).offset(-2), /moved by 2, a side of it shrinks to nothing/)
 })

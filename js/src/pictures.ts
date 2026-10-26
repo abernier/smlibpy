@@ -377,7 +377,7 @@ export interface RenderOptions {
   supersample?: number
   /** `"native"`: each shape's own color, or a palette color by its position; `"distinct"`: a
    * palette color per body, also per solid of a part. */
-  colors?: string
+  colors?: 'native' | 'distinct'
   /** Line style instead of shading: no fill, visible edges and silhouettes solid, hidden ones
    * dashed. Applies to the single view and every panel of a sheet. */
   lines?: boolean

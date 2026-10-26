@@ -63,7 +63,8 @@ A part keeps the K-factor each bend was folded with (`fold`, `flange`), and `unf
 `flat_pattern` and `bends` take it: a blank folded with a tight hem at K 0.33 and a large bend
 at K 0.45 unfolds to the blank again. The record goes with the part through Booleans (a union or
 an intersection also takes the records of its other operands, in either order), moves, mirrors and
-`named()`; a part read from a file has none, and its bends take 0.44.
+`named()`; a part read from a file has none (but from an `.smp` part file, which keeps them), and
+its bends take 0.44.
 
 ```python
 blank = Box(200, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
@@ -152,8 +153,8 @@ Bending and unfolding with the same K-factor give back the same blank exactly, a
 each bend unfolds with the K-factor it was folded with. Parts that were not made with `fold`
 unfold too (at 0.44, or the `k_factor=` given), as long as each bend is a pair of cylinder faces
 one thickness apart, for example a profile with an inside radius extruded to a channel. A plate
-bent with `Part.bend` (see [deformations](deform.md)) has such cylinders, and keeps the K-factor
-its neutral layer gives.
+bent with `Part.bend` (see [deformations](deform.md)) by up to 90 degrees, or by 120, 135, 180,
+240 or 270, has such cylinders, and keeps the K-factor its neutral layer gives.
 
 ### Rolled parts, curls and bends over 180 degrees
 

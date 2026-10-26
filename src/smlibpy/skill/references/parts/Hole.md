@@ -49,7 +49,8 @@ flat (no drill point).
 - Without `.on()` the tool sits at the origin: in a centered `Box` it drills from the middle
   (z 0 down), not from the top.
 - `.on()` needs exactly one planar face. Two faces: `ValueError: expected exactly one shape, got 2 -
-  narrow the selection or use [0]`. A cylinder face: `ValueError: a cylinder face has no plane`.
+  narrow the selection or use [0]`. A cylinder face: `ValueError: a cylinder face has no plane;
+  use normal_at() or a planar face`.
 - A tilted planar face works: the hole follows the face normal.
 - Overlapping holes: cut them in one call. `part - (Locations((0, 0), (5, 0)) *
   Hole(4, 12)).on(top)` on a 60×40×10 plate gives the right part (volume 23125.2). A single
@@ -64,7 +65,7 @@ flat (no drill point).
 ## Errors
 
 - `radius <= 0` or `depth <= 0`: `ValueError: radius and height must be positive`.
-- `Hole(3)`: `TypeError: missing 1 required positional argument: 'depth'`.
+- `Hole(3)`: `TypeError: Hole() missing 1 required positional argument: 'depth'`.
 
 ## Example
 

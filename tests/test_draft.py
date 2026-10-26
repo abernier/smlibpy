@@ -7,7 +7,7 @@ import pytest
 
 from smlibpy import (Align, Box, Cylinder, ModelingError, Plane, RoundedRectangle, ShapeList, Sphere, Torus, Wire, X,
                      Y, Z, export_step, import_step)
-from smlibpy.draft import ANGLE_TOLERANCE, DraftAnalysis
+from smlibpy.molding import ANGLE_TOLERANCE, DraftAnalysis
 
 
 def test_box_faces_by_draft():
@@ -372,12 +372,12 @@ def test_draft_errors():
 
 
 def test_draft_never_returns_a_broken_part(monkeypatch):
-    import smlibpy.draft
+    import smlibpy.molding
 
     # Without the tangency check the kernel closes the part with faces that do not meet.
     box = Box(40, 30, 20)
     rounded = box.fillet(box.edges().parallel_to(Z), 5)
-    monkeypatch.setattr(smlibpy.draft, "TANGENCY", 0.0)
+    monkeypatch.setattr(smlibpy.molding, "TANGENCY", 0.0)
     with pytest.raises(ModelingError, match="draft: "):
         rounded.draft(walls(rounded).planar(), 3, Plane.XY.offset(-10))
     monkeypatch.undo()

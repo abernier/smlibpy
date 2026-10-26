@@ -17,8 +17,9 @@ the outline, not by habit; the right one makes the script short and the geometry
 
 ## Shapes first
 
-Every shape is centered on the origin and takes `rotation=`, `align=` and, with corners,
-`fillet=`/`chamfer=`. Cutouts are Booleans; patterns go on the right side in one call:
+The shapes are centered on the origin (a `Polygon` keeps its points where they are) and take
+`align=`; most take `rotation=` (not `Circle`, `Polygon`, `RoundedRectangle`), and those with
+corners `fillet=`/`chamfer=`. Cutouts are Booleans; patterns go on the right side in one call:
 
 ```python
 plate = Rectangle(80, 50, fillet=6) - GridLocations(60, 30, 2, 2) * Circle(3) - Slot(30, 8)

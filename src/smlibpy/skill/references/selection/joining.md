@@ -45,7 +45,8 @@ print(len((plate - holes).edges().joining(plate, holes)))   # 6: top and bottom 
 - A boss through a plate with holes in it: the rims of the holes inside the boss's footprint also
   lie on both (the hole walls end on the boss's bottom face) and are taken. Filter by position if
   only the outer circle is wanted.
-- Cost: a few classifications per edge near both bodies (about 0.5 ms an edge).
+- Cost: a few classifications per edge near both bodies (0.1 to 0.4 ms an edge, measured on a
+  plate with a boss and one with 30 holes).
 
 ## Related
 `history` (`new`, `derived_from`), `convexity` (`concave()`), `features/fillet`.

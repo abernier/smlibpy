@@ -38,7 +38,7 @@ print(len(tilted.edges().lines().filter(lambda e: e.direction.is_parallel(Z.dire
 ## Gotchas
 - Circles lying flat are not `perpendicular_to(Z)`: only straight edges count.
 - A vertical cylinder wall is in neither `parallel_to(Z)` nor `perpendicular_to(Z)`.
-- After `chamfer` (also `loft`, `ruled`, `to_nurbs`, `mirror`) many straight edges are `bspline`
+- After `chamfer` (also `loft`, `ruled`, `to_nurbs`) many straight edges are `bspline`
   curves; they still count: `Box(20, 20, 10).chamfer(vertical edges, 2).edges().parallel_to(Z)`
   returns all 8 vertical edges.
 - Flat faces converted to NURBS (`to_nurbs()`, many STEP imports) count as planar here.

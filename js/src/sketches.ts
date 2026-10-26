@@ -372,7 +372,7 @@ export function ArcSlot(radius: number, width: number, angle: number, options: P
  * `corners`: how the outside of a bend is shaped, "round", "sharp" or "chamfer". A closed path
  * makes a ring. The path stays where it is (in its plane).
  */
-export function Stroke(path: Edge | Wire, width: number, options: { ends?: string; corners?: string } = {}): Sketch {
+export function Stroke(path: Edge | Wire, width: number, options: { ends?: 'round' | 'flat'; corners?: 'round' | 'sharp' | 'chamfer' } = {}): Sketch {
   _opts('Stroke', options, arguments.length)
   const { ends = 'round', corners = 'round' } = options
   return stroke(path, Number(width), ends, corners)

@@ -60,7 +60,7 @@ def main() -> int:
 
     import smlibpy
     from smlibpy import Part, Shell
-    from smlibpy.render import render
+    from smlibpy.pictures import render
 
     namespace: dict[str, Any] = {}
 

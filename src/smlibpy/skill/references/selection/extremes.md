@@ -4,11 +4,11 @@ Pick the extreme shapes, one shape, or the shapes at a point.
 
 ## Signature
 - `sl.largest()`, `sl.smallest()` → one shape, by volume, else area, else length.
-- `sl.max_by(key=Z, tol=1e-4)`, `sl.min_by(key=Z, tol=1e-4)` → ShapeList of every shape tying for
+- `sl.max_by(key=Z, tolerance=1e-4)`, `sl.min_by(key=Z, tolerance=1e-4)` → ShapeList of every shape tying for
   the largest / smallest key. Keys as in `sort_by` (`Z`, `"area"`, `"length"`, `"radius"`, a function).
 - `sl.first`, `sl.last` → properties (no parentheses), the first / last element.
 - `sl.one()` → the only element; raises unless there is exactly one.
-- `sl.at(point, tol=1e-4)` → ShapeList of the shapes passing through `point` (distance ≤ tol).
+- `sl.at(point, tolerance=1e-4)` → ShapeList of the shapes passing through `point` (distance ≤ tolerance).
 
 ## Returns and ties
 | Call | Returns | On a tie | On an empty list |
@@ -25,14 +25,14 @@ decides). Use `max_by("area")` to see the tie, then narrow (`.top()`).
 ## at(point)
 - Vertices at the point, edges and faces touching it: at a box corner 1 vertex, 3 edges, 3 faces.
 - Point on a hole rim: the planar face and the cylinder face.
-- `tol` is absolute: 1e-5 off is found, 1e-3 off is not (`tol=0.01` finds it).
+- `tolerance` is absolute: 1e-5 off is found, 1e-3 off is not (`tolerance=0.01` finds it).
 - A point in the opening of a hole touches no face.
 - On `solids()` the distance is to the boundary: a point inside a solid is not "at" it.
 
 ## Gotchas
 - `largest()` compares volume, area or length, whichever the shape has: on a mixed list of faces
   and edges it compares areas with lengths. Vertices all measure 0: the first one wins.
-- `max_by(key, tol=...)` groups like `group_by`: with a large `tol` more shapes join the top group.
+- `max_by(key, tolerance=...)` groups like `group_by`: with a large `tolerance` more shapes join the top group.
 - `first` and `last` depend on list order, which is the kernel's. Sort first (`sort_by(X).last`).
 - `one()` is the right tool when a feature needs exactly one face: it fails loudly at the
   selection instead of later.

@@ -47,13 +47,15 @@ bosses work too.
   the kernel could not build a valid result (it built a body with a cavity where its walls meet:
   ...)`.
 - Opening every face: `ModelingError: shell: the kernel could not build a valid result (it built
-  a body that is empty); try a smaller value`.
+  a body that is empty); the wall may be thicker than the part allows`.
 - `thickness=0`: `ValueError: shell: the thickness must not be zero`.
 - An invalid input part: `ModelingError: shell: the part is not a valid solid (...)`.
 
 ## With fillets
 - Fillet first, then shell, when the inside should follow the rounds. The inner rounds get
-  radius `r - t`; with `t > r` the shell fails (all-edge r5 box, t6: `shell failed`).
+  radius `r - t`. With `t > r` an open shell fails (the all-edge r5 box, t6, top open:
+  `ModelingError: shell: the part shelled closed has no single face under the opening at ... to
+  cut it out from`); closed, it shells (34840.2).
 - The kernel cannot open a face whose rim meets its neighbours tangentially: the flat top of a
   box rounded on all edges keeps its rim open (faces off their edges). smlibpy shells such a
   part closed and cuts the opening out (the cavity's face under it, extruded through the wall)
@@ -81,8 +83,9 @@ sharp). Pass `corners=` when the shape of the cavity matters, and read `info()["
 
 ## Gotchas
 - Opening a curved end face can fail where a planar one works: a rectangle-to-circle loft
-  shells with the bottom open but not with the circular top open (`shell failed (SM_ERR)`).
-  Subtract an inner body instead.
+  shells with the bottom open but not with the circular top open (`KernelError: shell failed
+  (SM_ERR): ...`, or `ModelingError: shell: the kernel could not build a valid result ...`: the
+  same call gave either). Subtract an inner body instead.
 - smlibpy checks every result: a valid solid in the part's box, faces that meet (gaps below
   1e-3 of the volume), a volume that drops (inward), and a cavity where no wall reaches. With
   `corners=None` it tries the kernel's plain mode, then its extended mode, and that once more

@@ -337,7 +337,7 @@ def test_each_deformation_maps_points_as_it_maps_bodies():
     # the plan's map_point for each deformation: the deformation functions take a point (and a list
     # of points) with the same arguments, and Lattice.map; their images lie on the deformed body
     from smlibpy import CenterArc, extrude
-    from smlibpy.deform import Lattice, bend, taper, twist, unroll
+    from smlibpy.deformations import Lattice, bend, taper, twist, unroll
 
     bar = Box(10, 10, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
     plate = Box(100, 10, 4, align=(Align.MIN, Align.CENTER, Align.CENTER))

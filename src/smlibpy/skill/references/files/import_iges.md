@@ -18,6 +18,7 @@ system.
 - Several bodies: a `ShapeList` of them.
 
 ```python
+# not run: it needs an IGES file of other software (smlibpy writes none)
 r = import_iges(path)
 parts = r if isinstance(r, ShapeList) else [r]
 ```
@@ -70,6 +71,7 @@ Lengths are converted to mm from the unit the file declares (inch, mm, m, ...).
 
 ## Example
 ```python
+# not run: it needs an IGES file of other software
 part = import_iges("bracket.igs")       # an IGES file from another CAD system
 print(type(part).__name__, part.is_valid(), round(part.volume, 3))
 export_step(part, "bracket.step")       # passed on as STEP

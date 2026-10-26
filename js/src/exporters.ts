@@ -127,7 +127,9 @@ function _notWritable(item: unknown, what: string): string {
   const name = _typeName(item)
   const article = 'AEIOU'.includes(name.slice(0, 1).toUpperCase()) && name ? 'an' : 'a'
   const smb = what === 'save' || what === 'toSmb'
-  const text = smb ? `an .smb file holds one body, not ${article} ${name}` : `${what} writes parts, sheets, faces and meshes, not ${article} ${name}`
+  // (.brep and .smp files hold exact bodies)
+  const kinds = ['toBrep', 'exportBrep', 'toSmp'].includes(what) ? 'parts, sheets and faces' : 'parts, sheets, faces and meshes'
+  const text = smb ? `an .smb file holds one body, not ${article} ${name}` : `${what} writes ${kinds}, not ${article} ${name}`
   if (item instanceof Edge || item instanceof Wire) {
     return (
       text +
@@ -288,7 +290,7 @@ export function fromFile(data: string | BytesLike, name: string): Part | Shell |
  * coordinates are converted to it), `name` the product's name (the file's name by default),
  * `assembly` each body in a product of its own (default false). */
 export interface StepExportOptions {
-  unit?: string
+  unit?: 'mm' | 'cm' | 'm' | 'um' | 'inch' | 'in'
   name?: string | null
   assembly?: boolean
 }

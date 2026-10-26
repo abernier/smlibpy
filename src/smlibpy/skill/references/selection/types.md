@@ -44,11 +44,12 @@ A ShapeList in the original order. Shapes without `geom_type` (vertices, parts) 
 - `circles()` returns arcs too. Fillet arcs and hole rims look alike: filter full circles with
   `e.is_closed`, or by `e.radius`.
 - `cylinders()` returns fillet faces and holes alike; filter by `f.radius` or position.
-- A straight edge is not always `"line"`: chamfer borders, mirrored or scaled lines, offset
-  sketches, `ruled(Line, Line)` and edges of `to_nurbs()` bodies are `"bspline"`. `lines()`
-  finds them, `of_type("line")` does not. A flat face is not always `"plane"`: `to_nurbs()` and
-  `surface()` faces are `"bspline"` even when flat. `planar()` and `Face.is_planar` find them
-  (all control points in one plane), `of_type("plane")` does not.
+- A straight edge is not always `"line"`: chamfer borders, the straight edges of a `loft`,
+  `ruled(Line, Line)` and edges of `to_nurbs()` bodies are `"bspline"`. `lines()` finds them,
+  `of_type("line")` does not. Mirrored, scaled and offset lines stay `"line"`. A flat face is
+  not always `"plane"`: `to_nurbs()` and `surface()` faces are `"bspline"` even when flat.
+  `planar()` and `Face.is_planar` find them (all control points in one plane),
+  `of_type("plane")` does not.
 - `Cone(5, 5, 10)` (equal radii) has a `"cylinder"` face.
 - `lines()` on faces and `planar()` on edges return empty lists, no error.
 

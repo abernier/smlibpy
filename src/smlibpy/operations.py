@@ -1,9 +1,12 @@
 """Operations as functions.
 
-Each function is also available as a method (``extrude(sketch, 5)`` is
-``sketch.extrude(5)``). The functions read naturally when the target is implied
-by a selection: ``fillet(part.edges().parallel_to(Z), 2)`` returns the filleted part
-the edges belong to.
+Every operation of a body is a method and a function of the same name and parameters, the
+function taking the body first: ``draft(part, faces, 3, Plane.XY)`` is
+``part.draft(faces, 3, Plane.XY)``, ``extrude(sketch, 5)`` is ``sketch.extrude(5)``. ``fillet``,
+``chamfer`` and ``fillet_preview`` take the edges instead and find their part, which reads
+naturally when the selection says it all: ``fillet(part.edges().parallel_to(Z), 2)`` returns the
+filleted part the edges belong to. The method does the work; tests/test_api_forms.py holds the two
+forms to each other.
 """
 
 from __future__ import annotations
@@ -11,14 +14,17 @@ from __future__ import annotations
 import math
 import numbers
 import warnings
-from typing import Any, Callable, Literal, Sequence, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, TypeVar, overload
 
 import numpy as np
 
 from ._kernel import BrepHandle, KernelError, ModelingError, _traced, ext, k, kernel_call
-from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
+from .geometry import Axis, Location, Plane, Vector, VectorLike, Z, _direction, _vec
 from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire, _analytic_revolve, _as_plane,
                      _flatten_edges, _flatten_faces, _freed, _require_solid, _revolve_axis_angle, _take)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .mesh import Mesh
 
 __all__ = [
     "extrude",
@@ -28,13 +34,38 @@ __all__ = [
     "swing",
     "fillet",
     "chamfer",
+    "fillet_preview",
     "shell",
     "offset",
+    "draft",
     "mirror",
+    "scale",
     "split",
     "merge",
     "section",
     "thicken",
+    "fuse",
+    "cut",
+    "intersect",
+    "xor",
+    "imprint",
+    "move_faces",
+    "offset_faces",
+    "remove_faces",
+    "remove_fillets",
+    "push",
+    "warp",
+    "flatten",
+    "extend",
+    "trim",
+    "match_edge",
+    "merge_faces",
+    "project",
+    "outline",
+    "silhouette",
+    "intersection_curves",
+    "parting_line",
+    "slices",
 ]
 
 
@@ -82,12 +113,12 @@ _S = TypeVar("_S", bound=Shape)
 # the same)
 @overload
 def extrude(profile: Sketch | Face, amount: float, *, both: bool = ..., taper: float = ...,
-            direction: Axis | VectorLike | None = ..., corners: str = ...) -> Part: ...
+            direction: Axis | VectorLike | None = ..., corners: Literal["sharp", "round"] = ...) -> Part: ...
 @overload
 def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool = ..., taper: float = ...,
-            direction: Axis | VectorLike | None = ..., corners: str = ...) -> Part | Shell: ...
+            direction: Axis | VectorLike | None = ..., corners: Literal["sharp", "round"] = ...) -> Part | Shell: ...
 def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool = False, taper: float = 0.0,
-            direction: Axis | VectorLike | None = None, corners: str = "sharp") -> Part | Shell:
+            direction: Axis | VectorLike | None = None, corners: Literal["sharp", "round"] = "sharp") -> Part | Shell:
     """Extrude a sketch, a planar face or a closed wire into a solid (see :meth:`Sketch.extrude`).
 
     An open curve extrudes into a surface (a :class:`Shell`), along ``direction`` (an axis or a
@@ -300,7 +331,7 @@ def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False
             more): a ring without ends.
         rails: A curve (an edge or a wire) or a list of them that run from the first section to the
             last and cross every section once, for open sections (a surface): the loft passes through
-            them exactly, as through the sections (a Gordon surface through the sections and the
+            them as through the sections, within about 3e-7 (a Gordon surface through the sections and the
             rails, cubic or as near as the counts allow). Where no rail runs along the sections'
             starts or their ends, the loft's border there runs smoothly through them. Sections and
             rails must be smooth curves (each is joined into one). Not with ``ruled``, the tangents
@@ -1304,18 +1335,21 @@ def sweep(profile: Sketch | Face, path: Edge | Wire, *, orient: bool = ..., tran
           sharp_corners: bool | None = ..., up: Axis | VectorLike | str | None = ...,
           twist: float | Callable[[float], float] = ...,
           scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = ...,
-          anchor: str | VectorLike | Vertex = ..., rails: Edge | Wire | None = ...) -> Part: ...
+          anchor: Literal["center", "origin"] | VectorLike | Vertex = ...,
+          rails: Edge | Wire | None = ...) -> Part: ...
 @overload
 def sweep(profile: Sketch | Face | Wire | Edge, path: Edge | Wire, *, orient: bool = ..., translational: bool = ...,
           sharp_corners: bool | None = ..., up: Axis | VectorLike | str | None = ...,
           twist: float | Callable[[float], float] = ...,
           scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = ...,
-          anchor: str | VectorLike | Vertex = ..., rails: Edge | Wire | None = ...) -> Part | Shell: ...
+          anchor: Literal["center", "origin"] | VectorLike | Vertex = ...,
+          rails: Edge | Wire | None = ...) -> Part | Shell: ...
 def sweep(profile: Sketch | Face | Wire | Edge, path: Edge | Wire, *, orient: bool = True, translational: bool = False,
           sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
           twist: float | Callable[[float], float] = 0.0,
           scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None,
-          anchor: str | VectorLike | Vertex = "center", rails: Edge | Wire | None = None) -> Part | Shell:
+          anchor: Literal["center", "origin"] | VectorLike | Vertex = "center",
+          rails: Edge | Wire | None = None) -> Part | Shell:
     """Sweep a profile along a path.
 
     The profile is moved so that the center of its box (along the axes of its plane) sits at the
@@ -1335,8 +1369,8 @@ def sweep(profile: Sketch | Face | Wire | Edge, path: Edge | Wire, *, orient: bo
     the kernel cannot sweep an open path of several edges so, each edge is swept on its own, turned
     to its own start, and the pieces are fused (with a ``RuntimeWarning`` unless the profile is
     round: it turns where the edges meet). A closed path it cannot sweep so (the fuse where the
-    halves of a loop closed with a kink cross) is swept in pieces as before 0.5.0, where that puts
-    the profile on the path. Faces without area that a fuse leaves are taken out (or the sweep
+    halves of a loop closed with a kink cross) is swept in pieces, each turned from the path's start
+    to its own, where that puts the profile on the path. Faces without area that a fuse leaves are taken out (or the sweep
     raises ``ModelingError``). The corners of a planar path of several edges are mitered, the
     profile placed as on any other path; where they cannot be (arcs that meet at a corner), the path
     is swept piece by piece, with a ``RuntimeWarning``.
@@ -1391,7 +1425,7 @@ def sweep(profile: Sketch | Face | Wire | Edge, path: Edge | Wire, *, orient: bo
         rails: A second rail (an edge or a wire; the path is the first) for an open profile that
             runs from the path to it: the profile is moved, turned and scaled (the same in every
             direction) so that its ends stay on both, and the surface (a :class:`Shell`) passes
-            through both rails exactly. The profile's frame turns with the line from the path to
+            through both rails, within about 2e-7. The profile's frame turns with the line from the path to
             the rail and with the rails' mean direction; the rails are matched by the fraction of
             their lengths, from where the profile meets them to their ends. Not with ``orient``,
             ``translational``, ``sharp_corners``, ``up``, ``twist``, ``scale`` or ``anchor``,
@@ -2123,8 +2157,10 @@ def _swung_solid(loop: Wire, outline: Wire, reach: float, hint: str) -> Part:
 @overload
 def fillet(edges: Vertex | Sequence[Vertex], radius: float) -> Sketch: ...
 @overload
-def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part: ...
-def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part | Sketch:
+def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float] | dict[float, float],
+           **kwargs: Any) -> Part: ...
+def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float] | dict[float, float],
+           **kwargs: Any) -> Part | Sketch:
     """Round edges of the part they belong to (see :meth:`Part.fillet`), or corners of the
     sketch they belong to: ``fillet(s.vertices().concave(), 2)`` (see :meth:`Sketch.fillet`)."""
     sk = _owner_sketch(edges)
@@ -2168,8 +2204,8 @@ def _owner_part(items: Any) -> Part:
     return owner
 
 
-def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool = False, corners: str | None = None,
-          walls: Any = None) -> Part:
+def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool = False,
+          corners: Literal["round", "sharp"] | None = None, walls: Any = None) -> Part:
     """Hollow out a part (see :meth:`Part.shell`)."""
     return part.shell(thickness, openings, outward=outward, corners=corners, walls=walls)
 
@@ -2197,17 +2233,22 @@ def offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: float,
     return shape.offset(distance, **kwargs)
 
 
-def mirror(shape: _S, plane: Plane = Plane.XZ) -> _S:
-    """A mirrored copy of a shape."""
-    return shape.mirror(plane)
+def mirror(shape: _S, plane: Plane | Face | Axis = Plane.XZ) -> _S:
+    """A mirrored copy of a shape (see :meth:`Shape.mirror`; a sketch also in an axis of its
+    plane, :meth:`Sketch.mirror`)."""
+    return _subject(shape, "mirror", "a shape").mirror(plane)  # type: ignore[no-any-return]
 
 
 @overload
 def split(part: Part, plane: Plane | Face | Shell, keep: Literal["both"]) -> tuple[Part, Part]: ...
 @overload
 def split(part: Part, plane: Plane | Face | Shell, keep: Literal["above", "below"] = ...) -> Part: ...
-def split(part: Part, plane: Plane | Face | Shell, keep: str = "above") -> Part | tuple[Part, Part]:
-    """Cut a part with a plane or along a sheet (see :meth:`Part.split`)."""
+def split(part: Part, plane: Plane | Face | Shell,
+          keep: Literal["above", "below", "both"] = "above") -> Part | tuple[Part, Part]:
+    """Cut a part with a plane or along a sheet (see :meth:`Part.split`). Edges and wires split at
+    parameters or points with their own :meth:`Edge.split`."""
+    if not isinstance(part, Part):
+        raise TypeError(f"split takes a part, not a {type(part).__name__} (an edge or a wire splits with edge.split(t))")
     return part.split(plane, keep)
 
 
@@ -2225,8 +2266,8 @@ def merge(*parts: Part | Sequence[Part]) -> Part:
 
 
 def section(part: Part, plane: Plane | Face = Plane.XY) -> Sketch:
-    """Cross-section of a part (see :meth:`Part.section`)."""
-    return part.section(plane)
+    """Cross-section of a part (see :meth:`Part.section`; of a mesh, :meth:`Mesh.section`)."""
+    return _subject(part, "section", "a part or a mesh").section(plane)  # type: ignore[no-any-return]
 
 
 def thicken(surface: Shell | Face, thickness: float, *, both: bool = False) -> Part:
@@ -2237,3 +2278,213 @@ def thicken(surface: Shell | Face, thickness: float, *, both: bool = False) -> P
                         f"use shell() or offset() for parts")
     sh = surface.to_shell() if isinstance(surface, Face) else surface
     return sh.thicken(thickness, both=both)
+
+
+def _subject(shape: Any, name: str, kinds: str) -> Any:
+    """The shape a function form works on, if it has the method of that name."""
+    if not callable(getattr(shape, name, None)):
+        raise TypeError(f"{name} takes {kinds}, not a {type(shape).__name__}")
+    return shape
+
+
+# -- Booleans ---------------------------------------------------------------------------------
+@overload
+def fuse(shape: Sketch, *others: Sketch | Sequence[Sketch]) -> Sketch: ...
+@overload
+def fuse(shape: Shell, *others: Shell | Part | Face | Sequence[Shell | Part | Face]) -> Shell: ...
+@overload
+def fuse(shape: Part, *others: Part | Sequence[Part]) -> Part: ...
+def fuse(shape: Part | Shell, *others: Any) -> Part | Shell:
+    """Union of bodies, ``a + b`` (see :meth:`Part.fuse`, :meth:`Shell.fuse`, :meth:`Sketch.fuse`)."""
+    return _subject(shape, "fuse", "a part, a sheet or a sketch").fuse(*others)
+
+
+@overload
+def cut(shape: Sketch, *others: Sketch | Sequence[Sketch]) -> Sketch: ...
+@overload
+def cut(shape: Shell, *others: Part | Sequence[Part]) -> Shell: ...
+@overload
+def cut(shape: Part, *others: Part | Sequence[Part]) -> Part: ...
+def cut(shape: Part | Shell, *others: Any) -> Part | Shell:
+    """A body less others, ``a - b`` (see :meth:`Part.cut`, :meth:`Shell.cut`, :meth:`Sketch.cut`)."""
+    return _subject(shape, "cut", "a part, a sheet or a sketch").cut(*others)
+
+
+@overload
+def intersect(shape: Sketch, *others: Sketch | Sequence[Sketch]) -> Sketch: ...
+@overload
+def intersect(shape: Shell, *others: Part | Sequence[Part]) -> Shell: ...
+@overload
+def intersect(shape: Part, *others: Any) -> Part | Shell: ...
+def intersect(shape: Part | Shell, *others: Any) -> Part | Shell:
+    """What bodies share, ``a & b`` (see :meth:`Part.intersect`, :meth:`Shell.intersect`,
+    :meth:`Sketch.intersect`)."""
+    return _subject(shape, "intersect", "a part, a sheet or a sketch").intersect(*others)
+
+
+def xor(sketch: Sketch, *others: Sketch | Sequence[Sketch]) -> Sketch:
+    """The region in exactly one of the sketches, ``a ^ b`` (see :meth:`Sketch.xor`)."""
+    return _subject(sketch, "xor", "a sketch").xor(*others)
+
+
+def imprint(part: Part, tool: Part | Shell | Face | Sketch | Edge | Wire | Sequence[Edge | Wire],
+            direction: Axis | VectorLike | None = None, *, nearest: bool = True) -> Part:
+    """The part's faces split where a tool crosses them (see :meth:`Part.imprint`)."""
+    return _subject(part, "imprint", "a part").imprint(tool, direction, nearest=nearest)
+
+
+# -- features and direct editing --------------------------------------------------------------
+def fillet_preview(edges: Any, radius: float, *, propagate: bool = True) -> ShapeList[Shell]:
+    """The surfaces of a fillet's rounds as untrimmed sheets, the part unchanged (see
+    :meth:`Part.fillet_preview`); takes the edges, as :func:`fillet` does."""
+    return _owner_part(edges).fillet_preview(edges, radius, propagate=propagate)
+
+
+def draft(part: Part, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:
+    """Tilt faces by a draft angle about a neutral plane (see :meth:`Part.draft`)."""
+    return _subject(part, "draft", "a part").draft(faces, angle, neutral_plane)
+
+
+def move_faces(part: Part, faces: Any, by: Location | VectorLike) -> Part:
+    """Move faces by a vector or a location, the part rebuilt around them (see :meth:`Part.move_faces`)."""
+    return _subject(part, "move_faces", "a part").move_faces(faces, by)
+
+
+def offset_faces(part: Part, faces: Any, distance: float) -> Part:
+    """Offset faces along their normals, the part rebuilt around them (see :meth:`Part.offset_faces`)."""
+    return _subject(part, "offset_faces", "a part").offset_faces(faces, distance)
+
+
+def remove_faces(part: Part, faces: Any, *, partial: bool = False) -> Part:
+    """The part with a hole, a boss or a pocket taken out (see :meth:`Part.remove_faces`)."""
+    return _subject(part, "remove_faces", "a part").remove_faces(faces, partial=partial)
+
+
+def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = None, partial: bool = False) -> Part:
+    """The part with fillets taken out and their edges sharp again (see :meth:`Part.remove_fillets`)."""
+    return _subject(part, "remove_fillets", "a part").remove_fillets(faces, max_radius=max_radius, partial=partial)
+
+
+# -- shaping parts and sheets -----------------------------------------------------------------
+@overload
+def push(shape: Part, face: Face, at: VectorLike, *, by: float | VectorLike | None = ..., to: VectorLike | None = ...,
+         normal: VectorLike | None = ..., radius: float | None = ...,
+         continuity: Literal["G0", "G1", "G2"] = ...) -> Part: ...
+@overload
+def push(shape: Shell, face: Face, at: VectorLike, *, by: float | VectorLike | None = ..., to: VectorLike | None = ...,
+         normal: VectorLike | None = ..., radius: float | None = ...,
+         continuity: Literal["G0", "G1", "G2"] = ...) -> Shell: ...
+def push(shape: Part | Shell, face: Face, at: VectorLike, *, by: float | VectorLike | None = None,
+         to: VectorLike | None = None, normal: VectorLike | None = None, radius: float | None = None,
+         continuity: Literal["G0", "G1", "G2"] = "G1") -> Part | Shell:
+    """A smooth dent or bump in a face at a point (see :meth:`Part.push`, :meth:`Shell.push`)."""
+    return _subject(shape, "push", "a part or a sheet").push(face, at, by=by, to=to, normal=normal, radius=radius,
+                                                            continuity=continuity)
+
+
+@overload
+def warp(shape: Part, face: Face, region: Any, by: float | VectorLike, *,
+         continuity: Literal["crease", "G1", "G2"] = ...) -> Part: ...
+@overload
+def warp(shape: Shell, face: Face, region: Any, by: float | VectorLike, *,
+         continuity: Literal["crease", "G1", "G2"] = ...) -> Shell: ...
+def warp(shape: Part | Shell, face: Face, region: Any, by: float | VectorLike, *,
+         continuity: Literal["crease", "G1", "G2"] = "G2") -> Part | Shell:
+    """Raise or sink a region of a face (see :meth:`Part.warp`, :meth:`Shell.warp`)."""
+    return _subject(shape, "warp", "a part or a sheet").warp(face, region, by, continuity=continuity)
+
+
+@overload
+def flatten(shape: Part, face: Face, region: Any, plane: Plane | Face, *,
+            continuity: Literal["crease", "G1", "G2"] = ...) -> Part: ...
+@overload
+def flatten(shape: Shell, face: Face, region: Any, plane: Plane | Face, *,
+            continuity: Literal["crease", "G1", "G2"] = ...) -> Shell: ...
+def flatten(shape: Part | Shell, face: Face, region: Any, plane: Plane | Face, *,
+            continuity: Literal["crease", "G1", "G2"] = "G2") -> Part | Shell:
+    """Press a region of a face onto a plane (see :meth:`Part.flatten`, :meth:`Shell.flatten`)."""
+    return _subject(shape, "flatten", "a part or a sheet").flatten(face, region, plane, continuity=continuity)
+
+
+@overload
+def extend(shape: Edge, distance: float, *, end: Literal["start", "end", "both"] = ...,
+           continuity: Literal["G1", "G2", "natural"] = ...) -> Edge: ...
+@overload
+def extend(shape: Shell | Face, distance: float, *, sides: Edge | Sequence[Edge] | None = ...,
+           continuity: Literal["natural", "G1", "G2"] = ...) -> Shell: ...
+def extend(shape: Shell | Face | Edge, distance: float, **kwargs: Any) -> Shell | Edge:
+    """Extend a sheet or a face past its edges (``sides``, ``continuity``: see :meth:`Shell.extend`,
+    :meth:`Face.extend`), or an edge past an end (``end``, ``continuity``: see :meth:`Edge.extend`)."""
+    return _subject(shape, "extend", "a sheet, a face or an edge").extend(distance, **kwargs)
+
+
+@overload
+def trim(shape: Shell, curves: Edge | Wire | Sequence[Edge | Wire], keep: VectorLike | str) -> Shell: ...
+@overload
+def trim(shape: Edge, start: float | VectorLike | Vertex, end: float | VectorLike | Vertex) -> Edge: ...
+@overload
+def trim(shape: Wire, start: float | VectorLike | Vertex, end: float | VectorLike | Vertex) -> Wire: ...
+def trim(shape: Shell | Edge | Wire, *args: Any) -> Shell | Edge | Wire:
+    """Trim a sheet with curves on it, keeping a side (``trim(sheet, curves, keep)``: see
+    :meth:`Shell.trim`), or an edge or a wire to a stretch of it (``trim(edge, start, end)``: see
+    :meth:`Edge.trim`, :meth:`Wire.trim`)."""
+    return _subject(shape, "trim", "a sheet, an edge or a wire").trim(*args)
+
+
+def match_edge(sheet: Shell, edge: Edge, target: Edge | Wire, *, extent: float = 0.25) -> Shell:
+    """An edge of a sheet moved onto a curve (see :meth:`Shell.match_edge`)."""
+    return _subject(sheet, "match_edge", "a sheet").match_edge(edge, target, extent=extent)
+
+
+def merge_faces(sheet: Shell, a: Face, b: Face) -> Shell:
+    """Two faces of a sheet that share a side made one (see :meth:`Shell.merge_faces`)."""
+    return _subject(sheet, "merge_faces", "a sheet").merge_faces(a, b)
+
+
+# -- curves and sketches made from bodies -----------------------------------------------------
+@overload
+def project(shape: Face, curve: Edge | Wire) -> ShapeList[Edge]: ...
+@overload
+def project(shape: Part | Shell, curve: Edge | Wire, direction: Axis | VectorLike = ..., *,
+            nearest: bool = ...) -> ShapeList[Edge]: ...
+def project(shape: Part | Shell | Face, curve: Edge | Wire, *args: Any, **kwargs: Any) -> ShapeList[Edge]:
+    """A curve projected onto a body along a direction (see :meth:`Part.project`), or onto a face
+    along its normals (see :meth:`Face.project`)."""
+    return _subject(shape, "project", "a part, a sheet or a face").project(curve, *args, **kwargs)
+
+
+def outline(shape: Part | Shell, plane: Plane = Plane.XY, *, hidden: bool = False,
+            tangent_edges: bool = False) -> ShapeList[Edge] | tuple[ShapeList[Edge], ShapeList[Edge]]:
+    """The lines of a view of a body, also its hidden ones (see :meth:`Part.outline`)."""
+    return _subject(shape, "outline", "a part or a sheet").outline(plane, hidden=hidden, tangent_edges=tangent_edges)
+
+
+def silhouette(shape: Part | Shell, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
+    """The contour of a body seen along a direction (see :meth:`Part.silhouette`)."""
+    return _subject(shape, "silhouette", "a part or a sheet").silhouette(direction)
+
+
+def intersection_curves(shape: Part | Shell, other: Part | Shell | Face | Plane) -> ShapeList[Edge]:
+    """The curves where a body meets another, a face or a plane (see :meth:`Part.intersection_curves`)."""
+    return _subject(shape, "intersection_curves", "a part or a sheet").intersection_curves(other)
+
+
+def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
+    """The parting lines of a part for a pull direction (see :meth:`Part.parting_line`)."""
+    return _subject(part, "parting_line", "a part").parting_line(direction)
+
+
+def slices(shape: Any, step: float, axis: Axis | VectorLike = Axis.Z) -> Any:
+    """Sections of a part (sketches) or a mesh (wires) every ``step`` along an axis (see
+    :meth:`Part.slices`, :meth:`smlibpy.Mesh.slices`)."""
+    return _subject(shape, "slices", "a part or a mesh").slices(step, axis)
+
+
+# -- changing a shape's size ------------------------------------------------------------------
+@overload
+def scale(shape: Mesh, factor: float | VectorLike, center: VectorLike = ...) -> Mesh: ...
+@overload
+def scale(shape: _S, factor: float | VectorLike, center: VectorLike = ...) -> _S: ...
+def scale(shape: Any, factor: float | VectorLike, center: VectorLike = (0, 0, 0)) -> Any:
+    """A scaled copy of a shape or a mesh, about ``center`` (see :meth:`Shape.scale`)."""
+    return _subject(shape, "scale", "a shape or a mesh").scale(factor, center)

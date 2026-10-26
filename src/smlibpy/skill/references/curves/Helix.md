@@ -53,12 +53,13 @@ it is fitted in pieces of 100 whole turns, joined into one edge (tangent at the 
 1e-6 rad): `Helix(2, 400, 20)` (200 turns) is one `bspline` edge, 25135.87 long against 25135.92
 for the exact helix, radius within 1e-4. No manual chaining.
 
-Sweeps have a limit of their own: `sweep(Circle(1.2), Helix(3, 3 * n, 20))` works for 60 turns
-and fails for 100 (`profile may be too large for the path's curvature`).
+Long sweeps work too: `sweep(Circle(1.2), Helix(3, 3 * n, 20))` is valid for 60, 150 and 300
+turns (300: 11 s).
 
 ## Gotchas
-- `part.bbox()` of a body swept along a helix can be about 0.1 mm too large. Check sizes with
-  vertices or `distance_to`.
+- Bodies swept along a helix are within about 1e-4 of their exact size:
+  `sweep(Rectangle(2, 1), Helix(4, 12, 8)).bbox()` reaches x = 9.00009 where 9 is exact. Compare
+  sizes with a tolerance.
 - `end_radius=0` (a cone to a point) fails; use a small positive radius.
 - The helix ends at the same angle it starts only for whole turns.
 

@@ -17,7 +17,8 @@ curves with straight lines; `make_face` fills a planar loop.)
 - `tangent`: `True` (default): where the curves are border edges of sheets, the patch meets each
   sheet tangentially along its edge. Then every curve must be such an edge, and the sheets must
   meet each other tangentially where the edges meet (a hole in one smooth sheet; a corner between
-  three rounds). `False`: through the curves only.
+  three rounds). `False`: through the curves only. The edges around a planar face (a sketch's
+  region) are taken as curves either way: a patch tangent to the face would cover it.
 
 ## Returns
 A `Shell`, the patch:
@@ -25,7 +26,9 @@ A `Shell`, the patch:
   opposite sides; in the middle the two sides' bulges add up).
 - 5 sides and more: an N-sided fill, one face per side, sewn, meeting in the middle.
 - 3 sides: through curves only an N-sided fill of three faces; tangent, a Coons patch whose fourth
-  side shrinks to a point at one corner (a pole: `thicken` of it fails or hangs). Three curves
+  side shrinks to a point at one corner (a pole, where `thicken` may fail: the patch of a
+  triangular hole in a paraboloid thickens by 0.5 but raises `KernelError` by -0.5, and sewn to the
+  sheet it was stopped after 20 s; a box corner between three rounds thickens). Three curves
   without corners between them (a rim in three pieces) make four sides instead.
 
 Its normal follows the sheets it is tangent to; through curves only, the right-hand rule around
@@ -34,29 +37,32 @@ a closed curve cut into four, about 50 ms.
 
 ## Measured
 - Four bulged splines on a 10 mm square (bulges 2 and 1): one face, area 112.2176, through every
-  curve (1e-16), top at z 3.0 (= 2 + 1). Shuffled and reversed curves give the same patch.
+  curve (1e-14), top at z 3.0 (= 2 + 1). Shuffled and reversed curves give the same patch.
 - Sphere r 10 with the cap above z 8 cut off: the cap filled tangent (one face, 0.0004 degrees off
   the sphere's normals along the rim), stitched to the sphere a valid Part of 4141.58 (the whole
-  sphere 4188.79). Holes cut at z 9, 6, 4, 2.5: 4179.60, 3929.30, 3494.81, 3030.83 (0.004 degrees
+  sphere 4188.79). Holes cut at z 9, 6, 4, 2.5: 4179.60, 3929.30, 3494.81, 3030.83 (0.008 degrees
   off at most), the same at the bottom (cut below z -8: 4141.58) and on a sphere turned by any
   quarter turns, for the holes facing each axis (4141.58 within 1e-4). Turned by other angles, the
-  rim comes in pieces at other places: 4139.5 to 4144.5, as tangent.
+  rim comes in pieces at other places: 4136.7 to 4144.9 in five turns tried, tangent to 0.03
+  degrees.
 - Paraboloid sheet with a rectangular hole: tangent to 0.001 degrees; round hole (one closed
-  edge): 0.015 degrees. Pentagon and hexagon holes (N-sided): 1.35 and 1.2 degrees halfway between
+  edge): 0.003 degrees. Pentagon and hexagon holes (N-sided): 1.34 and 1.19 degrees halfway between
   a side's middle and its ends, 0 at the corners and the middles: the kernel's N-sided fill
   approximates the tangency, whatever tolerance it is given. Checked: at most 2 degrees for five
   sides and more, 0.5 for three and four, else `ModelingError`.
 
 ## Errors
 - `ValueError: fill: the curves do not close: the loop ends 10 from where it starts, at (...)`,
-  `... no curve starts or ends at (...)`: a gap in the loop (more than 1e-4 of its size).
+  `ValueError: fill: the curves do not form a closed loop: no curve starts or ends at (...)`: a gap
+  in the loop (more than 1e-4 of its size).
 - `ValueError: fill: either every curve is an edge of a sheet ... or none is; mixed loops are not
   supported`: with `tangent=True`, some curves border sheets and some do not. Pass
   `tangent=False`, or make sheets of the free curves first.
 - `ValueError: fill: an edge lies between two faces`: an edge of a part, or inside a sheet.
-- `ModelingError: fill: the patch folds back over the sheets` or `... meets a sheet at 90
-  degrees, not tangentially`: a sheet that stands steep to the loop (a cylinder's wall around its
-  open top, a sphere cut below z 2 of r 10). Fill with `tangent=False`, or close the hole lower.
+- `ModelingError: fill: the patch folds back over the sheets; fill the hole in pieces` or `... meets
+  a sheet at 90 degrees, not tangentially ...`: a sheet that stands steep to the loop (a cylinder's
+  wall around its open top, a sphere r 10 cut at z 0 or below; at z 0.5 it fills). Fill with
+  `tangent=False`, or cut the hole where the sheet is less steep.
 
 ## Example
 A spherical shell with a hole at the top, closed with a tangent cap and thickened:

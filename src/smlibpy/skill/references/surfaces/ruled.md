@@ -12,17 +12,17 @@ A ruled surface: straight lines join matching points of two curves. Returns a `S
 A `Shell`: one `"bspline"` face with 4 edges (two curves, two rulings at the ends). Two closed
 curves give a closed band: 2 edges plus 1 seam. Exact for lines and circles: circle r20 to
 circle r5 30 above has area 2634.306 (frustum formula 2634.306); helix to its axis gives a
-helicoid of the exact area.
+helicoid within 4e-6 of the formula's area (the helix is a NURBS fit, 2e-6 short).
 
 ## Which points are joined
 Points at the same **normalized curve parameter** (0..1 on each curve), not at the same
 fraction of length.
 
 - Lines, circles and arcs: the parameter follows the length, so the rulings are even.
-- Splines are parameterized by the chord lengths between their points. A spline with points
-  bunched at one end slides its rulings: `Line` 0..20 against a spline through x = 0, 2, 4, 20
-  joins line x = 5 to spline x = 2 and line x = 10 to spline x = 4.2. Give both curves points at
-  matching places, or use `loft`.
+- Splines are parameterized by the square roots of the distances between their points
+  (centripetal). A spline with points bunched at one end slides its rulings: `Line` 0..20 against
+  a spline through x = 0, 2, 4, 20 joins line x = 5 to spline x = 2.37 and line x = 10 to spline
+  x = 5.3. Give both curves points at matching places, or use `loft`.
 - Both curves must run the **same way**. A reversed curve gives a bow tie (crossing in the
   middle, area halved, normal flipping across the crossing). Fix with `edge.reversed()`.
 - Two circles that start at different angles give a twisted band; one clockwise and one

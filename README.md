@@ -61,7 +61,8 @@ edges are picked by their geometry, for example `part.faces().top()` or
 
 **[Deformation](https://smlibpy.classcad.ch/docs/deform)**
 - `twist`, `taper` and `bend` work on finished parts, and on edges, wires and points. A tapered
-  cylinder becomes an exact cone, a bent plate exact cylinders (sheet metal you can unfold).
+  cylinder becomes an exact cone, a plate bent by up to 90 degrees exact cylinders (sheet metal
+  you can unfold).
 - `unroll` lays a part wrapped around an axis out flat
 - Free-form deformation with a `Lattice`
 
@@ -86,9 +87,9 @@ undercut. `parting_line` finds the parting line.
 - Curves: `Line`, `Polyline`, `PolarLine`, `CenterArc`, `ThreePointArc`, `RadiusArc`,
   `SagittaArc`, `TangentArc`, `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`,
   `Spline`, `Bezier`, `Helix` (any number of turns), `Spiral`, `FilletPolyline`, `fit_curve`
-  (through noisy points within a tolerance); trim, split, extend, join, offset, `to_arcs` (lines
-  and arcs for CNC), curvature and inflections, `through` and `match` to bend an edge; their NURBS
-  data (`nurbs()`, `Edge.from_nurbs`), `make_compatible`, `remove_knots`
+  (a smooth curve near noisy points, within a tolerance); trim, split, extend, join, offset,
+  `to_arcs` (lines and arcs for CNC), curvature and inflections, `through` and `match` to bend an
+  edge; their NURBS data (`nurbs()`, `Edge.from_nurbs`), `make_compatible`, `remove_knots`
 - Surfaces: `surface` through a grid of points or fitted to a cloud of points (a scan, with a
   report of the distances), `nurbs_surface`, `ruled`, `surface_fillet` (a round or chamfer between
   two sheets), `blend` (a G1/G2/G3 bridge between sheet edges), `fill` and `network` (patches in
@@ -161,7 +162,7 @@ pip install smlibpy
 ```
 
 There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for Python
-3.10 to 3.14, with the kernel compiled in. They are 5 to 7 MB, and numpy is the only
+3.10 to 3.14, with the kernel compiled in. They are 8 to 11 MB, and numpy is the only
 dependency. For agents, `pip install "smlibpy[mcp]"` adds the MCP server; see
 [AI agents](https://smlibpy.classcad.ch/docs/mcp).
 
@@ -220,7 +221,7 @@ const step = toStep(plate) // the STEP file as text
 
 Names are camelCase, keyword arguments become an options object, and operators become methods
 (`a.cut(b)` for `a - b`). `@classcad/smlibwasm/worker` runs models in a Web Worker with timeouts. A
-browser loads about 2.8 MB with brotli: 2.2 MB for the kernel (`smlibwasm.wasm`, 9.2 MB
+browser loads about 2.9 MB with brotli: 2.2 MB for the kernel (`smlibwasm.wasm`, 9.4 MB
 uncompressed) and 0.6 MB for the library, its font and the dictionary of WOFF2 fonts. The
 [JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes, examples for the browser and the whole API in
 TypeScript; the source is in [`js/`](js).
@@ -313,7 +314,7 @@ The documentation is on [smlibpy.classcad.ch](https://smlibpy.classcad.ch/docs/)
 
 ## Status
 
-smlibpy is new (version 0.3). It covers solid and surface modeling, text, and reads and writes
+smlibpy is new (version 0.5). It covers solid and surface modeling, text, and reads and writes
 STEP, USD, OpenCASCADE `.brep` and DXF with the exact geometry (IGES it reads); smlibwasm has all of
 it in JavaScript. Assembly trees beyond a product per body, and dimensions on 2D drawings, are not
 there yet.

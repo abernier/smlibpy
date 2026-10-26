@@ -21,8 +21,11 @@ there is no public constructor.
 | `split(curves)` | the pieces of a copy of the face cut along curves on it (see `trim`); the face's body does not change |
 | `flipped()` | a Shell with a copy of the face turned over (normal reversed) |
 | `untrimmed()` | a Shell of the whole surface the face lies on: holes and cut borders gone; a plane as the smallest rectangle around the face (see `extend`) |
-| `extended(distance, sides=None, continuity="natural")` | a Shell of the face's surface grown past its sides; planes stay planes, cylinders and spheres the same (see `extend`) |
-| `extrude(amount)` | a Part from a planar face, `amount` along the outward normal |
+| `extend(distance, sides=None, continuity="natural")` | a Shell of the face's surface grown past its sides; planes stay planes, cylinders and spheres the same (see `extend`) |
+| `offset(distance)` | a Shell of a copy of the face moved `distance` along its outward normals |
+| `extrude(amount)` | a Part from a planar face, `amount` along the outward normal (the options of `Sketch.extrude`) |
+| `project(curve)` | an edge or wire projected onto the face along its normals, clipped to the face: a ShapeList of edges (see `analysis/project`) |
+| `color`, `name` | the face's own color `(r, g, b)` and name, or None (see `files/face_colors`) |
 | `distance_to(point)`, `bbox()` | true distance (also to a body), tight bounding box |
 | `closest_point(point)`, `uv_at(point)`, `position_at(u, v)` | nearest point on the face, its parameters (fractions of the face's parameter box), the surface point there; see `closest_points` |
 | `curvature_at(point=None)`, `min_radius()` | principal curvatures and directions; smallest radius of curvature; see `curvature_at` |
@@ -55,7 +58,9 @@ there is no public constructor.
   `is_planar == True` and a `plane`; `geom_type` stays `"bspline"`.
 - `radius` and `axis` raise `ValueError: a plane face has no radius` / `... no axis` on planes.
   Narrow with `cylinders()` first.
-- `center()` and `area` are computed by integration: expect noise of about 1e-6 in coordinates.
+- `center()` and `area` are computed by integration, to 1e-7 relative or better: expect noise in
+  the last digits (the center of `Cylinder(5, 10)`'s side face is 8.5e-11 off its axis), and
+  compare with a tolerance.
 - A face moved with `translate`/`rotate` is a face of a new Shell, not of the part.
 
 ## Example

@@ -449,7 +449,7 @@ test('DXF: units', (ctx) => {
   }
   approx(importDxf(dxf(dir, circle([0, 0], 1))).bbox().size.x, 2) // no header: mm
   approx(importDxf(dxf(dir, circle([0, 0], 1)), { unit: 'inch' }).bbox().size.x, 50.8)
-  assert.throws(() => importDxf(dxf(dir, circle([0, 0], 1)), { unit: 'MM' }), (e) => e instanceof RangeError && /unknown unit/.test(e.message))
+  assert.throws(() => importDxf(dxf(dir, circle([0, 0], 1)), { unit: 'MM' as never }), (e) => e instanceof RangeError && /unknown unit/.test(e.message))
 })
 
 test('DXF: blocks', (ctx) => {

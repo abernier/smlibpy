@@ -15,8 +15,9 @@ grip = Cylinder(12, 90).taper(0.7)
 ```
 
 Every deformation moves each point of space, and every face, edge and vertex of the part
-moves with it. The result is again a closed solid with the same faces and edges, so
-selections such as `faces().sort_by(Z)[-1]` work as before.
+moves with it. The result is again a closed solid with the same faces and edges (split where a
+deformation limited by `start`, `end` or `radius` begins and ends), so selections such as
+`faces().sort_by(Z)[-1]` work as before.
 
 ## Exact results
 
@@ -25,7 +26,8 @@ Wherever the mathematics allows it, the results are exact:
 - **Analytic faces stay analytic.** Where the exact image of a face is a plane, cylinder or
   cone, the result has that surface, and lines and circles stay lines and circles. A plate
   bent about an axis gets exact cylinders there (so `faces().cylinders()`, `Face.radius` and
-  sheet metal's `bends()` and `unfold` see the bend), a tapered cylinder is an exact cone, the
+  sheet metal's `bends()` and `unfold` see the bend; for bends of up to 90 degrees and of 120,
+  135, 180, 240 and 270, NURBS at other angles), a tapered cylinder is an exact cone, the
   turned ends of a twisted bar are planes, a rolled sheet unrolls into planes, and faces a
   map leaves in place (the bottom of a block whose top a lattice lifts) keep what they were.
   A twist turns every cross-section about its axis, so a cylinder, cone, sphere or torus about
@@ -102,9 +104,11 @@ down = Box(100, 10, 10).bend(-90, radius=20, start=10)         # down, starting 
 The radius must be larger than the part's thickness on the inside of the bend. Bends of
 more than half a turn with long legs can make the legs cross; that is not detected.
 
-Planes across the bend become exact cylinders about the bend axis. A bent plate is therefore
-a sheet metal part: `bends()` finds the bend, and `unfold()` lays it flat again with the
-K-factor the bend's neutral layer gives (where the plane's origin lies in the thickness: 0.5
+Planes across the bend become exact cylinders about the bend axis, for bends of up to 90
+degrees and of 120, 135, 180, 240 and 270 (at other angles they are NURBS within the
+tolerance, which `bends()` and `unfold()` do not take for a bend). Such a bent plate is
+therefore a sheet metal part: `bends()` finds the bend, and `unfold()` lays it flat again with
+the K-factor the bend's neutral layer gives (where the plane's origin lies in the thickness: 0.5
 for a plate bent about its middle layer):
 
 ```python
@@ -212,9 +216,8 @@ print(twist([(10, 0, 0), (10, 0, 100)], 90, start=0, end=100))
 Deform when a simple part gets a smooth overall change and its features should follow:
 twisted vases, columns and blades, bent handles and brackets with holes, tapered grips and
 legs, soft free-form tops. Model directly when the shape is easier to draw (a tube with
-several bends along a known path is a sweep), when a feature must keep its exact shape
-(add it after the deformation, so a bore drilled into a tapered grip stays round), or when
-the part will be offset outward, which the kernel cannot do for most deformed parts. A change
+several bends along a known path is a sweep), or when a feature must keep its exact shape
+(add it after the deformation, so a bore drilled into a tapered grip stays round). A change
 on one face (a bump or dent) is no deformation either: `Part.push` and `Part.warp` shape that
 face alone (see [Shaping faces](surfaces.md#shaping-faces-push-warp-flatten)), where a `Lattice`
 moves the whole part.

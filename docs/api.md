@@ -66,7 +66,7 @@ Everything below is importable from `smlibpy` directly.
 
 ## Deformations
 
-::: smlibpy.deform
+::: smlibpy.deformations
 
 ## Surfaces
 
@@ -82,7 +82,7 @@ Everything below is importable from `smlibpy` directly.
 
 ## Molding
 
-::: smlibpy.draft
+::: smlibpy.molding
 
 ## Meshes
 
@@ -123,10 +123,10 @@ Everything below is importable from `smlibpy` directly.
 ## Viewer
 
 ::: smlibpy.viewer.show
-::: smlibpy.render.render
-::: smlibpy.render.diff_images
-::: smlibpy.render.Picture
-::: smlibpy.render.ImageDiff
+::: smlibpy.pictures.render
+::: smlibpy.pictures.diff_images
+::: smlibpy.pictures.Picture
+::: smlibpy.pictures.ImageDiff
 ::: smlibpy.viewer.html_page
 
 ## Errors

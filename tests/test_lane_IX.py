@@ -1917,7 +1917,7 @@ def test_brep_writes_bodies_and_sheets_into_one_compound():
 def test_brep_writer_refuses_what_it_cannot_write():
     with pytest.raises(TypeError, match="to_brep: a .brep file holds exact bodies, not a Mesh"):
         to_brep(Box(1, 1, 1).mesh())
-    with pytest.raises(TypeError, match="to_brep writes parts, sheets, faces and meshes, not an Edge"):
+    with pytest.raises(TypeError, match="to_brep writes parts, sheets and faces, not an Edge"):
         to_brep(Box(1, 1, 1).edges()[0])
     with pytest.raises(ValueError, match="to_brep: nothing to write"):
         to_brep([])

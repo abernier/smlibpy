@@ -7,7 +7,8 @@ A flat (Archimedean) spiral: spiral springs, scroll grooves, flat coils.
 
 - `start_radius`, `end_radius`: the radius at the start and at the end; it changes evenly with
   the angle. Either may be 0 (from or to the center), not both; they must differ.
-- `turns`: the number of turns, > 0; fractions and any number work.
+- `turns`: the number of turns, > 0; fractions work, but less than a turn with a large change of
+  radius fails (see Errors).
 - `plane`: the spiral's plane; it turns around the plane's origin.
 - `clockwise=True`: clockwise seen from the plane's normal (default counterclockwise).
 
@@ -28,6 +29,10 @@ inward = Spiral(20, 0, 3, Plane.XZ, clockwise=True)    # ends at the center, in 
 - `ValueError: Spiral: start_radius and end_radius must differ ...` (equal radii are a circle
   gone round again and again; use `CenterArc`).
 - `ValueError: Spiral: the radii must not be negative`, `ValueError: Spiral: turns must be positive`.
+- `KernelError: Spiral failed (SM_ERR_NOT_WITHIN_TOLERANCE)`: less than a turn with a large
+  change of radius. `Spiral(2, 20, t)` fails for t = 0.1 to 0.5 and works from 0.75;
+  `Spiral(20, 0, t)` and `Spiral(0, 20, t)` fail up to 0.75 and work from 0.9; `Spiral(10, 12, t)`
+  works from 0.1. Also `Spiral(20, 0, 130)` fails (`SM_ERR_INVALID_INPUT`; 10 and 250 turns work).
 
 ## Related
 `Helix` (rising), `features/sweep`.

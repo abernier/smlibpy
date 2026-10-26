@@ -12,7 +12,8 @@ another body (`Part`, `Shell`, `Sketch`), a `Face`, an `Edge` or a `Wire`.
 shapes and their faces: `closest_points` (also `Face/Edge/Wire.closest_point`).
 
 On `Part`, `Shell` and `Sketch`. `Face`, `Edge` and `Wire` have `distance_to(point)` and
-`distance_to(body)` (the body's distance to them); `Vertex` has `distance_to(point)`.
+`distance_to(body)` (the body's distance to them); `Vertex` has `distance_to(point)` and
+`distance_to(shape)`.
 
 ## What the number means
 
@@ -30,7 +31,7 @@ So a non-zero distance does not mean "apart": one body may lie inside the other,
 Above 0 the surfaces do not cross, so a point of each body's surface decides, in both directions:
 `a.contains(b.faces()[0].interior_point()) or b.contains(a.faces()[0].interior_point())` (see
 `classify`; a sphere r2 in a box 10 is inside the box, the box not inside the sphere). An
-intersection, `len((a & b).faces()) > 0`, tells as well but takes seconds on parts of many faces.
+intersection, `len((a & b).faces()) > 0`, tells as well (0.2 s for two plates of 87 faces).
 
 `closest_point` of a point inside returns the nearest surface point
 (`(1, 2, 3)` in a 10 mm box gives `(1, 2, 5)`). For the center of a sphere it returns one of
@@ -51,8 +52,8 @@ large.
   the list.
 - A face counts as the sheet it is (its own boundary, not the whole surface); an edge or a wire
   as the curve between its ends (before 0.5.0 they raised `TypeError`).
-- Body-body distance takes a few to about 100 ms (both bodies are tessellated to find
-  starting points); point queries under 0.1 ms.
+- Body-body distance takes 10 to 25 ms for the bodies of the example, 0.9 s for two plates of 87
+  faces (both bodies are tessellated to find starting points); point queries under 0.01 ms.
 
 ## Example
 

@@ -65,7 +65,7 @@ const _PLACES: Record<string, [number, number]> = { front: [0, 0], top: [0, -1],
 
 /** How `drawingViews` draws: see there. */
 export interface DrawingViewsOptions {
-  projection?: string
+  projection?: 'first-angle' | 'third-angle'
   hidden?: boolean
   tangentEdges?: boolean
   gap?: number | null

@@ -11,10 +11,11 @@ segment by segment, and shapes built from other geometry (`Hull`, `Stroke`, `mak
 
 ## Shapes
 
-Every shape is centered on the origin. They share their options: `rotation` turns the shape
-about its center (degrees, counterclockwise), `align` moves it relative to the origin, and the
-shapes with corners take `fillet` (round every corner with that radius) or `chamfer` (bevel
-every corner by that length).
+Every shape is centered on the origin (an `ArcSlot` by the center of its arc; a `Polygon` keeps
+its points where they are). They share their options: `rotation` turns the shape about its
+center (degrees, counterclockwise), `align` moves it relative to the origin, and the shapes with
+corners take `fillet` (round every corner with that radius) or `chamfer` (bevel every corner by
+that length).
 
 ```python
 from smlibpy import *
@@ -112,10 +113,11 @@ cross = Rectangle(40, 8) + Rectangle(8, 40)
 lens = Circle(10).translate(-5, 0) & Circle(10).translate(5, 0)
 ```
 
-`+` unites, `-` subtracts, `&` intersects and `^` keeps what is in exactly one of them. The
-sketches must lie in the same plane. A list or a pattern on the right side is combined in one
-step, which is fast even for hundreds of holes. A result can be empty (cutting away everything,
-or intersecting regions that do not meet); extruding an empty sketch raises.
+`+` unites, `-` subtracts, `&` intersects and `^` keeps what is in exactly one of them; by name
+they are `fuse`, `cut`, `intersect` and `xor`, as methods and functions (`a.cut(b)`,
+`cut(a, b)`). The sketches must lie in the same plane. A list or a pattern on the right side is
+combined in one step, which is fast even for hundreds of holes. A result can be empty (cutting
+away everything, or intersecting regions that do not meet); extruding an empty sketch raises.
 
 ## Hulls and strokes
 
@@ -186,9 +188,9 @@ blob = make_face(Spline((0, 0), (10, 5), (0, 10), (-10, 5), closed=True))
 ```
 
 The curve constructors (`Line`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `TangentArc`,
-`Spline`, `Bezier`, ...) are described in the curves guide. Among them are conic arcs and flat
-spirals, exact where NURBS can be (a conic is one rational quadratic), and edges made from NURBS
-data, the inverse of `edge.nurbs()`:
+`Spline`, `Bezier`, ...) are described in the [API reference](api.md#curves). Among them are
+conic arcs and flat spirals, exact where NURBS can be (a conic is one rational quadratic), and
+edges made from NURBS data, the inverse of `edge.nurbs()`:
 
 ```python
 reflector = ParabolicArc((0, 0), 25, -40, 40)       # y = x^2 / 100 from x = -40 to 40, focus (0, 25)

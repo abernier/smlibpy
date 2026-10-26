@@ -4,7 +4,7 @@ Closes the holes of a mesh, and repairs what scans and STL files from elsewhere 
 
 ## Signatures
 `mesh.fill_holes() -> Mesh`
-`mesh.repaired() -> tuple[Mesh, dict]`
+`mesh.repaired() -> tuple[Mesh, RepairReport]`
 
 ## fill_holes
 Every hole (a border of edges that only one triangle has, closing on itself) is filled with
@@ -23,7 +23,7 @@ Returns `(mesh, report)`. In this order:
    volume), an open piece as most of its triangles did.
 4. Holes are filled, as `fill_holes`.
 
-The report counts `merged_vertices`, `removed_triangles`, `flipped_triangles`, `filled_holes`,
+The report, a `RepairReport`, counts `merged_vertices`, `removed_triangles`, `flipped_triangles`, `filled_holes`,
 `open_holes` (borders that do not close on themselves, left open) and `open_edges` (edges of the
 result not shared by two triangles: 0 for a closed mesh). Normals of turned triangles turn too.
 
@@ -33,8 +33,8 @@ scan = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)
 holed = Mesh(scan.vertices, scan.triangles[1:])         # a triangle missing
 print(holed.is_closed(), holed.fill_holes().is_closed()) # False True
 fixed, report = holed.repaired()
-print(report)   # {'merged_vertices': 0, 'removed_triangles': 0, 'flipped_triangles': 0,
-                #  'filled_holes': 1, 'open_holes': 0, 'open_edges': 0}
+print(report.filled_holes, report.open_edges)            # 1 0
+print(report)   # RepairReport(merged_vertices=0, removed_triangles=0, flipped_triangles=0, filled_holes=1, open_holes=0, open_edges=0)
 print(round(fixed.volume, 3), round(scan.volume, 3))     # 21740.176 21740.176
 ```
 

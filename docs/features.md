@@ -2,7 +2,8 @@
 
 Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring, drafting,
 moving and offsetting faces.
-Each one is a method of `Part` that returns a new part.
+Each one is a method of `Part` that returns a new part, and a function of the same name that takes
+the part first: `part.draft(faces, 3, Plane.XY)` is `draft(part, faces, 3, Plane.XY)`.
 
 ## Fillets
 
@@ -17,8 +18,8 @@ Select the edges, give a radius. Edges can come from the part, from a face
 (`box.faces().top()` rounds all its edges) or from an earlier version of the same part:
 smlibpy matches them by position.
 
-The free function `fillet(edges, radius)` finds the part the edges belong to, which reads
-well when the selection says it all:
+The function `fillet(edges, radius)` takes no part: it finds the part the edges belong to (as
+`chamfer` and `fillet_preview` do), which reads well when the selection says it all:
 
 ```python
 rounded = fillet(box.edges().parallel_to(Z), 5)
@@ -146,7 +147,7 @@ The keyword `corners` names a different choice in each operation that has it:
 | `offset` | `"sharp"` (default), `"round"` | the convex edges of the offset: faces extended, or rolled round |
 | `shell` | `None` (default: either), `"round"`, `"sharp"` | the edges of the cavity, as for `offset` |
 | `Sketch.extrude(taper=...)`, `extrude` | `"sharp"` (default), `"round"` | the corners of a tapered profile |
-| `Wire.offset`, `Sketch.offset` | `"round"` (default), `"sharp"`, `"chamfer"` | the corners that open up |
+| `Wire.offset`, `Sketch.offset`, `Stroke` | `"round"` (default), `"sharp"`, `"chamfer"` | the corners that open up |
 
 ### What can't be rounded
 
@@ -218,7 +219,8 @@ plate = Box(40, 30, 10) - Cylinder(5, 20)
 countersunk = plate.chamfer(plate.edges().circles(), 1)   # 11181.0915, exactly the plate less 2 rings
 ```
 
-The kernel fits other bevels with B-spline faces, which meet their neighbours to about 1e-5 mm.
+The kernel fits other bevels with B-spline faces: between planes they meet their neighbours
+exactly, along curved faces to 2e-5 to 4e-5 mm.
 
 ## Shell
 
@@ -243,7 +245,7 @@ tray = body.shell(2, body.faces().planar().top())   # 11134.3949: the closed she
 
 The inner rounds then end tangentially at the opening's rim, so the wall runs out to an edge
 there. Other openings with such a rim (a curved face, a drafted wall next to it) still raise
-`ModelingError`; shell such a part before rounding the rim.
+`KernelError`; shell such a part before rounding the rim.
 
 Where the part's faces grow apart as the walls are built (the inside of a concave edge for walls
 that grow inward, the outside of the convex edges for walls that grow outward), the kernel can
@@ -321,7 +323,7 @@ lid = Box(20, 20, 20).faces().top().one().offset(5)  # a copy of the top face, 5
 part = Box(40, 30, 20) - Cylinder(8, 30)
 upper = part.split(Plane.XY)                       # keeps the side the normal points to
 lower = part.split(Plane.XY, keep="below")
-left, right = part.split(Plane.YZ, keep="both")
+right, left = part.split(Plane.YZ, keep="both")    # (above, below): Plane.YZ's normal is +X
 
 cut = part.section(Plane.XY)                       # the cross-section, as a sketch
 print(cut.area)                                    # 40 * 30 - pi * 8^2
@@ -412,7 +414,8 @@ print([round(c.volume, 1) for c in block_with_insert.cells()])   # [29738.1, 226
 Each cell is named and colored after the parts it lies in, its `sources`: a cell where a steel
 part and a brass part overlap is "steel&brass", in the color of the last of them that has one. The
 kernel keeps no record of where a cell came from; smlibpy classifies a point inside each cell
-against the parts given to `merge` (as given: not moved along with the merged part):
+against the parts given to `merge`, also after the merged part is moved (`cell.sources` holds
+them as given, not moved along with it):
 
 ```python
 steel = Box(40, 40, 20).named("steel").colored("gray")
@@ -534,9 +537,9 @@ wider_slot = plate.offset_faces(plate.faces().cylinders()[0], -1)   # 18 x 8; it
 0) meets the moved cylinder face at (-6.91, 0, 0) tangentially, so it must be moved with it ...;
 add it to the faces`). The results are exact: planes, cylinders, cones, spheres and tori keep
 their kind and size, and the edges where a plane meets a cylinder, cone or sphere stay circles.
-The kernel cannot change which faces meet: a face pushed past another one, or a face that would
-vanish, raises `ModelingError` (use a Boolean there). The kernel drops cavities: a part with
-cavities is edited (and drafted) as its outside and the solids inside its cavities' walls, each
+The kernel cannot change which faces meet: a face that would vanish raises `ModelingError` (use a
+Boolean there). The kernel drops cavities: a part with cavities is edited (and drafted) as its
+outside and the solids inside its cavities' walls, each
 with the faces of it that are selected, and the cavities are cut out again; an edit that makes a
 cavity reach the outside or another cavity raises `ModelingError`, and so does a part with a body
 inside a cavity. Faces around the edited ones that the kernel extends keep their cylinder or cone.

@@ -12,8 +12,8 @@ usual way to draw levers, links, cam outlines and tapered slots.
 ## Returns
 A `Sketch` with exact `line` and `circle` edges, on the plane of the first sketch given (XY
 otherwise). Nothing is centered.
-- `Hull(Circle(10), Pos(60, 0) * Circle(6))`: 2 arcs and 2 tangent lines, area 1175.7623
-  (closed form 1175.7624).
+- `Hull(Circle(10), Pos(60, 0) * Circle(6))`: 2 arcs and 2 tangent lines, area 1175.7624 (the
+  closed form, to 1e-10).
 - `Hull(Rectangle(20, 10), Pos(20, 0) * Circle(5))`: 339.2699 = 300 + 12.5*pi.
 - `Hull((0, 0), (10, 0), (5, 8), (5, 2))`: the triangle, area 40; inner points drop out.
 - `Hull(CenterArc((0, 0), 10, 0, 180), (0, -5))`: only the arc's span counts: 207.0796.

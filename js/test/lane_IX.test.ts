@@ -746,7 +746,7 @@ test('offset planes are written as offset surfaces', () => {
   approx(back.volume, 1200, 1e-9)
 })
 
-for (const unit of ['mm', 'inch']) {
+for (const unit of ['mm', 'inch'] as const) {
   test(`offset fillets of smb files round trip (${unit})`, () => {
     // vase.smb: four fillets on offset surfaces. The whole body went to NURBS: the volume changed by
     // 7.7e-3 and the planes came back as B-splines (11 B-spline faces), without a warning. Now the
@@ -832,7 +832,7 @@ function _wireframeItems(): Any[] {
   ]
 }
 
-for (const unit of ['mm', 'inch']) {
+for (const unit of ['mm', 'inch'] as const) {
   test(`exportStep writes curves, points and frames (${unit})`, () => {
     // exportStep(Line(...)) threw "'Edge' object is not iterable"; readStep reads curves, points and
     // coordinate systems, but nothing wrote them.
@@ -935,7 +935,7 @@ for (const [unit, perMm] of [
   ['m', 0.001],
   ['um', 1000],
   ['inch', 1 / 25.4],
-] as [string, number][]) {
+] as ['mm' | 'cm' | 'm' | 'um' | 'inch', number][]) {
   test(`step uncertainty is the same length in any unit (${unit})`, () => {
     // 1e-7 was written in the file's unit: 1e-4 mm in a file in meters, 2.5e-6 mm in inches.
     const text = toStep(Box(1, 1, 1), { unit })
@@ -1867,7 +1867,7 @@ test('brep writes bodies and sheets into one compound', () => {
 
 test('brep writer refuses what it cannot write', () => {
   assert.throws(() => toBrep(Box(1, 1, 1).mesh()), (e: unknown) => e instanceof TypeError && /toBrep: a .brep file holds exact bodies, not a Mesh/.test(e.message))
-  assert.throws(() => toBrep(Box(1, 1, 1).edges()[0]), (e: unknown) => e instanceof TypeError && /toBrep writes parts, sheets, faces and meshes, not an Edge/.test(e.message))
+  assert.throws(() => toBrep(Box(1, 1, 1).edges()[0]), (e: unknown) => e instanceof TypeError && /toBrep writes parts, sheets and faces, not an Edge/.test(e.message))
   assert.throws(() => toBrep([]), (e: unknown) => e instanceof RangeError && /toBrep: nothing to write/.test(e.message))
   assert.throws(
     () => toBrep(Box(2, 2, 2).intersect(Box(2, 2, 2).translate([10, 0, 0]))),

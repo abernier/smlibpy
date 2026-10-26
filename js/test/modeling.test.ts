@@ -152,7 +152,7 @@ test('sketch areas', () => {
 test('sketch offset', () => {
   approx(Rectangle(20, 10).offset(1).area, 22 * 12 - (4 - PI))
   approx(Rectangle(20, 10).offset(-1).area, 18 * 8)
-  approx(Rectangle(20, 10).offset(1, { round: false }).area, 22 * 12)
+  approx(Rectangle(20, 10).offset(1, { corners: 'sharp' }).area, 22 * 12)
 })
 
 test('extrude variants', () => {

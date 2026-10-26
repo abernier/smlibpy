@@ -84,11 +84,51 @@ export { AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, H
 // patterns
 export { GridLocations, HexLocations, Locations, PolarLocations, type LocationLike } from './locations.ts'
 // operations
-export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, swing, thicken } from './operations.ts'
+export {
+  chamfer,
+  cut,
+  draft,
+  extend,
+  extrude,
+  fillet,
+  filletPreview,
+  flatten,
+  fuse,
+  imprint,
+  intersect,
+  intersectionCurves,
+  loft,
+  matchEdge,
+  merge,
+  mergeFaces,
+  mirror,
+  moveFaces,
+  offset,
+  offsetFaces,
+  outline,
+  partingLine,
+  project,
+  push,
+  removeFaces,
+  removeFillets,
+  revolve,
+  scale,
+  section,
+  shell,
+  silhouette,
+  slices,
+  split,
+  sweep,
+  swing,
+  thicken,
+  trim,
+  warp,
+  xor,
+} from './operations.ts'
 // removing fillets and faces: the time limit of a kernel step
 export { GUARD_BOOLEANS, GUARD_SECONDS, setGuardBooleans, setGuardSeconds } from './defeature.ts'
 // deformations
-export { Lattice, bend, taper, twist, unroll } from './deform.ts'
+export { Lattice, bend, deform, taper, twist, unroll } from './deformations.ts'
 // surfaces
 export { FitReport, StitchReport, blend, fill, network, nurbsSurface, ruled, stitch, surface, surfaceFillet } from './surfaces.ts'
 // sheet metal
@@ -132,23 +172,23 @@ export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } fr
 export { DrawingView, drawingViews, exportSvg, toSvg, type DrawingViewsOptions, type SvgItemsLike, type SvgOptions } from './drawing.ts'
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
 export { exportBrep, fromBrep, importBrep, toBrep, type BrepImportOptions } from './occt.ts'
-export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
+export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './pictures.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
 // errors, warnings and memory
 export { KernelError, ModelingError } from './_errors.ts'
 export { memoryUsage, scope, setWarningHandler, type MemoryUsage } from './kernel.ts'
 // the types of options, selections and results, to name them in an app's own code
 export type { Matrix, Movable, XYZ } from './geometry.ts'
-export type { BodyOptions, ColorLike, EdgesLike, ExtrudeOptions, FacesLike, FilletOptions, FilletRadius, IsoOptions, RegionLike, SortKey, SourcesLike, WallsLike } from './shapes.ts'
+export type { BodyOptions, ColorLike, EdgesLike, ExtrudeOptions, FacesLike, FilletOptions, FilletRadius, IsoOptions, PushOptions, RegionLike, SortKey, SourcesLike, WallsLike } from './shapes.ts'
 export type { Coordinates } from './profiles.ts'
 export type { CornerOptions, HullItem, PlacementOptions, PolygonOptions, TrapezoidOptions } from './sketches.ts'
 export type { TextOptions } from './text.ts'
 export type { Contour, PairAdjustment, Point, Segment } from './font.ts'
 export type { ExtrudeFunctionOptions, SweepOptions } from './operations.ts'
-export type { BendOptions, LatticeIndex, LatticeLayers, RangeOptions, TaperOptions, TwistOptions } from './deform.ts'
-export type { DraftAnalysis, FaceDraft } from './draft.ts'
+export type { BendOptions, LatticeIndex, LatticeLayers, RangeOptions, TaperOptions, TwistOptions } from './deformations.ts'
+export type { DraftAnalysis, FaceDraft } from './molding.ts'
 export type { BendAllowanceOptions, DevelopedLengthOptions, FlangeOptions, FoldOptions, UnfoldOptions } from './sheetmetal.ts'
 export type { FileItemsLike, FileOptions, GltfOptions, MeshOptions, ShapesLike, StepExportOptions, StepItemsLike } from './exporters.ts'
 export type { BytesLike } from './_bytes.ts'
 export type { DxfReadOptions, DxfShapesLike, DxfWriteOptions } from './dxf.ts'
-export type { CurvatureKind, RenderMarker, RenderPoint, RenderView, Renderable } from './render.ts'
+export type { CurvatureKind, RenderMarker, RenderPoint, RenderView, Renderable } from './pictures.ts'

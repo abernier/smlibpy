@@ -48,9 +48,10 @@ stitch joins the topology; it **never moves geometry**. A gap it closes ends up 
 tolerances, so it only closes gaps up to `tolerance`:
 
 - Default (1e-4 of the size): a box of 10 mm closes gaps up to 0.0017. The faces of a
-  `Box(200, 100, 100)` each moved by up to 0.03 along each axis: with `tolerance=1e-4` nothing is
-  sewn (26 free edges, a Shell; before 0.5.0 a "valid" Part); with `tolerance=0.2` a valid Part,
-  `max_gap` 0.085.
+  `Box(200, 100, 100)` each moved by a fixed offset of up to 0.03 along each axis: with
+  `tolerance=1e-4` nothing is sewn (26 free edges, a Shell; before 0.5.0 a "valid" Part); with
+  `tolerance=0.2` a valid Part, `max_gap` 0.085. Not every such box closes: of 8 with random
+  offsets up to 0.03, 2 kept 4 and 8 free edges (a Shell) even with `tolerance=1`.
 - Five faces of `Box(10, 10, 10)` and the top 0.1 too high: without a tolerance a Shell with 8
   free edges; with `tolerance=0.2` a valid Part (`max_gap` 0.1), its volume 1010 (the top face
   stays at z 5.1 while its edges are at 5.0): `volume` warns that the faces do not meet.
@@ -60,8 +61,8 @@ from the **same curves** (an edge of one face is the curve of the next, as in th
 
 ## Gotchas
 - Closed surfaces close with caps: a closed `surface` tube + `make_face(e)` for each of its two
-  boundary edges gives a valid Part (9424.761 vs 9424.778 exact). A torus grid (closed both ways)
-  alone: `stitch(torus)` is a Part.
+  boundary edges gives a valid Part (24 points per ring: 9424.762 vs 9424.778 exact). A torus
+  grid (closed both ways) alone: `stitch(torus)` is a Part.
 - `make_face(edge)` makes a cap from a closed planar edge, also a bspline one.
 - Pieces of a polyline: `ruled` per edge, then stitch, gives one Shell (shared edges merged).
 - `stitch` of an existing valid Part returns it as a Part.
