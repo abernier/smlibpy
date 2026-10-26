@@ -237,7 +237,9 @@ function wrapAny(value: unknown): unknown {
   return value
 }
 
-function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Edge | Wire {
+/** @internal
+ * An Edge or Wire for a kernel curve: of `owner` (a body's, where the body is) or of its own. */
+export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Edge | Wire {
   incomingSub = { owner, index: -1, sub: value }
   try {
     return value instanceof sm.Wire ? new Wire() : new Edge()
@@ -246,7 +248,9 @@ function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Edge | Wi
   }
 }
 
-function sub<T extends Face | Edge | Vertex>(cls: new () => T, owner: Body | null, index: number, value: sm.Face | sm.Edge | sm.Vertex): T {
+/** @internal
+ * The object of class `cls` for a body's face, edge or vertex (`owner` null: a vertex of its own). */
+export function sub<T extends Face | Edge | Vertex>(cls: new () => T, owner: Body | null, index: number, value: sm.Face | sm.Edge | sm.Vertex): T {
   incomingSub = { owner, index, sub: value }
   try {
     return new cls()
@@ -274,17 +278,21 @@ export function adopt<T extends Body>(result: T, like: Body): T {
 }
 
 // ----------------------------------------------------------------------------------- placement
-/** The object whose frame a shape is in: a face's, edge's or vertex's body, else the shape. */
-function frameOf(o: THREE.Object3D): THREE.Object3D {
+/** @internal
+ * The object whose frame a shape is in: a face's, edge's or vertex's body, else the shape. */
+export function frameOf(o: THREE.Object3D): THREE.Object3D {
   return state(o).owner ?? o
 }
 
 const IDENTITY = new THREE.Matrix4()
 
 // three's types told by their flags and members, not instanceof (a bundle may hold two copies of three)
-const isObject3D = (x: unknown): x is THREE.Object3D => (x as THREE.Object3D | null)?.isObject3D === true
-const isMatrix4 = (x: unknown): x is THREE.Matrix4 => (x as { isMatrix4?: boolean } | null)?.isMatrix4 === true
-const isRay = (x: unknown): x is THREE.Ray => typeof (x as THREE.Ray | null)?.origin?.x === 'number' && typeof (x as THREE.Ray).direction?.x === 'number'
+/** @internal */
+export const isObject3D = (x: unknown): x is THREE.Object3D => (x as THREE.Object3D | null)?.isObject3D === true
+/** @internal */
+export const isMatrix4 = (x: unknown): x is THREE.Matrix4 => (x as { isMatrix4?: boolean } | null)?.isMatrix4 === true
+/** @internal */
+export const isRay = (x: unknown): x is THREE.Ray => typeof (x as THREE.Ray | null)?.origin?.x === 'number' && typeof (x as THREE.Ray).direction?.x === 'number'
 
 /** The transform from `shape`'s frame into `into`'s (both where they are in the world), or null if
  * there is none to make. `into` null: into the world. */
@@ -312,7 +320,72 @@ export function operand(shape: unknown, into: THREE.Object3D | null, what: strin
   return m === null ? value : call(() => value.moved(location(m)))
 }
 
-function flatten<T>(items: readonly (T | Iterable<T>)[]): T[] {
+/** @internal
+ * The kernel's value for an argument of an operation of `into`: shapes where they are (in `into`'s
+ * frame), three's points and directions, planes, rays, boxes and matrices as the kernel's; arrays and
+ * Maps item by item; anything else as it is. */
+export function toKernel(value: unknown, into: THREE.Object3D | null): unknown {
+  if (value instanceof Body || value instanceof Face || value instanceof Edge || value instanceof Wire || value instanceof Vertex) return operand(value, into, 'an operation')
+  const v = value as { isPlane?: boolean; isBox3?: boolean; x?: unknown; y?: unknown; z?: unknown } | null
+  if (v?.isPlane === true) return toPlane(value as THREE.Plane)
+  if (v?.isBox3 === true) return boundBox(value as THREE.Box3)
+  if (isMatrix4(value)) return location(value)
+  if (isRay(value)) return toAxis(value)
+  if (v !== null && typeof v === 'object' && typeof v.x === 'number' && typeof v.y === 'number' && typeof v.z === 'number') return vec(v as THREE.Vector3Like)
+  if (Array.isArray(value)) return value.map((x) => toKernel(x, into))
+  if (value instanceof Map) return new Map([...value].map(([k, x]) => [toKernel(k, into), toKernel(x, into)]))
+  return value
+}
+
+/** @internal
+ * The package's object for what a kernel call gave to an operation of `like`: bodies wrapped, with
+ * `like`'s transform, name and material (`adopt`); faces, edges and vertices of `like`'s body as
+ * its objects (a face of another body with that body wrapped first); other curves as curves of
+ * their own where `like` is; vectors, boxes, planes, axes and locations as three's; lists item by
+ * item. `like` null: as they are, at the world's origin. */
+export function toThree(value: unknown, like: THREE.Object3D | null): unknown {
+  const frame = like === null ? null : frameOf(like)
+  const body = frame instanceof Body ? frame : null
+  if (value instanceof sm.Part || value instanceof sm.Shell) {
+    const b = wrap(value)
+    if (body !== null) return adopt(b, body)
+    if (frame !== null) THREE.Object3D.prototype.copy.call(b, frame, false)
+    return b
+  }
+  if (value instanceof sm.Face) {
+    if (body !== null && value.owner === state(body).held?.value) return shapeFor(body, value) ?? value
+    return value.owner === null ? value : (shapeFor(toThree(value.owner, like) as Body, value) ?? value)
+  }
+  if (value instanceof sm.Edge || value instanceof sm.Vertex) {
+    const own = body === null ? undefined : shapeFor(body, value)
+    if (own !== undefined) return own
+    if (value instanceof sm.Vertex) {
+      const v = sub(Vertex, null, -1, value)
+      if (frame !== null) THREE.Object3D.prototype.copy.call(v, frame, false)
+      return v
+    }
+    return frame === null ? curveOf(value) : placedCurve(value, frame)
+  }
+  if (value instanceof sm.Wire) return body !== null ? curveOf(value, body) : frame === null ? curveOf(value) : placedCurve(value, frame)
+  if (value instanceof sm.Vector) return vector3(value)
+  if (value instanceof sm.BoundBox) return box3(value)
+  if (value instanceof sm.Plane) return threePlane(value)
+  if (value instanceof sm.Axis) return ray(value)
+  if (value instanceof sm.Location) return matrix4(value)
+  if (value instanceof sm.ShapeList) return ShapeList.from([...value].map((x) => toThree(x, like)))
+  if (Array.isArray(value)) return value.map((x) => toThree(x, like))
+  return value
+}
+
+/** @internal
+ * The face, edge or vertex object of `body` for a kernel face, edge or vertex of its body. */
+export function shapeFor(body: Body, k: sm.Face | sm.Edge | sm.Vertex): Face | Edge | Vertex | undefined {
+  const list: readonly (Face | Edge | Vertex)[] = k instanceof sm.Face ? body.faces() : k instanceof sm.Edge ? body.edges() : body.vertices()
+  return find(list, k)
+}
+
+/** @internal */
+export function flatten<T>(items: readonly (T | Iterable<T>)[]): T[] {
   const out: T[] = []
   for (const item of items) {
     if (item !== null && typeof item === 'object' && Symbol.iterator in item && !isObject3D(item)) out.push(...(item as Iterable<T>))
@@ -1463,8 +1536,10 @@ export function setCurve(o: Edge | Wire, value: sm.Edge | sm.Wire): void {
   s.index = -1
 }
 
-/** A curve of its own made from `like` (an edge or wire): where `like` is, with its transform. */
-function placedCurve(value: sm.Edge | sm.Wire, like: Edge | Wire): Edge | Wire {
+/** @internal
+ * A curve of its own made from `like`: where `like` is (where its body is, for a face's, edge's or
+ * vertex's), with its transform. */
+export function placedCurve(value: sm.Edge | sm.Wire, like: THREE.Object3D): Edge | Wire {
   const s = state(like)
   const c = curveOf(value)
   // (an edge of a body is where its body is)
