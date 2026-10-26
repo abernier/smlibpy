@@ -17,6 +17,7 @@ import * as THREE from 'three'
 import { axis as toAxis, box3, call, degrees, describe, location, plane as toPlane, sm, vec, vector3 } from './kernel.ts'
 import { MassProperties, type RayHit } from './properties.ts'
 import { Body, Face, Part, ShapeList, curveOf, flatten, frameOf, operand, wrap, type Wire } from './shapes.ts'
+import { track } from './memory.ts'
 
 // --------------------------------------------------------------------------------------- state
 const STATE = Symbol('smlibpy-three.mesh')
@@ -205,6 +206,7 @@ export class TriangleMesh extends THREE.Mesh {
     const s = state(this)
     s.ready = true
     s.internal = incoming !== null || cloning
+    track(this)
     if (material != null) this.material = material
     if (s.internal) {
       if (incoming !== null) s.held = { value: incoming, refs: 1, geometry: null }

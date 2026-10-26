@@ -114,7 +114,7 @@ for (const [title, modules, note] of SECTIONS) {
 }
 for (const [title, module] of ENTRIES) {
   const file = read(module)
-  if (file) section(title, '', entries(file, null))
+  if (file) section(title, '', new Map([...entries(file, null)].sort(([, a], [, b]) => ORDER[a.kind] - ORDER[b.kind])))
 }
 
 const intro = `# smlibpy-three API

@@ -61,6 +61,7 @@ import {
 import * as deformations from './deform.ts'
 import * as sheetMetal from './sheetmetal.ts'
 import { tessellate as tessellateMesh, type TessellateOptions, type TriangleMesh } from './mesh.ts'
+import { track } from './memory.ts'
 
 // --------------------------------------------------------------------------------------- state
 const STATE = Symbol('smlibpy-three')
@@ -447,6 +448,7 @@ export abstract class Body extends THREE.Mesh {
     const s = state(this)
     s.ready = true
     s.internal = incomingBody !== null || cloning
+    track(this)
     if (incomingBody !== null) setKernel(this, incomingBody)
     this.edgeLines = new EdgeLines(this)
     this.add(this.edgeLines)
@@ -1788,6 +1790,7 @@ function takeSub(o: THREE.Object3D): void {
   const s = state(o)
   s.ready = true
   s.internal = incomingSub !== null || cloning
+  track(o)
   if (incomingSub !== null) {
     s.owner = incomingSub.owner
     s.index = incomingSub.index

@@ -7,7 +7,9 @@ practice.
 ## The boundary
 
 - Only `src/kernel.ts` imports smlibwasm. Other modules take it from there:
-  `import { sm, call, vec, vector3, ... } from './kernel.ts'`.
+  `import { sm, call, vec, vector3, ... } from './kernel.ts'`. The one exception is
+  `src/worker.ts`, which imports `@classcad/smlibwasm/worker` (the transport between threads, which
+  does not load the kernel; going through `kernel.ts` would).
 - No smlibwasm value goes into an app's hands, and no three value into smlibwasm's. Public
   signatures name three's types and the package's only; `npm run build` fails otherwise
   (`scripts/declarations.mjs`).

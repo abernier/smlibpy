@@ -241,3 +241,4 @@ export {
   type USDLoaderOptions,
 } from './files.ts'
 export { DrawingView, drawingViews, type DrawingViewsOptions, type ViewName } from './drawing.ts'
+export { GUARD_BOOLEANS, GUARD_SECONDS, memoryUsage, scope, setGuardBooleans, setGuardSeconds, setWarningHandler, type MemoryUsage } from './memory.ts'
