@@ -76,7 +76,8 @@ def test_rounds_that_fill_the_room_between_edges_measure_their_gaps(monkeypatch)
         for s, r in ((10, 4.98), (20, 9.97), (40, 19.96)):
             cube = Box(s, s, s)
             rounded = cube.fillet(cube.edges(), r)
-            assert rounded.is_valid() and rounded.volume == approx(_rounded_cube(s, r), rel=1e-9)
+            # (within 1e-6: the rounds are exact within the kernel's tolerance, and builds differ by 1e-7)
+            assert rounded.is_valid() and rounded.volume == approx(_rounded_cube(s, r), rel=1e-6)
 
 
 # == N5: parity on any platform, and the capabilities of phase 1 =============================================
