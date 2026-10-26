@@ -511,6 +511,30 @@ test('fill closes the holes of a turned sphere alike', () => {
   }
 })
 
+test("fill a round hole whose rim touches the sheet's knot lines", () => {
+  // The sheet's knots lie every 5 along x and y, and these rims touch knot lines where the patch's
+  // corners are: there a side's first knot span came out about 1e-4 long, and the kernel's tangent
+  // field gave its cross tangent an end derivative (the patch's twist) 1.85 to 2.7 times too large.
+  // The patch was refused 1.65 to 20.6 degrees off.
+  const grid = [-20, -15, -10, -5, 0, 5, 10, 15, 20]
+  const g = surface(grid.map((px) => grid.map((py) => [px, py, 0.02 * (px * px + py * py)] as [number, number, number])))
+  for (const [r, x] of [[5, 0], [5, 7], [5, 5], [2.5, 2.5]]) {
+    const hole = stitch(Box(100, 100, 100).cut(Circle(r).translate(x, 0, 0).extrude(100, { both: true })).intersect(g as any)) as Shell
+    const rim = free(hole).filter((e) => (e.center().x - x) ** 2 + e.center().y ** 2 < 150)
+    const cap = fill(rim)
+    let worst = 0
+    for (const e of rim) {
+      for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+        const p = e.pointAt(t)
+        const dot = Math.abs(hole.faces()[0].normalAt(p).dot(cap.faces()[0].normalAt(p)))
+        worst = Math.max(worst, (Math.acos(Math.min(1, dot)) * 180) / Math.PI)
+      }
+    }
+    assert.equal(cap.faces().length, 1)
+    assert.ok(worst < 0.05, `r ${r} at x ${x}: ${worst} degrees`)
+  }
+})
+
 test('fill errors', () => {
   const [a, b, c] = bulgedSquare()
   assert.throws(() => fill([a, b, c]), /do not close/)
