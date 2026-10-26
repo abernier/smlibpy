@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import {
   Axis,
   Box,
+  Location,
   RegularPolygon,
   Sphere,
   Spline,
@@ -31,6 +32,8 @@ import {
   Shell,
   Sketch,
   Vector,
+  X,
+  Y,
   Z,
   blend,
   extrude,
@@ -463,6 +466,49 @@ test('fill a hole tangent to the sheet', () => {
   const hole = stitch(Box(100, 100, 100).cut(RegularPolygon(5, 5).extrude(100, { both: true })).intersect(g as any)) as Shell
   const pentagon = free(hole).filter((e) => e.center().x ** 2 + e.center().y ** 2 < 100)
   assert.equal(fill(pentagon).faces().length, 5)
+})
+
+// Turned, the sphere is the same sphere with its seam and poles elsewhere, and the rims of its holes
+// come in one, two or three pieces, wherever the Boolean cut them. A rim of one edge, or of two equal
+// halves, was filled 19.5 degrees off (the kernel's Coons patch left two of the four equal arcs on
+// their own interval), and where the pieces ended made the patch's corners (a flatter cap, 4124.35,
+// for a rim in three).
+function filledHoles(turn: Location): [Part, number][] {
+  const ball = Sphere(10).moved(turn)
+  const holes: [number, number, number][] = [[0, 0, 23], [0, 0, -23], [23, 0, 0], [-23, 0, 0], [0, 23, 0], [0, -23, 0]]
+  return holes.map((at) => {
+    const sheet = stitch(ball.cut(Box(30, 30, 30).translate(...at)).faces().filter((f) => f.geomType === 'sphere')) as Shell
+    const rim = free(sheet)
+    const cap = fill(rim)
+    assert.equal(cap.faces().length, 1)
+    let worst = 0
+    for (const e of rim) {
+      for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+        const p = e.pointAt(t)
+        const dot = sheet.faces()[0].normalAt(p).dot(cap.faces()[0].normalAt(p))
+        assert.ok(dot > 0) // the cap faces out with the sphere
+        worst = Math.max(worst, (Math.acos(Math.min(1, dot)) * 180) / Math.PI)
+      }
+    }
+    return [stitch(sheet, cap) as Part, worst]
+  })
+}
+
+test('fill closes the holes of a turned sphere alike', () => {
+  // as smlibpy-three's Ball turns the kernel's sphere (its poles on y), and a quarter turn about z
+  for (const turn of [new Location(), Location.about(Z, 90), Location.about(Y, 180).mul(Location.about(X, -90))]) {
+    for (const [ball, worst] of filledHoles(turn)) {
+      assert.ok(worst < 0.05)
+      assert.ok(ball instanceof Part && ball.isValid())
+      approx(ball.volume, 4141.5814, 0, 1e-3) // four equal quarters of the rim
+    }
+  }
+  // by any angle the rims' pieces end elsewhere, and the patches' corners with them
+  for (const [ball, worst] of filledHoles(Location.about(new Axis([0, 0, 0], [1, 2, 3]), 37))) {
+    assert.ok(worst < 0.05)
+    assert.ok(ball instanceof Part && ball.isValid())
+    approx(ball.volume, 4141.58, 2e-3)
+  }
 })
 
 test('fill errors', () => {

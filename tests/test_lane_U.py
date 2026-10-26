@@ -11,9 +11,9 @@ import math
 import numpy as np
 import pytest
 
-from smlibpy import (Align, Axis, Box, Circle, CenterArc, Cylinder, FitReport, Line, ModelingError, Part, Plane, Rectangle,
-                     Shell, Sketch, Sphere, Spline, ThreePointArc, Vector, Wire, Z, blend, extrude, fill, network,
-                     nurbs_surface, ruled, stitch, surface, surface_fillet)
+from smlibpy import (Align, Axis, Box, Circle, CenterArc, Cylinder, FitReport, Line, Location, ModelingError, Part, Plane,
+                     Rectangle, Shell, Sketch, Sphere, Spline, ThreePointArc, Vector, Wire, X, Y, Z, blend, extrude, fill,
+                     network, nurbs_surface, ruled, stitch, surface, surface_fillet)
 from smlibpy._kernel import ext, k
 
 
@@ -517,6 +517,53 @@ def test_fill_a_hole_tangent_to_the_sheet():
     ball = stitch(sheet, cap)
     assert isinstance(ball, Part) and ball.is_valid()
     assert 4141 < ball.volume < 4188.8  # above a flat lid (4071.5), below the whole sphere
+
+
+# Turned, the sphere is the same sphere with its seam and poles elsewhere, and the rims of its holes
+# come in one, two or three pieces, wherever the Boolean cut them. A rim of one edge, or of two equal
+# halves, was filled 19.5 degrees off (the kernel's Coons patch left two of the four equal arcs on
+# their own interval), and where the pieces ended made the patch's corners (a flatter cap, 4124.35,
+# for a rim in three).
+_QUARTER_TURNS = {"none": Location(), "z90": Location.about(Z, 90), "x90": Location.about(X, 90),
+                  "x-90": Location.about(X, -90),
+                  "y180 x-90": Location.about(Y, 180) * Location.about(X, -90)}  # (as smlibpy-three's Ball)
+
+
+def _filled_holes(turn):
+    """The six axis-facing holes of a turned Sphere(10), each cut 8 from its center and closed by
+    fill: (the Part, the largest angle between the cap's and the sphere's normals along the rim)."""
+    ball = Sphere(10).moved(turn)
+    out = []
+    for at in ((0, 0, 23), (0, 0, -23), (23, 0, 0), (-23, 0, 0), (0, 23, 0), (0, -23, 0)):
+        sheet = stitch([f for f in (ball - Box(30, 30, 30).translate(at)).faces() if f.geom_type == "sphere"])
+        rim = _free(sheet)
+        cap = fill(rim)
+        assert len(cap.faces()) == 1
+        worst = 0.0
+        for e in rim:
+            for t in (0.1, 0.3, 0.5, 0.7, 0.9):
+                p = e.point_at(t)
+                a, b = sheet.faces()[0].normal_at(p), cap.faces()[0].normal_at(p)
+                assert a.dot(b) > 0  # the cap faces out with the sphere
+                worst = max(worst, math.degrees(math.acos(min(1.0, a.dot(b)))))
+        out.append((stitch(sheet, cap), worst))
+    return out
+
+
+@pytest.mark.parametrize("turn", _QUARTER_TURNS.values(), ids=_QUARTER_TURNS.keys())
+def test_fill_closes_the_holes_of_a_turned_sphere_alike(turn):
+    for ball, worst in _filled_holes(turn):
+        assert worst < 0.05
+        assert isinstance(ball, Part) and ball.is_valid()
+        assert ball.volume == pytest.approx(4141.5814, abs=1e-3)  # four equal quarters of the rim
+
+
+def test_fill_closes_the_holes_of_a_sphere_turned_by_any_angle():
+    # the rims' pieces end elsewhere, and the patches' corners with them
+    for ball, worst in _filled_holes(Location.about(Axis((0, 0, 0), (1, 2, 3)), 37)):
+        assert worst < 0.05
+        assert isinstance(ball, Part) and ball.is_valid()
+        assert ball.volume == pytest.approx(4141.58, rel=2e-3)
 
 
 def test_fill_an_n_sided_hole_tangent():

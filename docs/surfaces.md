@@ -266,7 +266,7 @@ cut = Sphere(10) - Box(30, 30, 30).translate(0, 0, 8 + 15)
 dome = stitch([f for f in cut.faces() if f.geom_type == "sphere"])
 cap = fill(dome.edges().filter(lambda e: len(e.faces()) == 1))   # tangent to the sphere
 ball = stitch(dome, cap)
-print(type(ball).__name__, round(ball.volume, 2))                 # Part 4141.52
+print(type(ball).__name__, round(ball.volume, 2))                 # Part 4141.58
 
 sides = [Spline((0, 0, 0), (5, 0, 2), (10, 0, 0)), Spline((10, 0, 0), (10, 5, 1), (10, 10, 0)),
          Spline((10, 10, 0), (5, 10, 2), (0, 10, 0)), Spline((0, 10, 0), (0, 5, 1), (0, 0, 0))]

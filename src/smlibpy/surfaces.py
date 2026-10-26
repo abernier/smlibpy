@@ -532,7 +532,10 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
         boundary: The curves around the hole, in any order and direction: edges on the border of
             sheets (``sheet.edges().filter(lambda e: len(e.faces()) == 1)``), curves
             (:class:`~smlibpy.Spline`, :class:`~smlibpy.ThreePointArc`, ...) or wires. One closed
-            curve (the round edge of a hole), or two, is cut into four sides.
+            curve (the round edge of a hole), or two, is cut into four sides. Where the curves run
+            into each other without corners (a rim in two or three pieces, cut where a seam
+            crosses it), the four sides are as nearly equal as the curves' ends allow: a round hole
+            is filled the same wherever its rim was cut.
         tangent: True (default): where the curves are edges of sheets, the patch meets each sheet
             tangentially along its edge; then every curve must be such an edge, and the sheets must
             meet each other tangentially where the edges meet (a hole in one smooth sheet, a corner
@@ -544,7 +547,8 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
     N-sided fill of one face per side, sewn, meeting in the middle (tangent to the sheets only to
     about 1.4 degrees: the kernel's N-sided fill). Three sides make an N-sided fill of three faces
     through curves only; tangent to sheets, a Coons patch whose fourth side shrinks to a point at
-    one corner (a pole there: thickening such a patch fails).
+    one corner (a pole there: thickening such a patch fails). Three curves without corners between
+    them make four sides instead.
 
     Returns:
         The patch, a sheet. Its normal follows the sheets it is tangent to; through curves only,
