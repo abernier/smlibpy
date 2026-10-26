@@ -102,8 +102,9 @@ The MCP is how agents use smlibpy: `list_methods` and `describe_method` find a c
   runs every guide's Python blocks, in order, in one namespace, with `from smlibpy import *`. A
   block that needs a file of the user's starts with `# not run` and says which. A comment after a
   `print(...)` that starts with a value is what that line prints, value first and explanation
-  after (`# 196.566371 = 200 - 4 * (4 - pi)`); the test compares the two. Numbers in the prose
-  are measured too. `ai/HOW-TO-TRAIN.md` is how guides are written and checked against the live
+  after (`# 196.566371 = 200 - 4 * (4 - pi)`); the test compares the two. A result that differs
+  between platforms says what the others print (`# 13674 (about, 13670 on Linux)`) and is
+  compared to 0.1 %. Numbers in the prose are measured too. `ai/HOW-TO-TRAIN.md` is how guides are written and checked against the live
   kernel.
 - **A new area** gets a line in `src/smlibpy/skill/SKILL.md` (and a recipe where it is a workflow),
   and the plugin skill's description (`plugins/smlibpy/skills/smlibpy/SKILL.md`, 1536 characters at

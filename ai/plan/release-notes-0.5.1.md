@@ -92,7 +92,9 @@ names in an example of `split`, stale sizes and timings, the build steps of a cl
 
 `tests/test_guides.py` runs every guide's examples. It now also checks the printed numbers: a
 comment after a `print(...)` that starts with a value is what that line prints, to the comment's
-precision. It also checks that every property has a guide that names it, not only functions,
+precision. A result that differs between platforms (a decimated mesh's count, a fitted
+surface's volume) is marked `(about, ...)` with what the other platforms print, and compared to
+0.1 %. It also checks that every property has a guide that names it, not only functions,
 methods and classes.
 
 ## Fixed

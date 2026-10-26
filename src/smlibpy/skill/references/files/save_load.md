@@ -17,8 +17,8 @@ the same in memory (`bytes`).
   curves. A sheet metal part keeps the K-factors of its bends (`fold`, `flange`), so that it
   unfolds as folded; faces keep their own colors (`colored(..., faces=)`), not their names. Any
   other extension writes `.smb`.
-- `ascii=True` (the default) writes a text file. `ascii=False` writes a binary file, about 40 %
-  of the size, bit-exact.
+- `ascii=True` (the default) writes a text file, its numbers to 16 decimals. `ascii=False` writes
+  a binary file, about 40 % of the size, its numbers bit for bit.
 - `load` decides by the extension, in any letter case:
   - `.step`, `.stp`, `.p21`: same as `import_step`.
   - `.igs`, `.iges`: same as `import_iges`.
@@ -41,7 +41,7 @@ several: a `ShapeList`): bodies as `Part` or `Shell` with their names and colors
 ## .smb and .smp compared with STEP
 | | `.smb` | `.smp` | STEP |
 |---|---|---|---|
-| Geometry | binary: bit-identical. ASCII: within ~1e-15 | the same | same surface types, volume within ~1e-8 |
+| Geometry | binary: bit for bit. ASCII: to 16 decimals | the same | same surface types, volume within ~1e-8 |
 | Bodies per file | one (two-solid parts stay one `Part`) | any number, and curves | any number |
 | Names, colors | **lost** | kept (ASCII colors to 16 decimals) | kept |
 | Other software | SMLib only | SMLib only | every CAD system |
@@ -57,6 +57,10 @@ SMLib's own tools read. Use STEP to deliver a model.
 - smlibpy cannot read glTF or OBJ: `load("x.glb")` raises `ValueError: unknown file type
   '.glb'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep`.
 - A `Sketch` comes back as a `Shell`: its plane is lost.
+- A body read back is not the same object bit for bit, even from a binary file: the reader
+  builds some of the curves that trim the faces anew, as lines. Its measures can differ in the
+  last digits (the example's volume is equal on macOS arm64 only), so compare them with a
+  tolerance (`math.isclose`), not `==`.
 - A body that also holds wire edges, points or faces outside its solid (files of other programs)
   comes back with a `RuntimeWarning` that names them: such a `Part` is not valid.
 - `.smp` keeps no assembly placements (the kernel's format has none) and writes no meshes or
@@ -78,10 +82,10 @@ SMLib's own tools read. Use STEP to deliver a model.
 ## Example
 ```python
 bracket = (Box(40, 20, 8) - Cylinder(4, 8)).named("bracket").colored("steelblue")
-save(bracket, "bracket.smb")                  # ASCII, exact
-save(bracket, "bracket_bin.smb", ascii=False) # binary, bit-exact
+save(bracket, "bracket.smb")                  # ASCII: numbers to 16 decimals
+save(bracket, "bracket_bin.smb", ascii=False) # binary: numbers bit for bit
 again = load("bracket.smb")
-print(again.volume == bracket.volume, again.name)   # True None
+print(math.isclose(again.volume, bracket.volume, rel_tol=1e-12), again.name)   # True None
 
 pin = Cylinder(3, 20).named("pin").colored("orange")
 path = Wire([Line((0, 0, 0), (30, 0, 0)), CenterArc((30, 10), 10, -90, 180)])

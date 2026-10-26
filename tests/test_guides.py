@@ -11,7 +11,8 @@ What a guide says its code prints is what it prints: a comment after a ``print(.
 with a value (a number, ``True``, a bracket, or the printed text's first word) shows the output,
 and its values are compared with the printed ones, to the comment's precision. The output ends at
 ``" = "``, ``": "``, ``"; "`` or ``...``, and words in parentheses explain; a comment that starts
-with a word is a description.
+with a word is a description. A result that differs between platforms is marked ``(about, ...)``
+with what the others print (``# 13674 (about, 13670 on Linux)``) and compared to 0.1 %.
 """
 
 import ast
@@ -32,6 +33,7 @@ GUIDES = [g for g in discovery.guides() if "```python" in g.text]
 NUMBER = r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?"
 VALUE = re.compile(rf"(?<![\w.]){NUMBER}(?![\w.])|\b(?:True|False|None)\b")
 WORDS_IN_PARENTHESES = re.compile(r"\([^()]*[A-Za-z]{2,}[^()]*\)")
+ABOUT = re.compile(r"\(about[,)]")
 
 
 def test_every_function_method_class_and_property_has_a_guide_that_names_it():
@@ -104,8 +106,11 @@ def _shows_output(printed: str, comment: str) -> bool:
 
 def _same_values(printed: str, comment: str) -> bool:
     shown = WORDS_IN_PARENTHESES.sub(" ", re.split(r"\.\.\.|…| = |: |; ", comment)[0])
+    about = ABOUT.search(comment) is not None
     for got, said in zip(VALUE.findall(WORDS_IN_PARENTHESES.sub(" ", printed)), VALUE.findall(shown)):
         if not (got[0].isalpha() or said[0].isalpha()):
+            if about and math.isclose(float(got), float(said), rel_tol=1e-3):
+                continue
             mantissa = said.lower().split("e")[0]
             digits = len(mantissa.split(".")[1]) if "." in mantissa else 0
             if "e" in said.lower():
