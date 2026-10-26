@@ -68,7 +68,7 @@ from .surfaces import (FitReport, StitchReport, blend, fill, network, nurbs_surf
 from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, developed_length, flange,
                          flat_pattern, fold, unfold)
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 # The modules' old names, for ``from smlibpy.deform import Lattice`` and the like. deformations, molding
 # and pictures were deform, draft and render up to 0.5.0: a module may not take the name of a public
