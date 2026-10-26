@@ -36,14 +36,15 @@ On side faces local y is up. On the bottom face local y is world -Y. A face tilt
 +X (normal (0.707, 0, 0.707)) has x_dir (0.707, 0, -0.707): local x runs downhill.
 
 ## Gotchas
-- The origin is the face **centroid**. It moves when a feature changes the face: after an
-  off-center pocket the top face centroid of a 60 x 40 plate moved to x = -2.86. On an
+- The origin is the face **centroid**. It moves when a feature changes the face: after a
+  20 x 20 pocket at x = 15 the top face centroid of a 60 x 40 plate moved to x = -3. On an
   L-shaped face it lies outside the face, and a cut placed there removes nothing (volume
   unchanged, no error). For stable positions use a fixed plane:
   `Plane.XY.offset(part.bbox().max.z)`, or offsets from a known point.
 - A selection with more or fewer than one face raises `ValueError: expected exactly one
   shape, got 4 - narrow the selection or use [0]`.
-- A Python list (`on([face])`) or an `Axis` raises `TypeError: cannot use list as a plane`.
+- A Python list (`on([face])`) raises `TypeError: cannot use list as a plane`, an `Axis`
+  `TypeError: cannot use Axis as a plane`.
 - A curved face raises `ValueError: a cylinder face has no plane`.
 
 ## Example
@@ -65,4 +66,4 @@ print(Circle(2).on(lid).center().z)
 ```
 
 ## Related
-`Plane`, `moved`, `Pos`, `Locations.on`, sketches `extrude`, parts `Hole`.
+`Plane`, `moved`, `Pos`, `Locations.on`, features `extrude`, parts `Hole`.

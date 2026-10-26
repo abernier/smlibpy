@@ -5,12 +5,12 @@ face, edge or vertex). For clash and clearance checks, sampling, deciding which 
 to keep, and which cell of a merged part holds a point.
 
 ## Signature
-`part.classify(point, tol=None) -> tuple[str, Face | Edge | Vertex | None]`
-`part.contains(point, tol=None) -> bool`
-`part.cell_at(point, tol=None) -> Part | None`
+`part.classify(point, tolerance=None) -> tuple[str, Face | Edge | Vertex | None]`
+`part.contains(point, tolerance=None) -> bool`
+`part.cell_at(point, tolerance=None) -> Part | None`
 
 - `point`: a `Vector` or `(x, y, z)`.
-- `tol`: how close to the surface counts as on it; default the part's own tolerance (1e-5 for
+- `tolerance`: how close to the surface counts as on it; default the part's own tolerance (1e-5 for
   most parts). Positive, else `ValueError`.
 
 ## Returns

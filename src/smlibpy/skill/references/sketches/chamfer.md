@@ -14,9 +14,10 @@ select by geometry.
 A new `Sketch`; the cut is a `line` edge.
 - `Rectangle(40, 20).chamfer(3)`: 8 lines, area 800 - 4 * 3*3/2 = 782.
 - A 90° corner loses `length**2 / 2`: the L with the five outer corners chamfered by 1 loses 2.5.
-- Corners between lines and arcs work too: a rectangle fused with a circle, its two line-arc
-  corners chamfered by 1, has area 657.5163. So do corners next to splines and ellipses (the
-  length measured along the curve; the curve is cut there).
+- Corners between lines and arcs work too: `Rectangle(40, 20) + Circle(15).translate(20, 0)` has
+  two concave line-arc corners at (8.8197, ±10); chamfered by 1 its area grows from 1230.8662 to
+  1231.5777. So do corners next to splines and ellipses (the length measured along the curve; the
+  curve is cut there).
 
 ## Gotchas
 - Symmetric only (the same length on both edges). An asymmetric bevel: draw it with `Profile`

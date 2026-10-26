@@ -5,6 +5,7 @@ face turns about the line where it meets the neutral plane and keeps its size th
 
 ## Signature
 `part.draft(faces, angle, neutral_plane)`
+`draft(part, faces, angle, neutral_plane)` (the same, the part first)
 
 - `faces`: faces of this part: a selection, one `Face` or a list. Faces of an earlier version
   of the part are matched by position and area.
@@ -33,7 +34,8 @@ The results are exact: the walls are planes, the volumes those of the frusta.
 - Planes that cross the neutral plane at an angle: walls, ribs, pocket and boss sides. A face
   need not touch the neutral plane; the line where its plane meets the neutral plane is used.
   Flat B-spline faces (`is_planar` True: control points in one plane, such as the walls of
-  `extrude(taper=..., corners="round")`) are planes here too.
+  `Box(40, 30, 20).to_nurbs()`) are planes here too: drafted, they are planes (22561.879, as the
+  box's).
 - Cylinders and cones whose axis runs along the normal: a cylinder becomes a cone with the draft
   as its half angle (a pin narrows, a hole widens along the pull direction), a cone gets steeper
   or flatter.
@@ -131,7 +133,7 @@ upper, lower = box.split(Plane.XY, "both")
 side = lambda p: p.faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
 molded = upper.draft(side(upper), 3, Plane.XY) + lower.draft(side(lower), 3, Plane.XY.flipped())
 print(round(molded.volume, 4), len(molded.faces()))    # 23273.6153 10
-print(sorted(round(fd.min_angle, 4) for fd in molded.draft_analysis(Z)))   # [-90.0, -3.0 (x4), 3.0 (x4), 90.0]
+print(sorted(round(fd.min_angle, 4) for fd in molded.draft_analysis(Z)))   # [-90.0, -3.0, -3.0, -3.0, -3.0, 3.0, 3.0, 3.0, 3.0, 90.0]
 ```
 One drafted wall with `split`:
 ```python

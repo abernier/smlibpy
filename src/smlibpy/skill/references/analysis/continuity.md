@@ -5,9 +5,9 @@ How two faces meet along an edge, and the edges of a wire at its joints: a creas
 
 ## Signature
 
-- `edge.continuity(samples=16, *, angle_tol=0.5, curvature_tol=0.01) -> Continuity` for an edge
+- `edge.continuity(samples=16, *, angle_tolerance=0.5, curvature_tolerance=0.01) -> Continuity` for an edge
   between two faces (a seam compares its face with itself).
-- `wire.continuity(*, angle_tol=0.5, curvature_tol=0.01) -> Continuity` at the joints of a wire
+- `wire.continuity(*, angle_tolerance=0.5, curvature_tolerance=0.01) -> Continuity` at the joints of a wire
   (and where a closed wire closes).
 - `edges.g1()`: edges that are at least tangent (G1 or G2); `edges.g2()`: G2 edges.
 
@@ -23,8 +23,8 @@ How two faces meet along an edge, and the edges of a wire at its joints: a creas
 | `curvature_jump` | the largest difference of the normal curvatures across the edge (wires: of the curvature vectors), 1/mm; NaN where one side cannot be had (across a crease) |
 | `point` | where it is worst for the level: the gap for `None`, the angle for G0, the jump for G1 and G2 |
 
-G1 means `angle <= angle_tol` (0.5 degrees: the kernel's tolerance, and `smooth()`'s); G2 means
-`curvature_jump <= curvature_tol * (larger curvature) + 1e-3 / length` as well, so that faces
+G1 means `angle <= angle_tolerance` (0.5 degrees: the kernel's tolerance, and `smooth()`'s); G2 means
+`curvature_jump <= curvature_tolerance * (larger curvature) + 1e-3 / length` as well, so that faces
 that are both nearly flat count as G2.
 
 ## How

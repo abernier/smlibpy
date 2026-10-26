@@ -12,13 +12,13 @@ points such as a scan. Returns a `Shell` with one face.
   points" below).
 - `interpolate=True`: the surface passes through every point (distance < 1e-10).
 - `interpolate=False`: the points are control points. Only the four corners lie on the
-  surface; the rest is pulled towards the points but stays away from them (0.3 to 1 mm on a
+  surface; the rest is pulled towards the points but stays away from them (up to 1 mm on a
   ±5 mm bump with 10 mm spacing). It is a smoothing, not a fit.
 - `report=True`: returns `(sheet, report)`, a `FitReport`: `max_distance`, `rms_distance` and
   `distances` (a numpy array, one per point in the order given; a grid's rows one after the
-  other): how far each point lies from the surface, to its closest point on it. 1500 points
-  take about 10 ms (`distance_to` per point: 0.1 s, and it can miss the nearest point on a
-  folded surface).
+  other): how far each point lies from the surface, to its closest point on it. A cloud of 1500
+  points takes about 0.13 s, 20000 about 3 s, a grid of 117 points 5 ms (`distance_to` per point:
+  0.08 s for 1500, and it can miss the nearest point on a folded surface).
 
 ## Returns
 A `Shell`: 1 face of type `"bspline"`, always bicubic (degree 3 x 3), 4 edges and 4 vertices
@@ -39,7 +39,7 @@ check `face.normal_at(point)` before thickening.
 Interpolation error between the points falls fast with density. For a ±8 mm sine bump over
 60 x 40 mm: 4x4 points 0.93 mm, 6x6 0.06 mm, 10x10 0.002 mm, 20x20 0.0002 mm. Control mode:
 4.2, 1.3, 0.39, 0.09 mm. Uneven spacing is fine (chord-length parameters). A 100 x 100 grid
-takes 0.02 s.
+takes 0.01 s.
 
 ## Closed directions and poles
 - Rows that are closed rings (first point == last point) give a closed tube: 1 face, 2 edges,
@@ -48,10 +48,11 @@ takes 0.02 s.
   6.6° with 8 segments per ring, 2.5° with 12, 0.34° with 24, 0.03° with 48. Control mode with
   12 segments: 30°.
 - A row of identical points (a pole) works: rings shrinking to a point give a dome.
-- **Do not thicken closed grid surfaces or surfaces with a pole.** A dome raises; a closed
-  tube mostly raises (`ModelingError` or `KernelError`), but some tubes (8 or 12 points per
-  ring) still return a Part of volume about 0 that `is_valid()` accepts. For exact closed
-  shapes use `revolve`, `loft` or `extrude` of curves, or build two open halves.
+- **Do not thicken closed grid surfaces or surfaces with a pole.** A dome raises, and so does a
+  closed tube (`ModelingError` or `KernelError`; also where the kernel gives a body of volume
+  about 0, as for 8 or 12 points per ring, thickened outward).
+  For exact closed shapes use `revolve`, `loft` or `extrude` of curves, or build two open
+  halves.
 
 ## A cloud of points
 A flat list of points (or an `(n, 3)` array) is a cloud: the surface approximates the points
@@ -69,14 +70,14 @@ A flat list of points (or an `(n, 3)` array) is a cloud: the surface approximate
 - The cloud must be a **height field over its best-fit plane**: no overhangs, nothing folded
   over. A hemisphere seen from the side or a tube gives a surface that misses the points by
   millimetres, without an error: check with `report=True`. 1500 points on a half tube r 10:
-  `max_distance` 0.89; on 288 degrees of it: 7.37 (rms 2.3). The fit's own residuals (at the
-  parameters it gave the points) overstate this (19.4), and a check at 3 x rms would refuse
-  ordinary noisy scans (their worst point lies about 4 x rms off): compare `max_distance` with
-  the noise you expect.
+  `max_distance` 0.8 to 0.9 (two samples); on 286 degrees of it (the example's tube): 7.77 (rms
+  2.41). The fit's own residuals (at the parameters it gave the points) overstate this (19.4),
+  and a check at 3 x rms would refuse ordinary noisy scans (their worst point lies about 4 x rms
+  off: 3.8 in the example): compare `max_distance` with the noise you expect.
 - Each point is matched to the surface where its projection onto the plane lies (the surface is
   a height field over the plane), so noise does not pull the surface sideways.
 - Fast: 2000 points 3 ms, 20000 points 30 ms. Smooth shapes come close: a bump of 2000 points
-  within about 0.001 mm (0.00101), 20000 points within 4.4e-5 mm.
+  within about 0.001 mm (0.00101), 20000 points within about 5e-5 mm.
 - Noisy points (a scan): the surface should stay about as far from the points as the noise
   (on average). Coming much closer means it follows the noise: take fewer control points
   (`controls=12`) or more smoothing (0.1 to 1). With noise of 0.1 mm on 3000 points, the

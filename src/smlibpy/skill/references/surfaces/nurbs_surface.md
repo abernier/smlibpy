@@ -40,7 +40,10 @@ the same surface).
 - `ValueError: nurbs_surface: the u degree must be 1 to 32, got 0`; `... degree 4 needs at least
   5 control points along u, got 4`.
 - `ValueError: nurbs_surface: the control points are rows of points (at least 2 x 2), all rows the
-  same length`.
+  same length`; `... the control points must be finite numbers`.
+- `TypeError: nurbs_surface: the control points come first; give a NurbsSurface whole
+  (nurbs_surface(face.nurbs()) or Shell.from_nurbs(face.nurbs())), not unpacked`:
+  `nurbs_surface(*face.nurbs())`.
 
 ## Example
 ```python

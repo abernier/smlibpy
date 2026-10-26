@@ -7,9 +7,13 @@ center, a piece of a spline the same spline.
 ## Signature
 - `edge.split(at) -> (Edge, Edge)`, `wire.split(at) -> (Wire, Wire)`: the part before `at` and
   the part after.
-- `edge.trim(start, end) -> Edge`, `wire.trim(start, end) -> Wire`: from `start` to `end`.
+- `edge.trim(start, end) -> Edge`, `wire.trim(start, end) -> Wire`: from `start` to `end`; the
+  function `trim(edge_or_wire, start, end)` is the same (it also trims sheets: `surfaces/trim`).
 - `edge.param_at_point(point) -> float`: the fraction of the nearest point; `edge.closest_point(point)`
   gives the point itself.
+
+The function `split(part, plane, keep)` cuts parts (`features/split`); edges and wires are split
+with the method.
 
 A position is a **fraction of the length** (0 at `start`, 1 at `end`, as `point_at` takes it) or
 a **point on the edge or wire** (a tuple, `Vector` or `Vertex`, within 1e-6 of the length).

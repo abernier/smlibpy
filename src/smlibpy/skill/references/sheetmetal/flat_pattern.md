@@ -34,11 +34,8 @@ The largest face of the part lies at z = 0 facing down, so a tray's bends are al
 ## Gotchas
 - A part without bends gives its own flat pattern (`Box(10, 20, 2)`: 20 x 10, no bends).
 - Parts that do not unfold raise like `unfold`.
-- `pattern.part.bbox()` of a part with holes that crossed a bend can be deeper than the sheet
-  (the kernel's box samples the fitted hole walls' surfaces past their edges); `pattern.size`
-  measures the edges, which lie at z = 0 to thickness, as does the outline.
-- A hole wholly inside a bend zone gives the right outline, but `pattern.part.is_valid()` is
-  False (the unbent hole wall does not quite meet the faces around it).
+- Holes across a bend zone or wholly inside it come back as one circle in the outline, and
+  `pattern.part` is valid (a 100 x 40 x 2 plate with a hole of r 1 to 8 on a 90 degree bend).
 
 ## Example
 ```python
@@ -55,8 +52,8 @@ for b in pattern.bends:
 export_step(pattern.part, "flat.step")                    # the blank as a solid
 ```
 Prints `FlatPattern(170.786 x 50, thickness=1.5, 2 bends, k_factor=0.44)`,
-`[(4, ['line']), (1, ['circle'])]`, then `down 90.0 1.5 3.3929 Edge(line, (23.7, 50, 0) -> (23.7, ...))`
-and `up 90.0 1.5 3.3929 Edge(line, (147.1, 50, 0) -> ...)`.
+`[(4, ['line']), (1, ['circle'])]`, then `up 90.0 1.5 3.3929 Edge(line, (23.7, 0, 0) -> (23.7, 50, 0))`
+and `down 90.0 1.5 3.3929 Edge(line, (147.1, 0, 0) -> (147.1, 50, 0))` (y 0 to within 1e-13).
 
 ## Related
 `unfold`, `bends`, `export_step`, `recipes/sheet-metal`.

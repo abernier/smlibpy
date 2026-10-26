@@ -41,8 +41,8 @@ unfolds them exactly with the kernel's space bend: `fold`, `flange`, `unfold`, `
   cylinders (only the oblique side faces in the zone become NURBS).
 - The volume grows by `A * t**2 * (0.5 - k) / (radius + k * t)` per bend (A: area of the strip in
   the flat): the material outside the neutral fiber stretches. K = 0.5 keeps the volume.
-  A 100 x 40 x 2 plate bent 90 degrees with R 2: 8015.079645 (`mass_properties(accuracy=1e-10)`);
-  the default `volume` is accurate to about 1e-9 relative (8015.079653).
+  A 100 x 40 x 2 plate bent 90 degrees with R 2: 8015.079645, by `volume` as by
+  `mass_properties(accuracy=1e-10)`.
 - Bending and unfolding with the same K-factor gives the blank back: volume 8000.0, the original
   bounding box to 1e-9.
 

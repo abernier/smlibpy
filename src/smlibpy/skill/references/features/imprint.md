@@ -6,6 +6,7 @@ color, draft or select (a label area, a parting line, a seal track). The volume 
 
 ## Signature
 `part.imprint(tool, direction=None, *, nearest=True) -> Part`
+`imprint(part, tool, direction=None, *, nearest=True)` (the same, the part first)
 
 - `tool`: a `Part` (the faces are split where its surface crosses them), a sheet (`Shell`) or a
   face that crosses faces of the part, or a `Sketch` (or a planar face) lying on a face of the
@@ -31,8 +32,8 @@ each side of the seam.
 
 ## Measured
 - `Box(20, 20, 10)`, `Circle(4)` above, along -Z: 7 faces, the disk 50.26542 (16π = 50.26548;
-  its edge within 5e-6 of the circle, where `project()` is 3.5e-4 off); with `nearest=False` 8
-  faces (the bottom too). Volume 4000 in both.
+  its edge within 5e-6 of the circle, `project()`'s curves within 2.3e-6); with `nearest=False`
+  8 faces (the bottom too). Volume 4000 in both.
 - `Cylinder(10, 40)`, a circle r 4 at x = 50 along -X: the patch on the near side, 51.3366, in two
   faces (the seam runs through it); `nearest=False`: the far side too, 6 faces.
 - A box with rounded vertical edges: 10 -> 11 faces, volume unchanged.
@@ -49,8 +50,9 @@ each side of the seam.
 ## Errors
 - `ModelingError: imprint: the curves, moved along the direction, miss the part`: also when the
   part lies behind the curves (point the direction at the part).
-- `ValueError: imprint: the curves must lie on the faces (within 0.00062); move them onto them
-  with project()`: no direction, and the curves are off the part.
+- `ValueError: imprint: the curves must lie on the faces (within 0.00038); move them onto them
+  with project()`: no direction, and the curves are off the part (the tolerance is 1e-5 of the
+  box around the part and the curves: 0.00038 for `Box(20, 20, 10)` and `Circle(4)` 20 above it).
 - `ModelingError: imprint: the curves split no face: each must run across a face from border to
   border, or close a loop on it`.
 - `ValueError: imprint: the direction must not be zero`; `TypeError: imprint: direction= moves

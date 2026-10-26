@@ -60,7 +60,7 @@ the id the answer names (`s-k3v9q2xa`) in every later one (see [Sessions](#sessi
 | `snapshot` | A PNG of the model: a view, a technical drawing (front, side and top view with hidden edges dashed, ISO method E or A), sheets of views, sections, highlighted selections, markers, x-ray, zebra stripes and curvature maps, and before/after comparisons |
 | `scene`, `inspect` | What is shown, the variables, measurements of a shape, its faces and edges |
 | `list_methods`, `describe_method`, `docs` | The API index, signatures and the guides of the skill |
-| `save`, `load` | STEP, USD, STL, glTF, OBJ, the native format, PNG, DXF (sketches and sections); STEP, USD, STL and DXF in |
+| `save`, `load` | STEP, USD, STL, glTF, OBJ, OpenCASCADE `.brep`, the native formats (`.smb`, `.smp`), PNG, DXF (sketches and sections); STEP, IGES, USD, `.brep`, the native formats, STL and DXF in |
 | `checkpoint`, `restore`, `clear` | Go back to an earlier state of the session, or start over in it |
 | `view` | The link of the session's live view (Buerligons) |
 | `get_selection`, `set_selection` | What you selected in the live view, as expressions for scripts; faces and edges the agent highlights for you |
@@ -86,10 +86,9 @@ A session holds the variables, the scripts that made them, the checkpoints and a
 its own. It belongs to the conversation that opened it: the answer to `"new"` names its id, and
 only that conversation is told it. This matters where a host sends many conversations through
 one server process, as the Claude desktop chat app and Cowork do (one process per configured
-server, for all their conversations; Cursor and VS Code run one per window): nothing in a request
-says which conversation sent it, so the session is named in the call. A call without one, or with
-an id the server does not know, is refused and changes nothing. A second, unrelated model is a
-second session.
+server, for all their conversations): nothing in a request says which conversation sent it, so
+the session is named in the call. A call without one, or with an id the server does not know, is
+refused and changes nothing. A second, unrelated model is a second session.
 
 ## How it runs
 

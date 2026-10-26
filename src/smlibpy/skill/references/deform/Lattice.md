@@ -4,8 +4,8 @@ Free-form deformation: a grid of control points around a part; move the points, 
 lattice, and the part follows smoothly. The result is exact NURBS.
 
 ## Signature
-`Lattice(box, counts=3, *, margin=0.0)`; `lat.apply(shape, *, tolerance=None)` or
-`part.deform(lat)`
+`Lattice(box, counts=3, *, margin=0.0)`; `lat.apply(shape, *, tolerance=None)`,
+`part.deform(lat, *, tolerance=None)` or `deform(shape, lat, *, tolerance=None)` (the same)
 
 - `box`: a `BoundBox` or a shape (its bounding box). `margin` grows it on every side; flat
   shapes need one (`ValueError: ... give a margin for flat shapes`).
@@ -25,10 +25,11 @@ lattice, and the part follows smoothly. The result is exact NURBS.
 A `Part` (`Shell` for a shell or sketch) with the same faces; the map is a Bezier volume
 (Bernstein polynomials of degree count - 1), so every face is its **exact** image. Degrees
 measured: box faces up to (counts - 1) per direction ((2, 2) in a 3 x 3 x 3 lattice); with
-the top layer of a 3 x 3 x 3 lattice scaled, a cylinder side (4, 2) and a sphere (6, 6);
+the top layer of a 3 x 3 x 3 lattice scaled, a cylinder side (2, 2) and a sphere (6, 6);
 one point of a 3 x 3 x 3 lattice moved, a sphere (12, 12) with 1225 poles. A face needing
-more than degree 12 (`MAX_DEGREE`), such as a sphere with one point of a 4 x 4 x 4
-lattice moved, is fitted within `tolerance` instead (quintic, 2925 poles). An unmoved
+more than degree 12 (`smlibpy.deformations.MAX_DEGREE`), such as a sphere with one point of
+a 4 x 4 x 4 lattice moved, is fitted within `tolerance` instead (quintic, 2500 to 3000
+poles). An unmoved
 lattice changes nothing, and faces the lattice leaves in place (the bottom of a block when
 only the top layer moves, the sides when only the middle of the top does) keep their type:
 the pillow below has 5 planes and a B-spline top.

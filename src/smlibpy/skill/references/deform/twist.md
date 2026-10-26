@@ -4,7 +4,7 @@ Turns every cross-section of a part about an axis, by an angle that grows evenly
 
 ## Signature
 `twist(shape, angle, *, axis=Z, start=None, end=None, tolerance=None)` or
-`part.twist(angle, ...)`
+`part.twist(angle, *, axis=Z, start=None, end=None, tolerance=None)`
 
 - `angle`: degrees between `start` and `end`, counterclockwise seen from the tip of
   `axis` (right-hand rule, as `rotate`). Negative turns the other way; 720 is fine.
@@ -15,8 +15,9 @@ Turns every cross-section of a part about an axis, by an angle that grows evenly
   `twist(90)` turns the far end by exactly 90°. A range beyond the part turns the part by
   its share: `Box(16, 16, 200).twist(45, start=-100, end=300)` turns the top by 22.5°.
 - `tolerance`: largest distance of the twisted faces from the exact twist, mm (default
-  1e-6). Measured on a hexagonal prism twisted 360°: 1e-3 gives 2.1e-4 and 164 poles, 1e-6
-  gives 3.8e-8 and 452 poles, 1e-8 gives 5.8e-10 and 836 poles; all within 0.02 s.
+  1e-6). Measured on a hexagonal prism twisted 360°: 1e-3 gives 8.1e-6 and 42 poles per
+  side face, 1e-6 gives 1.1e-7 and 74 poles, 1e-8 gives 1.8e-9 and 138 poles; all within
+  0.02 s.
 
 ## Returns
 A `Part` (`Shell` for a shell or sketch), same faces, edges and vertices, same volume. An
@@ -43,9 +44,11 @@ has edges the twist moves (a box fused onto a cylinder's side), it is fitted.
 - Meshes (STL, glTF, renders) of twisted parts have far more triangles than those of the
   untwisted part: a twisted face needs triangles in proportion to 1 / tolerance, and the whole
   part is divided finer. `Box(20, 20, 100).twist(90).mesh()` has 2076 triangles, 0.03 mm off
-  (volume 40061); `mesh(0.001)` 131596 triangles in 0.6 s. Ask for no finer tolerance than
+  (volume 40061); `mesh(0.001)` 131596 triangles in 0.7 s. Ask for no finer tolerance than
   needed. STEP is exact.
-- `offset()` of a twisted part fails outward; `shell()` works.
+- `offset()` of a twisted part works with its default sharp corners; `corners="round"` can
+  fail (`Box(20, 20, 100).twist(90).offset(2, corners="round")`: `ModelingError: offset: the
+  kernel could not build a valid result ...`). `shell()` works.
 
 ## Errors
 - `ValueError: twist: angle is 0; nothing to do`, `... must be a finite number of degrees`.

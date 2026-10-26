@@ -114,7 +114,7 @@ flask = bottle.swing(RoundedRectangle(40, 30, 8))                    # 40 x 30, 
 ```
 
 The faces are exact products of the profile's and the outline's curves (B-splines). A circle
-about the origin gives the revolve; an open curve gives a surface.
+about the origin gives the revolve; an open profile gives a surface.
 
 ## Loft
 
@@ -138,7 +138,7 @@ ring = loft([Rot(z=45 * i) * Pos(10, 0, 0) * Rot(x=90) * Circle(2 + i % 2) for i
 
 A tangent can also be a face that ends at the section: the loft continues it, tangent to it all
 along the section. `rails` are curves a loft of open sections runs along, through every section:
-the surface passes through them exactly, as through the sections:
+the surface passes through them as through the sections, within about 2e-7:
 
 ```python
 can = Cylinder(10, 20)
@@ -185,7 +185,8 @@ trim = sweep(ell, path, anchor="origin")                             # the corne
 ```
 
 An open profile that runs from the path to a second rail sweeps along both with `rails`: it is
-moved, turned and scaled so that its ends stay on them, and the surface passes through both:
+moved, turned and scaled so that its ends stay on them, and the surface passes through both
+(within about 2e-7):
 
 ```python
 left, right = Spline((0, 0, 0), (2, 15, 1), (0, 30, 0)), Spline((20, 0, 0), (26, 15, 3), (22, 30, 0))
@@ -193,8 +194,8 @@ hood = sweep(ThreePointArc((0, 0, 0), (10, 0, 4), (20, 0, 0)), left, rails=right
 ```
 
 A path that is a single line is swept as an extrusion, a single arc (or circle) as a revolve:
-planes, cylinders, cones and tori, the same faces a path of several edges gives. A profile that
-reaches across the axis of the arc raises `ModelingError` (it would sweep through itself).
+planes, cylinders, cones and tori, not the B-spline surfaces of the kernel's sweep. A profile
+that reaches across the axis of the arc raises `ModelingError` (it would sweep through itself).
 
 `scale` grows or shrinks the profile along the path, about the point of it that sits on the
 path: `(start, end)` evenly along the length, `[(t, s), ...]` through scales at fractions of the

@@ -28,7 +28,8 @@ types on edges (`"line"`, `"circle"`, ...); see `types`.
   `ValueError: not a circular edge but a line` on the first line. Narrow first:
   `edges().circles().filter(lambda e: e.radius > 2)`, or test `e.geom_type` in the predicate.
 - Compare floats with a tolerance in predicates (`abs(f.radius - 6) < 1e-6`, `abs(z - 8) < 1e-6`):
-  centers carry noise of about 1e-6 from integration.
+  face centers are integrated and carry noise in the last digits (8.5e-11 off the axis on a
+  cylinder's side face).
 - `filter` is the escape hatch for everything the named selectors cannot say: by length, radius,
   area, a coordinate range, `is_closed`, distance to a point.
 

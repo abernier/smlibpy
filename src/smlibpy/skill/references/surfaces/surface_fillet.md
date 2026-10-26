@@ -34,15 +34,19 @@ around each place where they cross). The edges along its length lie on the two s
 - The inputs are not changed. `trim=True` returns one sheet: the two faces cut back to the
   blend's long edges, and the blend (floor and wall below: 3 faces, 1514.1593, 8 free edges).
   To make a solid, `thicken` it or close it with `stitch`.
-- It takes 20 to 50 ms.
+- It takes 5 to 15 ms between the planes below, 20 to 45 ms between the two pipes.
 
 ## Errors
 - `ValueError: surface_fillet: radius2 is for chamfers (shape="chamfer"); a round blend has one radius`.
 - `ValueError: surface_fillet: shape is "round" or "chamfer", got 'cove'`.
 - `ModelingError: surface_fillet: the kernel made no blend; the surfaces may not meet, or not
   leave room for the radius on those sides`: parallel surfaces, a radius that does not fit,
-  or a side where the ball has no room.
-- `ValueError: surface_fillet: the radius must be positive, got 0`.
+  or a side where the ball has no room. Where the kernel's blend fails instead (a floor 3 deep
+  under a radius 5): `KernelError: surface_fillet failed (SM_ERR): ...`, the same hint.
+- `ModelingError: surface_fillet: the blend could not be sewn to the faces cut back; ...` (with
+  `trim=True`): sew them with `stitch(..., tolerance=...)`.
+- `ValueError: surface_fillet: the radius must be positive, got 0`; `... radius2 must be
+  positive, got -1`.
 - `ValueError: surface_fillet: sides must be two of 1 and -1, got (1, 0)`.
 - `TypeError: surface_fillet takes faces (or sheets of one face), not a Part`.
 - `ValueError: surface_fillet: a is a sheet of 2 faces; pass one of them`.

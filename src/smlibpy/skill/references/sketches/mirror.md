@@ -4,7 +4,7 @@ A mirrored copy of a sketch, about an axis in its own plane or in any plane. Lin
 lines, arcs stay arcs, and the sketch keeps facing the same way.
 
 ## Signature
-`sketch.mirror(plane=Plane.XZ)`
+`sketch.mirror(plane=Plane.XZ)` (also `mirror(sketch, plane)` as a function)
 - an `Axis` in the sketch plane: `s.mirror(Y)` (x -> -x for a sketch on XY), `s.mirror(X)`
   (y -> -y), `s.mirror(Axis((30, 0, 0), (0, 1, 0)))` (about x = 30).
 - a `Plane` or a planar face, as for parts. The default `Plane.XZ` flips y.

@@ -6,7 +6,11 @@ two sheets cut back to a blend. `Face.split` gives the pieces of one face.
 
 ## Signature
 `sheet.trim(curves, keep)`
+`trim(sheet, curves, keep)`: the same, as a function
 `face.split(curves)`
+
+(`edge.trim(start, end)`, `wire.trim(start, end)` and `trim(edge, start, end)` cut a curve to a
+stretch of it instead: see `curves/split`.)
 
 - `curves`: edges or wires (or a list of them) that lie on the sheet, to 1e-5 of the size:
   where two sheets meet (`intersection_curves`), the long edges of a `surface_fillet`, curves
@@ -23,9 +27,9 @@ body does not change; for a part's faces, see `imprint`).
 
 ## Along a direction
 A hole or an outline along a direction: project the outline onto the sheet first,
-`sheet.trim(sheet.project(outline, (0, 0, -1)), keep=...)`. The projected curve is within about
-1e-4 of the sheet; that is close enough. (`stitch(Box(...) - prism & sheet)` gives the same
-result through Booleans.)
+`sheet.trim(sheet.project(outline, (0, 0, -1)), keep=...)`. The projected curve lies on the
+sheet within about 1e-6 (6e-7 on the saddle below); that is close enough. (`sheet - prism`, the
+sheet trimmed by a part, gives the same result through a Boolean: 1169.871 below.)
 
 ## Measured
 - Rectangle(40, 40) sheet, `Circle(5)`: keep the center 78.5398, keep a corner 1521.4602 (one
@@ -40,10 +44,12 @@ result through Booleans.)
 ## Errors
 - `ModelingError: trim: the curves do not split the sheet: each must run across a face from
   border to border, or close a loop on it` (`"split"`), `... do not cut the sheet in two ...`
-  (a point): a curve that ends inside a face (a slit), or one along an existing edge.
+  (a point): a curve that ends inside a face (a slit).
 - `ValueError: trim: the curves must lie on the faces (within 0.00057); move them onto them
-  with project()`: a curve off the sheet.
-- `ModelingError: trim: nothing is left; ...`: the point lies on no side.
+  with project()`: a curve off the sheet, and also a curve along one of its edges (its border, or
+  an edge between two of its faces).
+- `ModelingError: trim: nothing is left; the point lies on no side the curves cut off`: the
+  kernel kept no face. A point off the sheet keeps the side nearest to it.
 - `ValueError: trim: keep is a point on the side to keep, or "split"; got 'both'`.
 - `TypeError: trim takes curves (edges or wires), not a Part`; `ValueError: trim: no curves`.
 

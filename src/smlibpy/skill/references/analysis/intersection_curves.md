@@ -6,6 +6,7 @@ query: nothing changes.
 ## Signature
 
 `body.intersection_curves(other) -> ShapeList[Edge]`
+`intersection_curves(body, other)`: the same, as a function
 
 `body` is a `Part`, `Shell` or `Sketch`. `other` is one of those, a `Face` (the face itself,
 bounded by its edges), or a `Plane` (unbounded: where it cuts the body's faces, as
@@ -15,8 +16,8 @@ bounded by its edges), or a `Plane` (unbounded: where it cuts the body's faces, 
 
 A `ShapeList` of standalone `Edge`s, each curve once, in no particular order, not joined. A
 closed curve comes in pieces: split where it crosses a seam of a curved surface or an edge of a
-face. A sphere cut by a plane gives 2 arcs; a tilted cylinder through a box gives 7 pieces (3 on
-the bottom face, 2 on the top, 1 on each side wall).
+face. A sphere cut by a plane gives 2 arcs; `Cylinder(5, 80).rotate(X, 30)` through
+`Box(20, 20, 20)` gives 8 pieces (3 on the bottom face, 2 on the top, 3 on the side walls).
 
 An empty list where the two do not meet: bodies apart, one body inside the other (nested), a
 plane past the body.
@@ -48,14 +49,14 @@ different radii).
   by `piece.center().z`.
 - For a cross-section region (area, a sketch to extrude) use `part.section(plane)`, which
   returns a `Sketch`.
-- Bodies that touch without crossing can still raise `KernelError` (the kernel found no curve
-  where they are 0 apart).
+- Bodies that touch without crossing gave an empty list where tried (two spheres, a sphere on a
+  box's face); where the kernel's intersection fails on bodies 0 apart, the `KernelError` stands.
 
 ## Errors
 
 - `TypeError: intersection_curves takes a body (Part, Shell, Sketch), a face or a plane, not a tuple`.
-- `KernelError: intersection curves failed (SM_ERR)` where the surfaces touch but the kernel
-  finds no curve.
+- `KernelError: intersection curves failed (SM_ERR)` where the kernel finds no curve and the
+  bodies touch or cross (bodies apart or nested give an empty list instead).
 
 ## Example
 

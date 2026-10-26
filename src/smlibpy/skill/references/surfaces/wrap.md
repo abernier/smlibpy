@@ -8,8 +8,8 @@ cylinders and over curved faces, keeping their lengths.
 
 - `shape`: an `Edge`, a `Wire`, a `Sketch` (its edges) or a list of edges, drawn on XY (z is
   ignored).
-- `at`: where the drawing's origin goes: a point of the face's surface. Default: the middle of
-  the face's parameter range.
+- `at`: where the drawing's origin goes: a point of the face's surface (or a `Vertex`). Default:
+  the middle of the face's parameter range.
 - `direction`: where the drawing's X axis points at `at` (projected onto the face; it follows the
   face's parameter line nearest to it). Default: the face's first parameter direction there
   (around a cylinder). Y goes across, so that the drawing reads from outside.
@@ -22,8 +22,8 @@ cut in two or three at the seam).
 
 Lengths stay along the two parameter lines through `at`: x is measured along one, y along the
 other. On planes and cylinders the whole drawing keeps its size; on cones and doubly curved
-faces it stretches away from those lines (a circle of radius 2 on a sphere of radius 10 is 1 %
-shorter around). Around a closed face the drawing continues across the seam.
+faces it stretches away from those lines (a circle of radius 2 on a sphere of radius 10 is
+0.75 % shorter around). Around a closed face the drawing continues across the seam.
 
 ## Example
 ```python
@@ -39,8 +39,10 @@ path = side.wrap(Line((-60, -5), (60, 5)))            # a helical path almost on
 - The result is curves, not a cut or an embossed body. To engrave lettering, `bend()` an
   extruded `Text` around the cylinder (`deform/bend`); the wrapped curves serve as sweep paths,
   split lines and drawings.
-- `at` must lie on the face's surface: `ValueError: wrap: at must be a point of the face's surface ...`.
-- A `direction` normal to the face raises `ValueError`.
+- `at` must lie on the face's surface: `ValueError: wrap: at must be a point of the face's
+  surface; (0, 0, 0) is 20 from it`.
+- A `direction` normal to the face: `ValueError: wrap: the direction is normal to the face there;
+  give a direction along the face`.
 
 ## Related
 `iso`, `analysis/project`, `deform/bend`, `sketches/Text`.

@@ -21,7 +21,7 @@ A ring around the Z axis, centered on the origin.
 ## Returns
 
 A `Part` with one toroidal face. `Torus(20, 4)`: bbox x, y −24..24, z −4..4; volume 2π²·R·r²
-(6316.548); inner hole radius 16. `face.radius` is the minor radius (4), `face.axis` is Z.
+(6316.547); inner hole radius 16. `face.radius` is the minor radius (4), `face.axis` is Z.
 
 ## Gotchas
 
@@ -29,7 +29,7 @@ A `Part` with one toroidal face. `Torus(20, 4)`: bbox x, y −24..24, z −4..4;
 - It lies flat in XY. To stand it up rotate it: `Torus(20, 4).rotate(X, 90)` lies in the XZ
   plane (bbox y −4..4).
 - `align=(Align.CENTER, Align.CENTER, Align.MIN)` sets it on XY (z 0..8).
-- The repr shows the volume less precisely (`volume=6316.8`); use `.volume`.
+- The repr rounds the volume to six digits (`volume=6316.55`); use `.volume`.
 - A part of the tube (`minor_start_angle`/`minor_end_angle`) is centered by its own box like a
   sector: `Torus(20, 5, minor_start_angle=0, minor_end_angle=180)` (the upper half) spans z
   −2.5..2.5; `align=None` keeps the torus's center at the origin (z 0..5).

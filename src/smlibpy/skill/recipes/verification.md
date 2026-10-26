@@ -7,6 +7,7 @@ is a rebuild.
 ## After every step
 
 ```python
+part = Box(40, 30, 10) - Cylinder(5, 20)   # (the part being built)
 print(part.is_valid(), round(part.volume, 3), part.bbox().size, len(part.faces()))
 ```
 
@@ -24,7 +25,8 @@ print(part.is_valid(), round(part.volume, 3), part.bbox().size, len(part.faces()
 ## Look
 
 Pictures check shape, topology and placement; numbers check sizes, because every picture is
-scaled to fit. `snapshot` (MCP) and `render` (Python) take the same options.
+scaled to fit. `snapshot` (MCP) and `render` (Python) take the same picture options; in Python,
+`diff_images` does what `compare=` does.
 
 - **The drawing, after every few steps:** `snapshot(view="sheet")`, the same as
   `drawing=True`. A technical drawing in ISO projection method E: the front view, the view from

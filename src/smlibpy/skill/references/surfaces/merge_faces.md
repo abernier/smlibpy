@@ -2,11 +2,12 @@
 
 Make two faces of a sheet one: one surface over both, where they share a whole side. The pieces of
 a sheet split along a curve of its surface come back as the one face they were (the same control
-points); patches built through the same curves become one B-spline face. Fewer faces give cleaner
-STEP files, meshes, fillets and `match_edge`.
+points, in another parameter order); patches built through the same curves become one B-spline
+face. Fewer faces give cleaner STEP files, meshes, fillets and `match_edge`.
 
 ## Signature
 `sheet.merge_faces(a, b)`
+`merge_faces(sheet, a, b)`: the same, as a function
 
 - `a`, `b`: two faces of the sheet, each bounded by the four sides of its surface (no holes, no
   trimmed borders, no seam), sharing one whole side (and no other).
@@ -15,7 +16,7 @@ STEP files, meshes, fillets and `match_edge`.
 A new `Shell` with one face less (a Sketch's comes back as a Shell). The merged face lies on one
 surface: the two joined across the shared side, the knot at the joint taken out where they meet
 smoothly enough (within the sheet's tolerance). Its normal is `a`'s. The sheet's other faces are
-sewn to it again, its border unchanged. 3 ms for two bicubic faces.
+sewn to it again, its border unchanged. About 2 ms for two bicubic faces.
 
 The joined surface is checked against both faces (81 points each): where it misses them by more
 than ten times the sheet's tolerance, the faces are not merged. That happens when their

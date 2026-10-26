@@ -33,7 +33,7 @@ Angles in degrees, measured from +X counterclockwise.
 ## Example
 ```python
 flange = Cylinder(60, 10) - Cylinder(20, 12) - PolarLocations(45, 8) * Cylinder(5, 12)
-print(flange.is_valid(), len(flange.faces().cylinders()))   # 10: outer, bore, 8 holes
+print(flange.is_valid(), len(flange.faces().cylinders()))   # True 10: outer, bore, 8 holes
 
 def angle(p):
     return round(math.degrees(math.atan2(p.y, p.x)), 3)

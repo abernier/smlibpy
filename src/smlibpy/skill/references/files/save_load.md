@@ -14,7 +14,9 @@ the same in memory (`bytes`).
   of them. No name, no color.
 - `.smp` (the kernel's part container, `SmBrepData::WritePartToFile`): any number of parts (with
   their cells), sheets, sketches and faces, each with its name and color, and edges and wires as
-  curves. Any other extension writes `.smb`.
+  curves. A sheet metal part keeps the K-factors of its bends (`fold`, `flange`), so that it
+  unfolds as folded; faces keep their own colors (`colored(..., faces=)`), not their names. Any
+  other extension writes `.smb`.
 - `ascii=True` (the default) writes a text file. `ascii=False` writes a binary file, about 40 %
   of the size, bit-exact.
 - `load` decides by the extension, in any letter case:
@@ -48,8 +50,9 @@ Use `.smp` to cache intermediate results between scripts (`ascii=False`), `.smb`
 SMLib's own tools read. Use STEP to deliver a model.
 
 ## Gotchas
-- `.smb` stores no name and no color. `load` returns `name None`, `color None`. Set them
-  again with `.named()` and `.colored()`, or save to `.smp`.
+- `.smb` stores no name and no color (nor colors of faces, nor K-factors of bends). `load`
+  returns `name None`, `color None`. Set them again with `.named()` and `.colored()`, or save to
+  `.smp`.
 - A list of two parts raises for `.smb`. Fuse them, save each to its own file, or use `.smp`.
 - smlibpy cannot read glTF or OBJ: `load("x.glb")` raises `ValueError: unknown file type
   '.glb'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep`.

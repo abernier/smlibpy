@@ -82,8 +82,9 @@ with the edge.
   not rounded, are not bounded). Where the kernel fails or its body is refused, smlibpy tries
   once more with the rounds' edges closer to the faces (as the kernel's own all-edge fillet
   builds them), which is exact closer to the limit. A 10 mm cube with all edges: r 4.97, 4.98,
-  4.995 and 4.999 are right; r 4.99 raises `ModelingError`; r 5 raises. A 20 mm cube: r 9.98 and
-  9.99 are right. Stay 2% or more below the limit, and compare the volume with a formula.
+  4.995 and 4.999 are right; r 4.99 raises (`KernelError: fillet failed: the radius may be too
+  large for the selected edges (it is 4.99)`); r 5 raises. A 20 mm cube: r 9.98 and 9.99 are
+  right. Stay 2% or more below the limit, and compare the volume with a formula.
 - A single edge can take a radius up to the full face width (one edge of a 10 cube with r 10
   gives the exact quarter cylinder).
 - `r <= 0` raises `ValueError: fillet: the radius must be positive`.
@@ -92,8 +93,9 @@ with the edge.
 
 ## Order
 - Where rounds of different radii meet at a corner, give them in one call with a radius list,
-  or round the larger radius first. Small first, then large, leaves a dented corner
-  (picture in training; volume 25199.4 vs 25154.7).
+  or round the larger radius first. Small first, then large, leaves a dented corner (the
+  example's block: 25199.4 against 25154.7, the second call with `propagate=False`; with the
+  default it raises `KernelError`).
 - Fillet after the Booleans that create the edges; select the new edges with
   `part.edges().joining(plate, boss)` (the edges where the bodies meet, see `selection/joining`),
   `part.edges().new(since=[plate, boss])` (the curves where their faces cross, see
@@ -121,7 +123,7 @@ with the edge.
   only with `propagate=False`.
 - `KernelError: fillet failed: the size is too large for the selected edges` when the result
   of rounding only convex edges has more volume than before (smlibpy's own check).
-- `ModelingError: fillet: the kernel returned a wrong body (the volume changed by 988.809, at most 804.757 is possible); the radius 4.99 is too close to the largest the selected edges allow, use a smaller one`
+- `ModelingError: fillet: the kernel returned a wrong body (the volume changed by ..., at most ... is possible); the radius ... is too close to the largest the selected edges allow, use a smaller one`
 - `KernelError: fillet failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as given, at any size: it could not build the corner at (15, 10, 5) (it has no corner for the way the rounded edges meet there); select fewer edges there`
   (a boss tangent to a side of the part), or without the corner `...: an edge whose faces meet ...`:
   an edge whose faces meet almost tangentially, or a vertex where the selected edges meet in a
@@ -131,7 +133,7 @@ with the edge.
 - `ValueError: fillet: the radius must be positive`
 - `ValueError: 2 radii for 4 edges`; `ValueError: continuity must be G1, G2 or G3`.
 - `ValueError: fillet: corners="mitre" mitres the corners where three rounded convex edges meet and no other edge, and the selection has none (round all three edges of a corner)`;
-  `ValueError: fillet: corners must be "patch" or "mitre", not 'round'`.
+  `ValueError: fillet: corners must be "patch" or "mitre" (or "miter"), not 'round'`.
 - `ValueError: fillet: the setback must exceed how far the rounds reach along the edges of the corner at (10, -10, 10) (2); give a larger setback`;
   `ValueError: fillet: the setback 10 is too large for the edge from (10, -10, 10) to (10, 10, 10) (20 long, set back at both ends): its corners would meet; give a setback below 10`;
   `ValueError: fillet: setback= sets back the corners where three or more rounded edges meet and no other edge, all convex or all concave, and the selection has none (round every edge of a corner)`;
@@ -205,7 +207,8 @@ except ModelingError as e:
 ```
 
 ## fillet_preview
-`part.fillet_preview(edges, radius, *, propagate=True)` gives the surfaces the rounds of a
+`part.fillet_preview(edges, radius, *, propagate=True)`, or `fillet_preview(edges, radius, *,
+propagate=True)` (takes the edges, as `fillet` does), gives the surfaces the rounds of a
 circular fillet would have, one untrimmed sheet (`Shell`) per edge, without changing the part
 (the kernel's preview: corners are not made, rounds not trimmed). For a look in the viewer before
 the fillet; a preview that succeeds does not promise the fillet will. Errors as `fillet`.

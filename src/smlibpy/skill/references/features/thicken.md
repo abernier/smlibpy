@@ -23,8 +23,9 @@ The side is the face normal, so check it before you thicken:
 - A cylinder face of a part: away from the axis.
 - An extruded open curve: depends on the curve's direction (an arc drawn counter-clockwise in
   XY and extruded up has normals pointing away from its center).
-- A `surface(...)` from a point grid: depends on the point order (a grid with rows along Y
-  and columns along X had its normal pointing down). Check it.
+- A `surface(...)` from a point grid: depends on the point order
+  (`surface([[(x, y, 0) for x in xs] for y in ys])`, each row along X, faces down; with the
+  loops swapped it faces up). Check it.
 
 ## Gotchas
 - Multi-face sheets thicken with sharp corners: an L-shaped sheet (two faces) thickened 1 to

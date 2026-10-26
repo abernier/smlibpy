@@ -46,9 +46,9 @@ to 1e-11.
 | part | `accuracy` | volume error | time |
 |---|---|---|---|
 | `Sphere(10)` | 1e-4 / 1e-7 (default) / 1e-10 | below 1e-15 | 2 / 2 / 4 ms |
-| spring of `examples/spring.py` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10) | 23 / 54 / 55 ms |
-| triangle swept along a 20-turn helix | 1e-7 | below 1e-15 (against 1e-10) | 25 ms |
-| surface through 105 x 105 points, `thicken(2)` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10; the kernel at 1e-11: 7e-10) | 0.58 s each |
+| spring of `examples/spring.py` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10) | 44 / 105 / 103 ms |
+| triangle swept along a 20-turn helix | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10) | 80 ms each |
+| surface through 105 x 105 points (`3 sin(x/9) cos(y/11)` over 100 x 100), `thicken(2)` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10; the kernel at 1e-11: 6e-10) | 0.51 s each |
 
 A coarse `accuracy` saves little on dense free-form faces: every knot span gets at least 7 x 7
 points.
@@ -62,12 +62,12 @@ integrating the volume with three fields that agree only on a closed surface:
 
 ```
 mass properties: the faces of this part do not meet exactly (there are gaps between them), so its
-volume is uncertain by about 8e-05 of its value: integrated as the faces are, 7843.403086
+volume is uncertain by about 1e-02 of its value: integrated as the faces are, 1010
 ```
 
-That one is a sheet unfolded across a hole in a bend zone (true volume 7842.92). A body that
-could not be integrated to `accuracy` gets "the integration reached a relative accuracy of
-..., not ..." the same way.
+That one is the box of `surfaces/stitch` sewn with its top 0.1 above its walls (`tolerance=0.2`).
+A body that could not be integrated to `accuracy` gets "the integration reached a relative
+accuracy of ..., not ..." the same way.
 
 ## Gotchas
 

@@ -36,8 +36,8 @@ A new `Part`. Removed volume per straight 90° edge: `length² / 2 * edge length
 add material. Circular edges (hole rims, cylinder ends) work: a hole rim chamfer is a
 countersink-like bevel. The bevel of a full circle between faces around one axis (a plane at
 right angles to it, a cylinder or a cone, or the straight faces of a revolve: shafts, holes,
-turned parts) is an **exact cone** (a `"cone"` face; its edge on a plane end face is a circle, its
-edge on a cylinder a fitted B-spline): `Cylinder(2, 5)` with both rims 1 is
+turned parts) is an **exact cone** (a `"cone"` face; its edges are circles, on a plane end face
+and on a cylinder): `Cylinder(2, 5)` with both rims 1 is
 52.3598776, exactly `pi*20 - 2*2*pi*(2 - 1/3)*0.5`. smlibpy cuts it (fills it at a concave rim)
 with the solid of revolution of the bevel's line; the kernel bevels the other edges, and a
 circle where that solid would take other material (a flange just below the rim).
@@ -65,8 +65,10 @@ chamfered: the kernel extends the bevel past the end). An invalid input part rai
   edge with 4 and 1 takes 0.5 * 4 * 1 * sin 60° * length). Elsewhere (an end on a slanted face,
   another bevelled edge ending there) such setbacks raise `ModelingError`.
 - Bevels the kernel makes (straight edges between curved faces, circles on spheres or tori, a
-  circle whose bevel would take other material) are fitted B-splines, off by about 1e-6 mm: up to
-  1e-5 of the volume of a small part. Circles between coaxial faces are exact (above; a cylinder
+  circle whose bevel would take other material) are fitted B-splines, not exact:
+  `Cylinder(10, 10) + Cylinder(12, 0.5).translate(0, 0, 4.05)` (a flange just below the top
+  rim), the rim bevelled by 0.6, comes out 5e-7 of its volume short. Circles between coaxial
+  faces are exact (above; a cylinder
   rim, 2 and 1: 6224.5422, as OpenCASCADE): their bevels are cones, and their edges circles, also
   where a bevel meets the cylinder.
 

@@ -5,7 +5,7 @@ a section of it with straight legs on both sides.
 
 ## Signature
 `bend(shape, angle, *, radius=None, plane=Plane.XZ, start=None, end=None, tolerance=None)`
-or `part.bend(angle, ...)`
+or `part.bend(angle, *, radius=None, plane=Plane.XZ, start=None, end=None, tolerance=None)`
 
 - `plane` sets everything: `x_dir` runs along the part, a positive `angle` bends toward
   `y_dir`, the bend axis is parallel to the plane normal, and the layer through
@@ -57,8 +57,8 @@ instead of 10000.
   inside (from the neutral layer).
 - Bends over 180° with long legs make the legs cross; that is not detected (`Box(200, 10,
   10).bend(270, radius=10)` passes `is_valid()`).
-- `offset()` fails outward; `shell()` works: bend a solid tube, then shell it with the end
-  faces open (or bend a hollow tube: same volume).
+- A bent tube: bend a solid one, then `shell()` it with the end faces open, or bend a hollow
+  one: same volume (5183.628 for the elbow below).
 
 ## Errors
 - `ModelingError: bend: the part reaches 5 mm from the neutral layer toward the bend axis,
@@ -76,7 +76,7 @@ bar = Box(100, 10, 10).bend(90)                      # the whole bar: a quarter 
 print(bar.bbox(), round(bar.volume, 3))              # volume kept: 10000.0
 
 hook = Box(160, 10, 6).bend(180, radius=25)          # U shape: the bend is centered on x = 0
-print(hook.bbox(), len(hook.faces().cylinders()))    # 2 exact cylinders in the bend
+print(hook.bbox(), len(hook.faces().cylinders()))    # the bend: 2 exact cylinders
 print(hook.bends())                                  # inside radius 22, thickness 6, K 0.5
 
 elbow = Cylinder(6, 150).rotate(Y, 90).bend(90, radius=30)   # pipe elbow with straight legs

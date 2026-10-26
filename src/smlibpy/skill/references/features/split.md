@@ -29,8 +29,8 @@ Splitting by another body is not supported (`TypeError: cannot use Part as a pla
   `ModelingError: split: the surface does not cut through the part ...`: make them reach past
   the part on every side.
 - Both sides are computed and checked: they hold the part's volume together.
-- `part + sheet` and `part - sheet` raise `TypeError` (they returned invalid "Parts"): split, or
-  `imprint` the sheet's lines into the faces.
+- `part + sheet` and `part - sheet` raise `TypeError` (`cannot fuse a Part with a Shell: a sheet
+  encloses no volume; ...`): split, or `imprint` the sheet's lines into the faces.
 
 ## Which side
 - `Plane.XY` normal is +Z: "above" keeps z > 0. `Plane.bottom` has normal -Z: "above" keeps

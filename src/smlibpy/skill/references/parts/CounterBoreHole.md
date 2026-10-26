@@ -35,7 +35,7 @@ z 2 to 5, a flat shoulder at z 2 of area π(4² − 2²). The part gains 3 faces
 
 - A zero or negative value: `ValueError: radius and height must be positive` (the message comes
   from the cylinder inside).
-- Three arguments: `TypeError: missing 1 required positional argument: 'depth'`.
+- Three arguments: `TypeError: CounterBoreHole() missing 1 required positional argument: 'depth'`.
 
 ## Example
 
@@ -46,7 +46,7 @@ top = plate.faces().top()
 plate -= (GridLocations(60, 40, 2, 2) * CounterBoreHole(3.3, 5.5, 6.5, 10)).on(top)
 print(sorted({(round(f.radius, 2), round(f.bbox().min.z, 3), round(f.bbox().max.z, 3))
               for f in plate.faces().cylinders()}))      # [(3.3, 0.0, 3.5), (5.5, 3.5, 10.0)]
-print(plate.is_valid(), round(80 * 60 * 10 - plate.volume, 3))   # 4 * pi * (3.3² * 3.5 + 5.5² * 6.5)
+print(plate.is_valid(), round(80 * 60 * 10 - plate.volume, 3))   # True 2949.83 = 4 * pi * (3.3² * 3.5 + 5.5² * 6.5)
 ```
 
 ## Related

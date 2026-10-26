@@ -61,7 +61,8 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.igs`/`.iges`, `.stl`, `.smb`, `.smp
 
 ## Assemblies
 - `export_step([a, b, c], path)` writes one product with several named solids, not an
-  assembly tree. Each solid is placed where it is in the model.
+  assembly tree. Each solid is placed where it is in the model. `assembly=True` writes each body
+  as a product of its own, named as the body, in an assembly (see `export_step`).
 - `import_step` applies assembly placements and returns a `ShapeList` with one `Part` per
   instance. The CAx-IF AS1 assemblies of AutoCAD, OpenCASCADE and others are placed correctly;
   still check foreign assemblies with a picture.
@@ -74,7 +75,7 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.igs`/`.iges`, `.stl`, `.smb`, `.smp
 | `Mesh` | `TypeError` | a `Mesh` prim (not read back) | `TypeError` | yes | `TypeError` | yes |
 | `Edge`, `Wire` | a curve (`read_step` reads it back) | `TypeError: export_usd writes parts, sheets, faces and meshes, not an Edge: ...` | `.smb`: `TypeError`; `.smp`: a curve, comes back as `Edge`/`Wire` | glTF only (lines); STL, OBJ: `TypeError` | yes (`import_dxf_wires` reads them back) | yes (lines) |
 | `Vertex` | a point | `TypeError: ... not a Vertex: export_step writes points` | `TypeError` | glTF only (a point); STL, OBJ: `TypeError` | `TypeError` | render skips it, show draws it |
-| an empty `Part` (a Boolean that left nothing) | `ValueError: nothing to write` | `ValueError: export_usd: the Part is empty: ...` | written | `ValueError: tessellate: the Part is empty: ...` | | `ValueError` |
+| an empty `Part` (a Boolean that left nothing) | `ValueError: export_step: the Part is empty: ...` | `ValueError: export_usd: the Part is empty: ...` | written | `ValueError: tessellate: the Part is empty: ...` | | `ValueError` |
 
 ## Related
 `export.md`, `in_memory.md`, `export_step.md`, `import_step.md`, `import_iges.md`, `save_load.md`, `export_stl.md`,

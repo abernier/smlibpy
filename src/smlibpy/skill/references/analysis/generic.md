@@ -15,7 +15,7 @@ the mass is in g and the inertia in g·mm². Steel is `7.85e-3` g/mm³, aluminiu
 | `Edge.length`, `point_at(t)` | integration along the curve | 1e-12 (lines exact) |
 | `volume`, `area`, `center()`, inertia of parts | integration with an error estimate, to `accuracy=1e-7` | at most 1e-7; measured 1e-10 and better |
 | `Face.area`, `Sketch.area`, `Shell.area` | the same | the same; lettering exact |
-| `mesh().volume` | triangles | 1e-5 to 4e-4, depends on `tolerance` |
+| `mesh().volume` | triangles | at the default `tolerance` 7e-4 (a holed box) to 4e-3 (a sphere); a sphere r 10 at `tolerance=0.001` 1.2e-4 |
 | `raycast` points of a body | the ray intersected with the exact faces | 1e-12 |
 
 - Volume, area, center and inertia are integrated over the exact geometry, never a mesh. The
@@ -32,13 +32,13 @@ the mass is in g and the inertia in g·mm². Steel is `7.85e-3` g/mm³, aluminiu
   intersection curve (fitted chamfers, G2/G3 blends, variable fillets, shells and offsets of
   curved faces, sweeps cut by planes, two cylinders crossing), the faces meet only to about 1e-6
   to 2e-5 mm, and the volume is defined only to that: the same body turned by 90 degrees measures
-  3e-7 (two crossing cylinders) to 4e-6 (a shelled bottle; a pin with G2-blended rims 3.4e-6)
-  different. Chamfers of full circles between coaxial faces are exact cones, not fitted. Bodies
-  whose edges are lines and circles close up exactly.
+  4e-8 (two crossing cylinders) to 4e-6 (a pin with G2-blended rims 3.8e-6; the shelled bottle of
+  `examples/bottle.py` 2.7e-6) different. Chamfers of full circles between coaxial faces are exact
+  cones, not fitted. Bodies whose edges are lines and circles close up exactly.
 - Curve constructions are fits: `Helix` is a NURBS approximation 2e-6 shorter than the
   formula, and bodies swept along it inherit that.
-- `mass_properties(accuracy=1e-10)` costs about as much as the default (the spring: 0.47 s
-  either way); a coarse accuracy saves little (1e-4: 0.19 s).
+- `mass_properties(accuracy=1e-10)` costs about as much as the default (the spring of
+  `examples/spring.py`: 0.1 s either way); a coarse accuracy saves about half (1e-4: 0.04 s).
 
 Compare against formulas with a relative tolerance: `1e-6`, or `1e-5` for sweeps, shells and
 offsets of curved faces. Never compare floats with `==`.
@@ -69,9 +69,10 @@ print(plate.info()["faces"])                           # 14
 ## Gotchas
 
 - A part keeps its measures: the first of `volume`, `area`, `center()` and
-  `mass_properties()` integrates (a few milliseconds for most parts, 55 ms for a spring with
-  512 knot spans, 0.6 s for a thickened surface with 46,000 knot spans on a face), the others
-  reuse it. A copy (`named()`, `colored()`, a moved part) integrates again.
+  `mass_properties()` integrates (a few milliseconds for most parts, 0.1 s for the spring of
+  `examples/spring.py`, 4096 knot spans, 0.5 s for a surface through 105 x 105 points thickened,
+  34,000 knot spans on its offset face), the others reuse it. A copy (`named()`, `colored()`, a
+  moved part) integrates again.
 - A `RuntimeWarning` "mass properties: the faces of this part do not meet exactly ..." means
   the body's faces leave gaps that make its volume uncertain by more than 1e-5 (the warning
   gives how much). The body is at fault, not the measure: see `mass_properties`.
@@ -80,8 +81,8 @@ print(plate.info()["faces"])                           # 14
 - `center()` means different things: the centroid for parts, faces, sketches and shells; the
   point halfway along the curve for edges; a length-weighted average of edge midpoints for
   wires; the plain average of the members for a `ShapeList`. See `measures`.
-- The bbox of a standalone curve (not from a body) is sampled at 33 points and can be too
-  small for a wavy spline. Bodies and edges taken from bodies are exact.
+- The bbox of a standalone curve (not from a body) is exact too: its ends, its corners and the
+  points where its tangent is square to an axis.
 
 ## Related
 

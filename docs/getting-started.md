@@ -17,7 +17,10 @@ Python path:
 ```bash
 git clone --recursive https://github.com/awv-informatik/smlibpy
 cd smlibpy
-cmake -S . -B build -G Ninja && cmake --build build
+pip install pybind11 numpy
+cmake -S . -B build -G Ninja -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
+      -DPython_EXECUTABLE="$(which python)"
+cmake --build build
 export PYTHONPATH=$PWD/src
 ```
 
@@ -56,10 +59,10 @@ press `F` to frame the model.
 ## Measure it
 
 ```python
-print(plate.volume)          # 43040.0
+print(round(plate.volume, 3))  # 43040.0
 print(plate.area)
-print(plate.bbox().size)     # Vector(80, 60, 10)
-print(plate.is_valid())      # a closed, manifold solid with a positive volume
+print(plate.bbox().size)       # Vector(80, 60, 10)
+print(plate.is_valid())        # a closed, manifold solid with a positive volume
 ```
 
 Volumes, areas and centers are integrated over the exact geometry, not a mesh, to seven

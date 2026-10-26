@@ -23,8 +23,9 @@ copies.
   moves by (1, 2, 3).
 - A plain Python list of shapes has no `translate`; use `ShapeList(items)` or a list
   comprehension.
-- Select faces and edges after you move a part. Parts match a selection by geometry, so
-  `moved_part.fillet(old_part.edges()..., 1)` raises
+- Select faces and edges after you move a part. A moved copy is a shape of its own (its faces
+  and edges do not descend from the old ones, see selection `history`), and the old edges lie
+  elsewhere, so `moved_part.fillet(old_part.edges()..., 1)` raises
   `ValueError: Edge(line, ...) is not an edge of this part`. The same holds for an edge or
   face that you translated yourself.
 - Translation does not snap: compare positions with a tolerance.

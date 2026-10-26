@@ -4,7 +4,7 @@ Scales the cross-sections of a part toward an axis, by a factor that changes eve
 
 ## Signature
 `taper(shape, scale, *, axis=Z, start=None, end=None, tolerance=None)` or
-`part.taper(scale, ...)`
+`part.taper(scale, *, axis=Z, start=None, end=None, tolerance=None)`
 
 - `scale`: the size at `end` relative to `start` (> 0): 0.5 halves the cross-section, 2
   doubles it. The factor is 1 at `start` and changes linearly; lines along the axis stay
@@ -34,8 +34,8 @@ NURBS.
   `Box(40, 40, 60)` tapered by 0.5 comes out 7.5 wide and 10 tall. Add features that must
   stay round after tapering. An off-axis part shrinks toward the axis:
   `Box(20, 20, 50, align=(Align.MIN,) * 3).taper(0.5)` has its top at x, y 0..10.
-- `offset()` of a tapered part fails outward. Unlike `extrude(taper=...)` (a draft angle on
-  a profile), `taper` works on any finished part and scales instead of drafting.
+- Unlike `extrude(taper=...)` (a draft angle on a profile), `taper` works on any finished
+  part and scales instead of drafting.
 
 ## Errors
 - `ValueError: taper: scale must be a positive number (1 keeps the size)`; `scale is 1`.

@@ -31,6 +31,7 @@ structure). `color` is `(r, g, b)` in 0..1 or `None`.
 `model.frame(name, product=None)` returns the `Plane` of the one coordinate system of that name.
 
 ```python
+# not run: it needs a cutting tool's STEP file with its frames and curves
 tool = read_step("drill.stp")
 print(tool)       # StepModel(3 bodies, 9 frames, 2 curves, 10 points)
 print(tool.frames[-1])

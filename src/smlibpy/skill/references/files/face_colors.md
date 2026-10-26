@@ -36,7 +36,8 @@ They are the kernel's own face attributes, which it carries through its operatio
 - glTF / the viewer: a primitive per color. USD: the mesh prim gets a color per triangle
   (`displayColor`, interpolation `uniform`); the exact `BrepArray` prim has no face colors.
 - `render` / snapshots: the faces in their colors (also cut open by a section).
-- `.smb` (`save`) keeps neither, nor the body's name and color.
+- `.smb` (`save`) keeps neither, nor the body's name and color. `.smp` keeps the faces' colors,
+  not their names.
 
 ## Example
 ```python

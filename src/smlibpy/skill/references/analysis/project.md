@@ -6,6 +6,8 @@ body, for example a path on a curved face.
 ## Signature
 
 `body.project(curve, direction=(0, 0, -1), *, nearest=False) -> ShapeList[Edge]`
+`project(body, curve, direction=(0, 0, -1), *, nearest=False)`: the same, as a function
+(`project(face, curve)`: `face.project(curve)`, below)
 
 - `curve`: an `Edge`, a `Wire` or anything with `.edges()` (a `Sketch` works: its outline is
   projected). Each edge is projected on its own.
