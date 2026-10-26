@@ -34,22 +34,23 @@ edges are picked by their geometry, for example `part.faces().top()` or
 ## Features
 
 **Modeling** ([parts](https://smlibpy.classcad.ch/docs/parts), [features](https://smlibpy.classcad.ch/docs/features))
-- Primitives: `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, sectors of them (`arc_size=`)
-  and `AnnularSector`
+- Primitives: `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `Pyramid`, sectors of them
+  (`arc_size=`) and `AnnularSector`
 - Holes: `Hole`, `CounterBoreHole`, `CounterSinkHole`, placed with `Locations`, `GridLocations`,
   `PolarLocations`, `HexLocations`
 - Booleans: `fuse`, `cut`, `intersect`, which can also be written `+`, `-`, `&`; `merge` makes one
   part of several cells (as for several materials), `cells()` gives them back, named after the
   parts they lie in; `imprint` splits faces where a tool crosses them; `split` by planes and sheets
 - Operations: `extrude` (also tapered, with plane walls), `revolve`, `swing` (a revolve around any
-  outline), `loft` (also with end tangents, or closed), `sweep` (the profile's attitude, a twist and
-  a scale along the path; along helices without rolling), `shell` (walls of their own thickness,
-  round or sharp corners), `offset` (sharp or round), `thicken`, `draft`, `mirror`, `split`,
-  `section`
+  outline), `loft` (also with end tangents, closed, or of open sections along rails), `sweep` (the
+  profile's attitude, a twist and a scale along the path; along helices without rolling; an open
+  profile from the path to a second rail), `shell` (walls of their own thickness, round or sharp
+  corners), `offset` (sharp or round), `thicken`, `draft`, `mirror`, `split`, `section`
 - Direct editing: `move_faces` and `offset_faces` move and push-pull faces, resize holes and
   bosses, and rebuild the part around them exactly
 - Fillets: circular, variable radius, and curvature-continuous (G2/G3), along tangent runs, with
-  mitred corners; chamfers with one or two setbacks or an angle, exact cones on round edges
+  mitred or set-back corners; chamfers with one or two setbacks or an angle, exact cones on round
+  edges
 
 **[Sheet metal](https://smlibpy.classcad.ch/docs/sheet-metal)**
 - `fold` and `flange` with exact bends (radius and K-factor, kept per bend; K-factor rules such as
