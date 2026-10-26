@@ -197,4 +197,19 @@ export {
   type KFactor,
   type UnfoldOptions,
 } from './sheetmetal.ts'
+export { TriangleMesh, tessellate, type DecimateOptions, type MeshHit, type RepairReport, type TessellateOptions } from './mesh.ts'
+export {
+  ImageDiff,
+  Picture,
+  VIEWS,
+  diffImages,
+  render,
+  type Frame,
+  type ImageLike,
+  type RenderMarker,
+  type RenderOptions,
+  type RenderPoint,
+  type RenderView,
+  type RenderViewName,
+} from './render.ts'
 export { STEPExporter, STEPLoader, type STEPExporterOptions } from './files.ts'

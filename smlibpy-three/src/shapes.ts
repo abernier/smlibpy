@@ -60,6 +60,7 @@ import {
 } from './properties.ts'
 import * as deformations from './deform.ts'
 import * as sheetMetal from './sheetmetal.ts'
+import { tessellate as tessellateMesh, type TessellateOptions, type TriangleMesh } from './mesh.ts'
 
 // --------------------------------------------------------------------------------------- state
 const STATE = Symbol('smlibpy-three')
@@ -648,6 +649,15 @@ export abstract class Body extends THREE.Mesh {
       out.push(c)
     }
     return out
+  }
+
+  /**
+   * The body's triangles as a TriangleMesh, in its frame with its transform and material, as an
+   * operation's result: as finely as its geometry unless `options` say otherwise (`tolerance`,
+   * `angle` in radians), `maxEdge` the longest edge a triangle may have.
+   */
+  toMesh(options: TessellateOptions = {}): TriangleMesh {
+    return tessellateMesh(this, options.tolerance === undefined ? this.tolerance : options.tolerance, options.angle ?? this.angle, { maxEdge: options.maxEdge })
   }
 
   // -- three ------------------------------------------------------------------------------------
