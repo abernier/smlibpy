@@ -72,17 +72,15 @@ def test_crossing_holes_compute_natively():
         assert (Box(20, 20, 20) - [h1, h2]).volume == approx(CROSS, rel=1e-8)
         cells = h1.merge(h2).cells()
         assert sorted(c.volume for c in cells) == approx([HOLES, 1068.252397, 1068.252397], rel=1e-6)
-        # the kernel's own Boolean, seams as they are: refused, or right (the build's arithmetic decides it:
-        # macOS arm64 and Linux refuse it, macOS x86_64 gets some)
+        # the kernel's own Boolean, seams as they are: refused or not, and when not, right or wrong, as the
+        # build's arithmetic and the machine decide it (macOS arm64 and Linux refuse it; on macOS x86_64 one
+        # runner got it right and another the whole of h1). smlibpy's own results, above, are right on all of them.
         try:
             raw = k.boolean(h1._copy_brep(), h2._copy_brep(), operation=k.BooleanOp.INTERSECTION)
         except RuntimeError as e:
             assert "SM_ERR" in str(e)
         else:
-            try:
-                assert Part._wrap(raw.copy()).volume == approx(HOLES, rel=1e-6)
-            finally:
-                ext.delete_brep(raw)
+            ext.delete_brep(raw)
 
 
 def test_seam_contacts():
