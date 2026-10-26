@@ -3,16 +3,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
-import { Box, Cylinder, Edge, Face, GridLocations, Line, Sphere } from '../src/index.ts'
+import { Box, Cylinder, BrepEdge, BrepFace, GridLocations, Segment, Ball, Z } from '../src/index.ts'
 import { close, closeVector, ray, Y } from './_util.ts'
 
 test('a ray onto the top of a box hits its top face', () => {
-  const part = new Box(40, 30, 10)
+  const part = new Box(40, 10, 30) // 40 along x, 10 high (y), 30 along z
   const hits = ray([3, 100, 4], [0, -1, 0]).intersectObject(part)
   assert.equal(hits.length, 1) // (the bottom, seen from inside, is a back face: three culls it for a FrontSide material)
   const [hit] = hits
   assert.equal(hit.object, part)
-  assert.ok(hit.brep instanceof Face)
+  assert.ok(hit.brep instanceof BrepFace)
   assert.equal(hit.brep, part.faces().top().one())
   closeVector(hit.point, { x: 3, y: 5, z: 4 }, 1e-9)
   // three's own fields are three's: the triangle, its index, the interpolated normal
@@ -21,8 +21,11 @@ test('a ray onto the top of a box hits its top face', () => {
 })
 
 test('hits come back as the faces of the body that was hit, wherever it is', () => {
-  const plate = new Box(60, 40, 8).cut(new Cylinder(4, 20).at(GridLocations(40, 20, 2, 2)))
-  const part = plate.fillet(plate.edges().parallelTo(Y), 6)
+  // (a plate lying in XY, 8 thick along z, with four holes along z at a grid in XY, its corners rounded)
+  const hole = new Cylinder(4, 4, 20)
+  hole.rotation.x = Math.PI / 2
+  const plate = new Box(60, 40, 8).cut(hole.at(GridLocations(40, 20, 2, 2)))
+  const part = plate.fillet(plate.edges().parallelTo(Z), 6)
   const scene = new THREE.Scene()
   const group = new THREE.Group()
   group.position.set(200, -30, 50)
@@ -33,21 +36,22 @@ test('hits come back as the faces of the body that was hit, wherever it is', () 
   part.rotation.y = 0.7
   scene.updateMatrixWorld()
   const center = new THREE.Box3().setFromObject(part).getCenter(new THREE.Vector3())
-  // rays at the part from all around: every hit's point lies on the face it names (in the part's frame)
+  // rays at the part from all around (aimed at points of the plate, in its frame): every hit's point
+  // lies on the face it names (in the part's frame)
   const random = (() => {
     let seed = 7
     return () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1
   })()
   let hits = 0
-  let faces = new Set<Face>()
+  let faces = new Set<BrepFace>()
   for (let i = 0; i < 300; i++) {
     const from = new THREE.Vector3(random(), random(), random()).normalize().multiplyScalar(150).add(center)
-    const to = center.clone().add(new THREE.Vector3(random() * 25, random() * 4, random() * 25))
+    const to = part.localToWorld(new THREE.Vector3(random() * 25, random() * 25, random() * 4))
     const raycaster = new THREE.Raycaster(from, to.sub(from).normalize())
     const [hit] = raycaster.intersectObject(part, false)
     if (hit === undefined) continue
     hits++
-    const face = hit.brep as Face
+    const face = hit.brep as BrepFace
     assert.equal(face.owner, part)
     faces.add(face)
     const local = part.worldToLocal(hit.point.clone())
@@ -61,15 +65,15 @@ test('hits come back as the faces of the body that was hit, wherever it is', () 
 })
 
 test('a ray beside an edge hits the edge lines, with the edge', () => {
-  const part = new Box(40, 30, 10) // top front edge: y = 5, z = 15
+  const part = new Box(40, 10, 30) // top front edge: y = 5, z = 15
   const raycaster = ray([0, 100, 15.3], [0, -1, 0], 0.5)
   const hits = raycaster.intersectObject(part)
   // (the ray passes beside the bottom front edge too, further on)
   assert.equal(hits.length, 2)
   const [hit, below] = hits
-  closeVector((below.brep as Edge).center(), { x: 0, y: -5, z: 15 }, 1e-9)
+  closeVector((below.brep as BrepEdge).center(), { x: 0, y: -5, z: 15 }, 1e-9)
   assert.equal(hit.object, part.edgeLines)
-  assert.ok(hit.brep instanceof Edge)
+  assert.ok(hit.brep instanceof BrepEdge)
   assert.equal(hit.brep.owner, part)
   assert.ok(part.edges().includes(hit.brep))
   closeVector(hit.brep.center(), { x: 0, y: 5, z: 15 }, 1e-9)
@@ -77,12 +81,12 @@ test('a ray beside an edge hits the edge lines, with the edge', () => {
   assert.equal(ray([0, 100, 16], [0, -1, 0], 0.5).intersectObject(part).length, 0)
   // a face hit and an edge hit near each other: three sorts them by distance
   const both = ray([0, 100, 14.8], [0, -1, 0], 0.5).intersectObject(part)
-  assert.ok(both.some((h) => h.brep instanceof Face) && both.some((h) => h.brep instanceof Edge))
+  assert.ok(both.some((h) => h.brep instanceof BrepFace) && both.some((h) => h.brep instanceof BrepEdge))
   for (let i = 1; i < both.length; i++) assert.ok(both[i - 1].distance <= both[i].distance)
 })
 
 test("three's rules hold: recursion, layers, invisible objects", () => {
-  const part = new Box(40, 30, 10)
+  const part = new Box(40, 10, 30)
   const at = () => ray([0, 100, 14.8], [0, -1, 0], 0.5)
   // not recursive: the body's faces only
   assert.ok(at().intersectObject(part, false).every((h) => h.object === part))
@@ -96,7 +100,7 @@ test("three's rules hold: recursion, layers, invisible objects", () => {
 })
 
 test('faces and edges drawn as highlights are not hit again', () => {
-  const part = new Sphere(10)
+  const part = new Ball(10)
   const before = ray([0, 50, 0], [0, -1, 0]).intersectObject(part).length
   for (const f of part.faces()) part.add(f)
   for (const e of part.edges()) part.add(e)
@@ -104,7 +108,7 @@ test('faces and edges drawn as highlights are not hit again', () => {
 })
 
 test('a curve of its own is hit as a line, with itself as brep', () => {
-  const line = new Line(new THREE.Vector3(-10, 0, 0), new THREE.Vector3(10, 0, 0))
+  const line = new Segment(new THREE.Vector3(-10, 0, 0), new THREE.Vector3(10, 0, 0))
   line.position.y = 3
   line.updateMatrixWorld()
   const [hit] = ray([2, 3.2, 50], [0, 0, -1], 0.5).intersectObject(line)

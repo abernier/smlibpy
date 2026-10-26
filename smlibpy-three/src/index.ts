@@ -1,18 +1,18 @@
 // smlibpy-three: smlibpy's CAD modeling API for three.js, on SMLib, the NURBS solid modeling
 // kernel (smlibwasm underneath, which it does not show). Parts, sketches, faces, edges and curves
-// are three.js objects, in three's coordinates (Y up), taking and giving three's types:
+// are three.js objects, in three's coordinates, taking and giving three's types:
 //
 //     import * as THREE from 'three'
 //     import { Box, Cylinder } from '@classcad/smlibpy-three'
 //
-//     const hole = new Cylinder(6, 20)
+//     const hole = new Cylinder(6, 6, 20) // along y, as THREE.CylinderGeometry(6, 6, 20)
 //     hole.position.x = 20 // tools cut where they are
-//     let part = new Box(80, 60, 10).cut(hole) // a Part: a THREE.Mesh
+//     let part = new Box(80, 10, 60).cut(hole) // a Part: a THREE.Mesh, as THREE.BoxGeometry(80, 10, 60)
 //     part = part.fillet(part.edges().parallelTo(new THREE.Vector3(0, 1, 0)), 4)
 //     scene.add(part)
 //
 //     const [hit] = raycaster.intersectObject(part) // three's Raycaster
-//     hit.brep // the Face (a THREE.Mesh) the ray hit; hits on part.edgeLines give an Edge
+//     hit.brep // the BrepFace (a THREE.Mesh) the ray hit; hits on part.edgeLines give a BrepEdge
 
 export const version = '0.1.0'
 
@@ -20,14 +20,14 @@ export { FontError, KernelError, ModelingError } from './errors.ts'
 export type { Align2, Align3, AlignValue } from './types.ts'
 export {
   Body,
-  Edge,
+  BrepEdge,
   EdgeLines,
-  Face,
+  BrepFace,
   Part,
   ShapeList,
   Shell,
   Sketch,
-  Vertex,
+  BrepVertex,
   Wire,
   type ChamferOptions,
   type EdgesLike,
@@ -54,6 +54,7 @@ export {
 } from './properties.ts'
 export {
   AnnularSector,
+  Ball,
   Box,
   Cone,
   CounterBoreHole,
@@ -61,11 +62,11 @@ export {
   Cylinder,
   Hole,
   Pyramid,
-  Sphere,
   Torus,
   Wedge,
+  type BallOptions,
   type PlacementOptions,
-  type SphereOptions,
+  type SectorOptions,
   type TorusOptions,
 } from './primitives.ts'
 export {
@@ -81,7 +82,7 @@ export {
   Stroke,
   Text,
   Trapezoid,
-  Triangle,
+  TriangleSketch,
   makeFace,
   type CornerOptions,
   type HullItem,
@@ -92,7 +93,7 @@ export {
   type TrapezoidOptions,
 } from './sketches.ts'
 export { Profile, type Coordinates } from './profiles.ts'
-export { DEFAULT_FONT, Font, loadFont, type Contour, type FontSource, type PairAdjustment } from './font.ts'
+export { DEFAULT_FONT, OpenTypeFont, loadFont, type Contour, type FontSource, type PairAdjustment } from './font.ts'
 export {
   Bezier,
   CenterArc,
@@ -101,7 +102,7 @@ export {
   FilletPolyline,
   Helix,
   HyperbolicArc,
-  Line,
+  Segment,
   ParabolicArc,
   PolarLine,
   Polyline,
@@ -225,8 +226,8 @@ export {
   STEPExporter,
   STEPLoader,
   SVGExporter,
-  USDExporter,
-  USDLoader,
+  USDBrepExporter,
+  USDBrepLoader,
   type BREPExporterOptions,
   type BREPLoaderOptions,
   type DXFExporterOptions,
@@ -237,8 +238,8 @@ export {
   type STEPExporterOptions,
   type STEPLoaderOptions,
   type SVGExporterOptions,
-  type USDExporterOptions,
-  type USDLoaderOptions,
+  type USDBrepExporterOptions,
+  type USDBrepLoaderOptions,
 } from './files.ts'
 export { DrawingView, drawingViews, type DrawingViewsOptions, type ViewName } from './drawing.ts'
 export { GUARD_BOOLEANS, GUARD_SECONDS, memoryUsage, scope, setGuardBooleans, setGuardSeconds, setWarningHandler, type MemoryUsage } from './memory.ts'

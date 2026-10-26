@@ -4,7 +4,7 @@
 // scenes, moved, raycast, rendered and disposed as any other three object.
 //
 // The rules:
-// - Coordinates are three's (Y up), in the object's own frame, as a geometry's are: what a query
+// - Coordinates are three's, in the object's own frame, as a geometry's are: what a query
 //   gives (center(), bbox(), pointAt()) and what a method takes (a point, a direction, a
 //   THREE.Plane, a THREE.Curve) is in the frame of the object it is called on.
 // - Objects given to an operation are taken where they are in the world (their matrixWorld): a
@@ -22,7 +22,6 @@
 import * as THREE from 'three'
 import { edges3, outline2 } from './convert.ts'
 import {
-  C,
   axis as toAxis,
   boundBox,
   box3,
@@ -40,7 +39,7 @@ import {
   vector3,
   type SmBody,
 } from './kernel.ts'
-import { BODY_COLOR, edgeAt, faceAt, faceColors, faceOf, lineGeometry, polyline, tessellate, type Tessellation } from './tessellation.ts'
+import { BODY_COLOR, edgeAt, faceAt, faceColors, faceOf, fromTessellationData, lineGeometry, polyline, tessellate, tessellationData, type Tessellation, type TessellationData } from './tessellation.ts'
 import {
   DraftAnalysis,
   MassProperties,
@@ -97,9 +96,9 @@ interface State {
   tess: Tessellation | null
   tolerance: number | null
   angle: number
-  faces: ShapeList<Face> | null
-  edges: ShapeList<Edge> | null
-  vertices: ShapeList<Vertex> | null
+  faces: ShapeList<BrepFace> | null
+  edges: ShapeList<BrepEdge> | null
+  vertices: ShapeList<BrepVertex> | null
   // faces, edges, wires, vertices
   owner: Body | null
   index: number
@@ -263,11 +262,11 @@ export function wrap(value: SmBody): Part | Shell | Sketch {
 }
 
 /** @internal
- * An Edge or Wire for a kernel curve: of `owner` (a body's, where the body is) or of its own. */
-export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Edge | Wire {
+ * A BrepEdge or Wire for a kernel curve: of `owner` (a body's, where the body is) or of its own. */
+export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): BrepEdge | Wire {
   incomingSub = { owner, index: -1, sub: value }
   try {
-    return value instanceof sm.Wire ? new Wire() : new Edge()
+    return value instanceof sm.Wire ? new Wire() : new BrepEdge()
   } finally {
     incomingSub = null
   }
@@ -275,7 +274,7 @@ export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Ed
 
 /** @internal
  * The object of class `cls` for a body's face, edge or vertex (`owner` null: a vertex of its own). */
-export function sub<T extends Face | Edge | Vertex>(cls: new () => T, owner: Body | null, index: number, value: sm.Face | sm.Edge | sm.Vertex): T {
+export function sub<T extends BrepFace | BrepEdge | BrepVertex>(cls: new () => T, owner: Body | null, index: number, value: sm.Face | sm.Edge | sm.Vertex): T {
   incomingSub = { owner, index, sub: value }
   try {
     return new cls()
@@ -340,8 +339,8 @@ function relative(shape: THREE.Object3D, into: THREE.Object3D | null): THREE.Mat
 export function operand(shape: unknown, into: THREE.Object3D | null, what: string): sm.Shape {
   let value: sm.Shape
   if (shape instanceof Body) value = kernelOf(shape)
-  else if (shape instanceof Face || shape instanceof Edge || shape instanceof Wire || shape instanceof Vertex) value = subOf(shape)
-  else throw new TypeError(`${what}: give a Part, Shell, Sketch, Face, Edge or Wire, not ${describe(shape)}`)
+  else if (shape instanceof BrepFace || shape instanceof BrepEdge || shape instanceof Wire || shape instanceof BrepVertex) value = subOf(shape)
+  else throw new TypeError(`${what}: give a Part, Shell, Sketch, BrepFace, BrepEdge or Wire, not ${describe(shape)}`)
   const m = relative(shape, into)
   return m === null ? value : call(() => value.moved(location(m)))
 }
@@ -351,7 +350,7 @@ export function operand(shape: unknown, into: THREE.Object3D | null, what: strin
  * frame), three's points and directions, planes, rays, boxes and matrices as the kernel's; arrays and
  * Maps item by item; anything else as it is. */
 export function toKernel(value: unknown, into: THREE.Object3D | null): unknown {
-  if (value instanceof Body || value instanceof Face || value instanceof Edge || value instanceof Wire || value instanceof Vertex) return operand(value, into, 'an operation')
+  if (value instanceof Body || value instanceof BrepFace || value instanceof BrepEdge || value instanceof Wire || value instanceof BrepVertex) return operand(value, into, 'an operation')
   const v = value as { isPlane?: boolean; isBox3?: boolean; x?: unknown; y?: unknown; z?: unknown } | null
   if (v?.isPlane === true) return toPlane(value as THREE.Plane)
   if (v?.isBox3 === true) return boundBox(value as THREE.Box3)
@@ -390,7 +389,7 @@ export function toThree(value: unknown, like: THREE.Object3D | null, made: Map<u
     const own = body === null ? undefined : shapeFor(body, value)
     if (own !== undefined) return own
     if (value instanceof sm.Vertex) {
-      const v = sub(Vertex, null, -1, value)
+      const v = sub(BrepVertex, null, -1, value)
       if (frame !== null) THREE.Object3D.prototype.copy.call(v, frame, false)
       return v
     }
@@ -409,8 +408,8 @@ export function toThree(value: unknown, like: THREE.Object3D | null, made: Map<u
 
 /** @internal
  * The face, edge or vertex object of `body` for a kernel face, edge or vertex of its body. */
-export function shapeFor(body: Body, k: sm.Face | sm.Edge | sm.Vertex): Face | Edge | Vertex | undefined {
-  const list: readonly (Face | Edge | Vertex)[] = k instanceof sm.Face ? body.faces() : k instanceof sm.Edge ? body.edges() : body.vertices()
+export function shapeFor(body: Body, k: sm.Face | sm.Edge | sm.Vertex): BrepFace | BrepEdge | BrepVertex | undefined {
+  const list: readonly (BrepFace | BrepEdge | BrepVertex)[] = k instanceof sm.Face ? body.faces() : k instanceof sm.Edge ? body.edges() : body.vertices()
   return find(list, k)
 }
 
@@ -426,9 +425,9 @@ export function flatten<T>(items: readonly (T | Iterable<T>)[]): T[] {
 
 // ------------------------------------------------------------------------------------- bodies
 /** What a fillet, chamfer or shell takes: edges (or faces, whose edges are meant) of the body. */
-export type EdgesLike = Edge | Face | Wire | Iterable<Edge | Face | Wire>
+export type EdgesLike = BrepEdge | BrepFace | Wire | Iterable<BrepEdge | BrepFace | Wire>
 /** Faces of the body. */
-export type FacesLike = Face | Iterable<Face>
+export type FacesLike = BrepFace | Iterable<BrepFace>
 
 /**
  * A body of exact faces: the base of Part, Shell and Sketch. A THREE.Mesh whose geometry is the
@@ -482,32 +481,32 @@ export abstract class Body extends THREE.Mesh {
 
   // -- topology ---------------------------------------------------------------------------------
   /** The faces, in the kernel's order. The same objects every time. */
-  faces(): ShapeList<Face> {
+  faces(): ShapeList<BrepFace> {
     const s = state(this)
     if (s.faces === null) {
       const value = kernelOf(this)
-      s.faces = ShapeList.from([...call(() => value.faces())].map((f, i) => sub(Face, this, i, f))) as ShapeList<Face>
+      s.faces = ShapeList.from([...call(() => value.faces())].map((f, i) => sub(BrepFace, this, i, f))) as ShapeList<BrepFace>
     }
-    return ShapeList.from(s.faces) as ShapeList<Face>
+    return ShapeList.from(s.faces) as ShapeList<BrepFace>
   }
 
   /** The edges (seams, where a closed surface meets itself, left out), in the kernel's order. */
-  edges(): ShapeList<Edge> {
+  edges(): ShapeList<BrepEdge> {
     const s = state(this)
     if (s.edges === null) {
       const value = kernelOf(this)
-      s.edges = ShapeList.from([...call(() => value.edges())].map((e, i) => sub(Edge, this, i, e))) as ShapeList<Edge>
+      s.edges = ShapeList.from([...call(() => value.edges())].map((e, i) => sub(BrepEdge, this, i, e))) as ShapeList<BrepEdge>
     }
-    return ShapeList.from(s.edges) as ShapeList<Edge>
+    return ShapeList.from(s.edges) as ShapeList<BrepEdge>
   }
 
-  vertices(): ShapeList<Vertex> {
+  vertices(): ShapeList<BrepVertex> {
     const s = state(this)
     if (s.vertices === null) {
       const value = kernelOf(this)
-      s.vertices = ShapeList.from([...call(() => value.vertices())].map((v, i) => sub(Vertex, this, i, v))) as ShapeList<Vertex>
+      s.vertices = ShapeList.from([...call(() => value.vertices())].map((v, i) => sub(BrepVertex, this, i, v))) as ShapeList<BrepVertex>
     }
-    return ShapeList.from(s.vertices) as ShapeList<Vertex>
+    return ShapeList.from(s.vertices) as ShapeList<BrepVertex>
   }
 
   /** The faces' boundary loops. */
@@ -537,7 +536,7 @@ export abstract class Body extends THREE.Mesh {
   }
 
   /** The shortest distance to a point (in this body's frame) or to another shape (where it is). */
-  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+  distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number {
     const value = kernelOf(this)
     if (isObject3D(other)) {
       const o = operand(other, this, 'distanceTo')
@@ -559,10 +558,10 @@ export abstract class Body extends THREE.Mesh {
   }
 
   /** The curves where a plane (in this body's frame) cuts the body. */
-  intersectionCurves(other: THREE.Plane | Body | Face): ShapeList<Edge> {
+  intersectionCurves(other: THREE.Plane | Body | BrepFace): ShapeList<BrepEdge> {
     const value = kernelOf(this)
     const o = (other as THREE.Plane).isPlane ? toPlane(other as THREE.Plane) : (operand(other, this, 'intersectionCurves') as sm.Part | sm.Shell | sm.Face)
-    return ShapeList.from([...call(() => value.intersectionCurves(o))].map((e) => curveOf(e, this) as Edge)) as ShapeList<Edge>
+    return ShapeList.from([...call(() => value.intersectionCurves(o))].map((e) => curveOf(e, this) as BrepEdge)) as ShapeList<BrepEdge>
   }
 
   /** True if `other` holds the same kernel body (as a clone does). */
@@ -583,12 +582,12 @@ export abstract class Body extends THREE.Mesh {
   }
 
   /** The nearest points of this body and another shape (taken where it is), and the faces they lie on. */
-  closestPoints(other: Body | Face | Edge | Wire): ClosestPoints {
+  closestPoints(other: Body | BrepFace | BrepEdge | Wire): ClosestPoints {
     const value = kernelOf(this)
     const o = operand(other, this, 'closestPoints') as sm.Part | sm.Shell | sm.Face | sm.Edge | sm.Wire
     // (the other's face: by its place among the faces of the kernel's copy, moved into this frame)
-    const otherFace = (k: sm.Face): Face | null => {
-      if (other instanceof Face) return other
+    const otherFace = (k: sm.Face): BrepFace | null => {
+      if (other instanceof BrepFace) return other
       if (!(other instanceof Body) || !(o instanceof sm.Part || o instanceof sm.Shell)) return null
       const i = [...o.faces()].findIndex((f) => f.equals(k))
       return i < 0 ? null : other.faces()[i]
@@ -619,31 +618,32 @@ export abstract class Body extends THREE.Mesh {
   }
 
   /** The body's contour seen along `direction` (in its frame, from the body towards the viewer;
-   * default +y): the curves where its faces turn away, as curves of their own where the body is. */
-  silhouette(direction?: THREE.Vector3Like): ShapeList<Edge> {
+   * default +z, from the front): the curves where its faces turn away, as curves of their own where
+   * the body is. */
+  silhouette(direction?: THREE.Vector3Like): ShapeList<BrepEdge> {
     const value = kernelOf(this)
-    return toThree(call(() => value.silhouette(direction === undefined ? undefined : vec(direction))), this) as ShapeList<Edge>
+    return toThree(call(() => value.silhouette(direction === undefined ? undefined : vec(direction))), this) as ShapeList<BrepEdge>
   }
 
   /** A curve (taken where it is) projected onto the body along `direction` (in its frame): the
    * curves on its faces. `nearest` keeps what the projection reaches first. */
-  project(curve: Edge | Wire, direction?: THREE.Vector3Like, options: { nearest?: boolean } = {}): ShapeList<Edge> {
+  project(curve: BrepEdge | Wire, direction?: THREE.Vector3Like, options: { nearest?: boolean } = {}): ShapeList<BrepEdge> {
     const value = kernelOf(this)
     const c = operand(curve, this, 'project') as sm.Edge | sm.Wire
-    return toThree(call(() => value.project(c, direction === undefined ? undefined : vec(direction), options)), this) as ShapeList<Edge>
+    return toThree(call(() => value.project(c, direction === undefined ? undefined : vec(direction), options)), this) as ShapeList<BrepEdge>
   }
 
   /**
-   * The body's edges and contours projected onto a plane (in its frame; default the ground, y = 0,
-   * seen from above): a drawing view's visible lines, in the plane. `hidden: true` gives
+   * The body's edges and contours projected onto a plane (in its frame; default the XY plane, seen
+   * from +z: a front view): a drawing view's visible lines, in the plane. `hidden: true` gives
    * [visible, hidden]; `tangentEdges` draws the edges between tangent faces too.
    */
-  outline(plane?: THREE.Plane, options?: { hidden?: false; tangentEdges?: boolean }): ShapeList<Edge>
-  outline(plane: THREE.Plane | undefined, options: { hidden: true; tangentEdges?: boolean }): [ShapeList<Edge>, ShapeList<Edge>]
-  outline(plane?: THREE.Plane, options: { hidden?: boolean; tangentEdges?: boolean } = {}): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] {
+  outline(plane?: THREE.Plane, options?: { hidden?: false; tangentEdges?: boolean }): ShapeList<BrepEdge>
+  outline(plane: THREE.Plane | undefined, options: { hidden: true; tangentEdges?: boolean }): [ShapeList<BrepEdge>, ShapeList<BrepEdge>]
+  outline(plane?: THREE.Plane, options: { hidden?: boolean; tangentEdges?: boolean } = {}): ShapeList<BrepEdge> | [ShapeList<BrepEdge>, ShapeList<BrepEdge>] {
     const value = kernelOf(this)
     const out = call(() => value.outline(plane === undefined ? undefined : toPlane(plane), options))
-    return toThree(out, this) as ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>]
+    return toThree(out, this) as ShapeList<BrepEdge> | [ShapeList<BrepEdge>, ShapeList<BrepEdge>]
   }
 
   // -- placing ----------------------------------------------------------------------------------
@@ -756,8 +756,8 @@ function ownMaterial<T extends Body>(body: T): T {
 /** The faces of `body` given to a method (as kernel faces), which must be the body's (or a clone's). */
 function ownFaces(body: Body, faces: FacesLike, what: string): sm.Face[] {
   const value = kernelOf(body)
-  return (isObject3D(faces) ? [faces] : [...(faces as Iterable<Face>)]).map((f) => {
-    if (!(f instanceof Face)) throw new TypeError(`${what}: give faces of this body, not ${describe(f)}`)
+  return (isObject3D(faces) ? [faces] : [...(faces as Iterable<BrepFace>)]).map((f) => {
+    if (!(f instanceof BrepFace)) throw new TypeError(`${what}: give faces of this body, not ${describe(f)}`)
     const owner = state(f).owner
     if (owner === null || state(owner).held?.value !== value) throw new RangeError(`${what}: the face is not one of this body's`)
     return subOf(f) as sm.Face
@@ -765,10 +765,10 @@ function ownFaces(body: Body, faces: FacesLike, what: string): sm.Face[] {
 }
 
 /** The edges of `body` given to a method (as kernel edges), which must be the body's (or a clone's). */
-function ownEdges(body: Body, edges: Edge | Iterable<Edge>, what: string): sm.Edge[] {
+function ownEdges(body: Body, edges: BrepEdge | Iterable<BrepEdge>, what: string): sm.Edge[] {
   const value = kernelOf(body)
-  return (isObject3D(edges) ? [edges] : [...(edges as Iterable<Edge>)]).map((e) => {
-    if (!(e instanceof Edge)) throw new TypeError(`${what}: give edges of this body, not ${describe(e)}`)
+  return (isObject3D(edges) ? [edges] : [...(edges as Iterable<BrepEdge>)]).map((e) => {
+    if (!(e instanceof BrepEdge)) throw new TypeError(`${what}: give edges of this body, not ${describe(e)}`)
     const owner = state(e).owner
     if (owner === null || state(owner).held?.value !== value) throw new RangeError(`${what}: the edge is not one of this body's`)
     return subOf(e) as sm.Edge
@@ -783,14 +783,14 @@ function srgb(color: THREE.ColorRepresentation): [number, number, number] {
 }
 
 /** A placement target of `on()`: a face (where it is), a THREE.Plane or a THREE.Matrix4 (in `into`'s frame). */
-function placement(target: Face | THREE.Plane | THREE.Matrix4, into: THREE.Object3D): sm.Plane | sm.Face | sm.Location {
+function placement(target: BrepFace | THREE.Plane | THREE.Matrix4, into: THREE.Object3D): sm.Plane | sm.Face | sm.Location {
   if ((target as THREE.Plane).isPlane) return toPlane(target as THREE.Plane)
   if (isMatrix4(target)) return location(target)
   return operand(target, into, 'on') as sm.Face
 }
 
 /** What push, warp and flatten take as a region: a sketch, face or curve (where it is) or points (in the body's frame). */
-export type RegionLike = Sketch | Face | Wire | Edge | Iterable<THREE.Vector3Like>
+export type RegionLike = Sketch | BrepFace | Wire | BrepEdge | Iterable<THREE.Vector3Like>
 
 function regionOf(region: RegionLike, into: Body, what: string): sm.Sketch | sm.Face | sm.Wire | sm.Edge | sm.Vector[] {
   if (isObject3D(region)) return operand(region, into, what) as sm.Sketch | sm.Face | sm.Wire | sm.Edge
@@ -856,6 +856,24 @@ function tessellationOf(body: Body): Tessellation {
     s.ownGeometry = tess.faces
   }
   return s.tess
+}
+
+/** @internal
+ * The arrays of the tessellation three would draw of a body (made now if need be), for another
+ * thread; null where there is none (an empty body, or one the kernel cannot tessellate). */
+export function drawnData(body: Body): TessellationData | null {
+  const tess = drawnTessellation(body)
+  return tess === null ? null : tessellationData(tess)
+}
+
+/** @internal
+ * Gives a body the tessellation another thread made of the same kernel body with the same settings
+ * (`drawnData`), so that three draws it without tessellating it again. */
+export function takeDrawn(body: Body, data: TessellationData): void {
+  const s = state(body)
+  if (s.held === null || s.tess !== null) return
+  const key = `${s.tolerance}|${s.angle}`
+  if (!s.held.tessellations.has(key)) s.held.tessellations.set(key, fromTessellationData(data))
 }
 
 function releaseTessellation(body: Body): void {
@@ -991,7 +1009,7 @@ export interface ChamferOptions {
   /** An asymmetric bevel: the angle between the bevel and the `reference` face, in radians. */
   angle?: number | null
   /** The face (or faces) of the part each edge lies on, which `length` is measured on. */
-  reference?: Face | Iterable<Face> | null
+  reference?: BrepFace | Iterable<BrepFace> | null
   /** Bevel the edges that continue the given ones tangentially too (default true). */
   propagate?: boolean
   /** Where three bevels meet: "patch" (default) or "mitre". */
@@ -1050,11 +1068,11 @@ export class Part extends Body {
 
   /** What this part and the others share (smlibpy's `a & b`); with a sheet or a face, the piece of
    * it inside the part (a Shell). */
-  intersect(sheet: Shell | Face): Shell
+  intersect(sheet: Shell | BrepFace): Shell
   intersect(...others: (Part | Iterable<Part>)[]): Part
-  intersect(...others: (Part | Shell | Face | Iterable<Part>)[]): Part | Shell {
+  intersect(...others: (Part | Shell | BrepFace | Iterable<Part>)[]): Part | Shell {
     const [first] = others
-    if (others.length === 1 && ((first instanceof Shell && !(first instanceof Sketch)) || first instanceof Face || first instanceof Sketch)) {
+    if (others.length === 1 && ((first instanceof Shell && !(first instanceof Sketch)) || first instanceof BrepFace || first instanceof Sketch)) {
       const value = kernelOf(this) as sm.Part
       const sheet = operand(first, this, 'intersect') as sm.Shell | sm.Face
       return adopt(wrap(call(() => value.intersect(sheet))) as Shell, this)
@@ -1093,7 +1111,7 @@ export class Part extends Body {
    * grows the walls outward, `corners` 'round' or 'sharp', `walls` other thicknesses for some faces
    * (a Map of faces to thicknesses, or [faces, thickness] pairs).
    */
-  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: ReadonlyMap<Face, number> | Iterable<readonly [FacesLike, number]> | null } = {}): Part {
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: ReadonlyMap<BrepFace, number> | Iterable<readonly [FacesLike, number]> | null } = {}): Part {
     const value = kernelOf(this) as sm.Part
     const o = openings === null ? null : ownFaces(this, openings, 'shell')
     const walls = options.walls == null ? options.walls : [...options.walls].map(([faces, t]) => [ownFaces(this, faces, 'shell'), t] as const)
@@ -1109,9 +1127,9 @@ export class Part extends Body {
 
   /** The part on the side of `plane` (in its frame) the plane's normal points to, as three's
    * clipping keeps it; 'below' the other side, 'both' both. A face or sheet splits it too. */
-  split(plane: THREE.Plane | Face | Shell, keep?: 'above' | 'below'): Part
-  split(plane: THREE.Plane | Face | Shell, keep: 'both'): [Part, Part]
-  split(plane: THREE.Plane | Face | Shell, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
+  split(plane: THREE.Plane | BrepFace | Shell, keep?: 'above' | 'below'): Part
+  split(plane: THREE.Plane | BrepFace | Shell, keep: 'both'): [Part, Part]
+  split(plane: THREE.Plane | BrepFace | Shell, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
     const value = kernelOf(this) as sm.Part
     const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'split') as sm.Face | sm.Shell)
     const out = call(() => value.split(p, keep as 'both'))
@@ -1171,10 +1189,10 @@ export class Part extends Body {
 
   /** Where a point (in the part's frame) lies: 'inside', 'outside', or 'on' with the face, edge or
    * vertex it lies on (within `tol`). */
-  classify(point: THREE.Vector3Like, tol: number | null = null): ['inside' | 'outside' | 'on', Face | Edge | Vertex | null] {
+  classify(point: THREE.Vector3Like, tol: number | null = null): ['inside' | 'outside' | 'on', BrepFace | BrepEdge | BrepVertex | null] {
     const value = kernelOf(this) as sm.Part
     const [where, shape] = call(() => value.classify(vec(point), tol))
-    return [where as 'inside' | 'outside' | 'on', shape === null ? null : (toThree(shape, this) as Face | Edge | Vertex)]
+    return [where as 'inside' | 'outside' | 'on', shape === null ? null : (toThree(shape, this) as BrepFace | BrepEdge | BrepVertex)]
   }
 
   // -- features -----------------------------------------------------------------------------------
@@ -1188,13 +1206,14 @@ export class Part extends Body {
   /** The part with a tool's outline (a body, face, or curves, taken where they are) imprinted on its
    * faces (projected along `direction`, in the part's frame), splitting them; `nearest` imprints on
    * the faces the projection reaches first. */
-  imprint(tool: Body | Face | Edge | Wire | Iterable<Face | Edge | Wire>, direction: THREE.Vector3Like | null = null, options: { nearest?: boolean } = {}): Part {
+  imprint(tool: Body | BrepFace | BrepEdge | Wire | Iterable<BrepFace | BrepEdge | Wire>, direction: THREE.Vector3Like | null = null, options: { nearest?: boolean } = {}): Part {
     const value = kernelOf(this) as sm.Part
-    const t = isObject3D(tool) ? operand(tool, this, 'imprint') : [...(tool as Iterable<Face | Edge | Wire>)].map((x) => operand(x, this, 'imprint'))
+    const t = isObject3D(tool) ? operand(tool, this, 'imprint') : [...(tool as Iterable<BrepFace | BrepEdge | Wire>)].map((x) => operand(x, this, 'imprint'))
     return adopt(wrap(call(() => value.imprint(t as never, direction === null ? null : vec(direction), options))) as Part, this)
   }
 
-  /** Sections `step` apart along `axis` (in the part's frame; default +y), as sketches. */
+  /** Sections `step` apart along `axis` (in the part's frame; default +z, so that they lie as
+   * sketches do, parallel to XY), as sketches. */
   slices(step: number, axis?: THREE.Vector3Like): Sketch[] {
     const value = kernelOf(this) as sm.Part
     return toThree(call(() => value.slices(step, axis === undefined ? undefined : vec(axis))), this) as Sketch[]
@@ -1220,7 +1239,7 @@ export class Part extends Body {
   draftAnalysis(direction: THREE.Vector3Like, options: { minAngle?: number } = {}): DraftAnalysis {
     const value = kernelOf(this) as sm.Part
     const k = call(() => value.draftAnalysis(vec(direction), { minAngle: options.minAngle === undefined ? undefined : degrees(options.minAngle) }))
-    return new DraftAnalysis(k, this, (faces) => ShapeList.from(faces) as ShapeList<Face>)
+    return new DraftAnalysis(k, this, (faces) => ShapeList.from(faces) as ShapeList<BrepFace>)
   }
 
   /** The parting lines for a mold pulled along `direction` (in the part's frame): where the faces
@@ -1232,7 +1251,7 @@ export class Part extends Body {
 
   /** The faces given tilted by `angle` (radians) about where they meet `neutralPlane` (a THREE.Plane
    * in the part's frame, or a face), for a mold pulled along that plane's normal. */
-  draft(faces: FacesLike, angle: number, neutralPlane: THREE.Plane | Face): Part {
+  draft(faces: FacesLike, angle: number, neutralPlane: THREE.Plane | BrepFace): Part {
     const value = kernelOf(this) as sm.Part
     const plane = (neutralPlane as THREE.Plane).isPlane ? toPlane(neutralPlane as THREE.Plane) : (operand(neutralPlane, this, 'draft') as sm.Face)
     return adopt(wrap(call(() => value.draft(ownFaces(this, faces, 'draft'), degrees(angle), plane))) as Part, this)
@@ -1254,7 +1273,7 @@ export class Part extends Body {
   }
 
   /** A face pushed (or pulled) at a point of it (in the part's frame): a smooth bump or dent. */
-  push(face: Face, at: THREE.Vector3Like, options: PushOptions = {}): Part {
+  push(face: BrepFace, at: THREE.Vector3Like, options: PushOptions = {}): Part {
     const value = kernelOf(this) as sm.Part
     const [f] = ownFaces(this, face, 'push')
     return adopt(wrap(call(() => value.push(f, vec(at), pushOptions(options)))) as Part, this)
@@ -1262,14 +1281,14 @@ export class Part extends Body {
 
   /** A region of a face moved by `by` (a distance along its normal or a Vector3), the face bending
    * smoothly around it. */
-  warp(face: Face, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Part {
+  warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Part {
     const value = kernelOf(this) as sm.Part
     const [f] = ownFaces(this, face, 'warp')
     return adopt(wrap(call(() => value.warp(f, regionOf(region, this, 'warp') as never, typeof by === 'number' ? by : vec(by), options))) as Part, this)
   }
 
   /** A region of a face pressed flat onto a plane (a THREE.Plane in the part's frame, or a face). */
-  flatten(face: Face, region: RegionLike, plane: THREE.Plane | Face, options: { continuity?: string } = {}): Part {
+  flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: string } = {}): Part {
     const value = kernelOf(this) as sm.Part
     const [f] = ownFaces(this, face, 'flatten')
     const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'flatten') as sm.Face)
@@ -1278,8 +1297,8 @@ export class Part extends Body {
 
   // -- the same kind of body ----------------------------------------------------------------------
   /** The part placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame):
-   * its origin to the face's center, its y axis along the face's normal. */
-  on(target: Face | THREE.Plane | THREE.Matrix4): Part {
+   * its origin to the face's center, its z axis along the face's normal. */
+  on(target: BrepFace | THREE.Plane | THREE.Matrix4): Part {
     return same<Part>(this, (v: sm.Part) => v.on(placement(target, this)))
   }
 
@@ -1333,13 +1352,13 @@ export class Part extends Body {
   }
 
   // -- sheet metal ------------------------------------------------------------------------------
-  /** The sheet folded along a line (a THREE.Ray in its frame, or a straight Edge) by `angle` radians; see `fold`. */
-  fold(line: THREE.Ray | Edge, angle: number, options: sheetMetal.FoldOptions): Part {
+  /** The sheet folded along a line (a THREE.Ray in its frame, or a straight BrepEdge) by `angle` radians; see `fold`. */
+  fold(line: THREE.Ray | BrepEdge, angle: number, options: sheetMetal.FoldOptions): Part {
     return sheetMetal.fold(this, line, angle, options)
   }
 
   /** The sheet with a flange along one of its straight edges; see `flange`. */
-  flange(edge: Edge | Iterable<Edge>, length: number, options: sheetMetal.FlangeOptions): Part {
+  flange(edge: BrepEdge | Iterable<BrepEdge>, length: number, options: sheetMetal.FlangeOptions): Part {
     return sheetMetal.flange(this, edge, length, options)
   }
 
@@ -1353,7 +1372,7 @@ export class Part extends Body {
     return sheetMetal.unfold(this, options)
   }
 
-  /** The flat pattern of the sheet, on the ground of its frame; see `flatPattern`. */
+  /** The flat pattern of the sheet, in the XY plane of its frame; see `flatPattern`. */
   flatPattern(options: sheetMetal.UnfoldOptions = {}): sheetMetal.FlatPattern {
     return sheetMetal.flatPattern(this, options)
   }
@@ -1361,9 +1380,9 @@ export class Part extends Body {
   /** The kernel edges for `edges`, which must be this part's (or a clone's). */
   private own(items: EdgesLike | FacesLike, what: string): (sm.Edge | sm.Face | sm.Wire)[] {
     const value = kernelOf(this)
-    const list = isObject3D(items) ? [items] : [...(items as Iterable<Edge | Face | Wire>)]
+    const list = isObject3D(items) ? [items] : [...(items as Iterable<BrepEdge | BrepFace | Wire>)]
     return list.map((x) => {
-      if (!(x instanceof Edge || x instanceof Face || x instanceof Wire)) throw new TypeError(`${what}: give edges or faces of this part, not ${describe(x)}`)
+      if (!(x instanceof BrepEdge || x instanceof BrepFace || x instanceof Wire)) throw new TypeError(`${what}: give edges or faces of this part, not ${describe(x)}`)
       const owner = state(x).owner
       if (owner === null || state(owner).held?.value !== value) throw new RangeError(`${what}: the ${x.constructor.name.toLowerCase()} is not one of this part's`)
       return subOf(x) as sm.Edge | sm.Face | sm.Wire
@@ -1415,8 +1434,8 @@ export class Shell extends Body {
 
   /** The sheet cut along curves on it (taken where they are), keeping the side of `keep` (a point in
    * the sheet's frame on or near the side to keep), or both sides as faces of their own ('split'). */
-  trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: THREE.Vector3Like | 'split'): Shell {
-    const c = isObject3D(curves) ? operand(curves, this, 'trim') : [...(curves as Iterable<Edge | Wire>)].map((x) => operand(x, this, 'trim'))
+  trim(curves: BrepEdge | Wire | Iterable<BrepEdge | Wire>, keep: THREE.Vector3Like | 'split'): Shell {
+    const c = isObject3D(curves) ? operand(curves, this, 'trim') : [...(curves as Iterable<BrepEdge | Wire>)].map((x) => operand(x, this, 'trim'))
     return same<Shell>(this, (v: sm.Shell) => v.trim(c as never, typeof keep === 'string' ? keep : vec(keep)))
   }
 
@@ -1427,40 +1446,40 @@ export class Shell extends Body {
 
   /** The sheet extended past its free edges (or those given of them) by `distance`; `continuity`
    * 'G1' or 'G2' with the surface. */
-  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+  extend(distance: number, options: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: string } = {}): Shell {
     const sides = options.sides == null ? options.sides : ownEdges(this, options.sides, 'extend')
     return same<Shell>(this, (v: sm.Shell) => v.extend(distance, { ...options, sides }))
   }
 
   /** The sheet with one of its free edges moved onto a curve (taken where it is), the surface
    * following over `extent` of its width. */
-  matchEdge(edge: Edge, target: Edge | Wire, options: { extent?: number } = {}): Shell {
+  matchEdge(edge: BrepEdge, target: BrepEdge | Wire, options: { extent?: number } = {}): Shell {
     const [e] = ownEdges(this, edge, 'matchEdge')
     const t = operand(target, this, 'matchEdge') as sm.Edge | sm.Wire
     return same<Shell>(this, (v: sm.Shell) => v.matchEdge(e, t, options))
   }
 
   /** Two neighbouring faces of the sheet as one. */
-  mergeFaces(a: Face, b: Face): Shell {
+  mergeFaces(a: BrepFace, b: BrepFace): Shell {
     const [fa, fb] = ownFaces(this, [a, b], 'mergeFaces')
     return same<Shell>(this, (v: sm.Shell) => v.mergeFaces(fa, fb))
   }
 
   /** A face of the sheet pushed at a point (in the sheet's frame): a smooth bump or dent. */
-  push(face: Face, at: THREE.Vector3Like, options: PushOptions = {}): Shell {
+  push(face: BrepFace, at: THREE.Vector3Like, options: PushOptions = {}): Shell {
     const [f] = ownFaces(this, face, 'push')
     return same<Shell>(this, (v: sm.Shell) => v.push(f, vec(at), pushOptions(options)))
   }
 
   /** A region of a face of the sheet moved by `by` (a distance along its normal or a Vector3). */
-  warp(face: Face, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Shell {
+  warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Shell {
     const [f] = ownFaces(this, face, 'warp')
     const r = regionOf(region, this, 'warp')
     return same<Shell>(this, (v: sm.Shell) => v.warp(f, r as never, typeof by === 'number' ? by : vec(by), options))
   }
 
   /** A region of a face of the sheet pressed flat onto a plane (a THREE.Plane in its frame, or a face). */
-  flatten(face: Face, region: RegionLike, plane: THREE.Plane | Face, options: { continuity?: string } = {}): Shell {
+  flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: string } = {}): Shell {
     const [f] = ownFaces(this, face, 'flatten')
     const r = regionOf(region, this, 'flatten')
     const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'flatten') as sm.Face)
@@ -1468,7 +1487,7 @@ export class Shell extends Body {
   }
 
   /** This sheet and other sheets, parts or faces (taken where they are), sewn into one where they meet. */
-  fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell {
+  fuse(...others: (Shell | Part | BrepFace | Iterable<Shell | Part | BrepFace>)[]): Shell {
     const tools = flatten(others).map((o) => operand(o, this, 'fuse') as sm.Shell)
     return same<Shell>(this, (v: sm.Shell) => v.fuse(...tools))
   }
@@ -1491,7 +1510,7 @@ export class Shell extends Body {
   }
 
   /** The sheet placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame). */
-  on(target: Face | THREE.Plane | THREE.Matrix4): Shell {
+  on(target: BrepFace | THREE.Plane | THREE.Matrix4): Shell {
     return same<Shell>(this, (v: sm.Shell) => v.on(placement(target, this)))
   }
 
@@ -1543,7 +1562,7 @@ export interface SweepOptions {
   scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null
   /** The profile's point that goes along the path: its center (default), the sketch's origin, or a
    * point (the sketch's own 2D coordinates) or vertex of it. */
-  anchor?: 'center' | 'origin' | THREE.Vector2Like | Vertex
+  anchor?: 'center' | 'origin' | THREE.Vector2Like | BrepVertex
 }
 
 /** A sweep's options as the kernel's. */
@@ -1554,17 +1573,17 @@ function sweepOptions(o: SweepOptions & { rails?: unknown }, into: THREE.Object3
     ...o,
     twist: twist === undefined ? undefined : typeof twist === 'function' ? (s: number) => degrees(twist(s)) : degrees(twist),
     up: o.up == null || typeof o.up === 'string' ? o.up : vec(o.up),
-    anchor: anchor === undefined || typeof anchor === 'string' ? anchor : anchor instanceof Vertex ? kernelOfShape(anchor) : [anchor.x, anchor.y],
+    anchor: anchor === undefined || typeof anchor === 'string' ? anchor : anchor instanceof BrepVertex ? kernelOfShape(anchor) : [anchor.x, anchor.y],
     // (the kernel takes rails in the free function only: no key for them otherwise)
     ...(o.rails === undefined ? {} : { rails: o.rails === null ? null : toKernel(o.rails, into) }),
   }
 }
 
 /**
- * A planar region: drawn in its own 2D coordinates (x, y), which lie on the ground of its frame
- * (three's XZ plane; its y runs along -z, so a top view shows it as drawn) and face up (+y), as
- * smlibpy's sketches lie on XY and face +Z. Place it with its transform, or on a face with on().
- * Extrude, revolve and sweep it into parts.
+ * A planar region: drawn in its own 2D coordinates (x, y), which are three's x and y: it lies in the
+ * XY plane of its frame and faces +z, as three's ShapeGeometry does, and extrudes along +z, as
+ * ExtrudeGeometry does. Place it with its transform, or on a face with on(). Extrude, revolve and
+ * sweep it into parts.
  */
 export class Sketch extends Shell {
   declare readonly isSketch: true
@@ -1616,16 +1635,19 @@ export class Sketch extends Shell {
     return adopt(wrap(call(() => value.extrude(amount, o))) as Part, this)
   }
 
-  /** A solid of revolution about `axis` (a THREE.Ray in the sketch's frame, in its plane; default
-   * the sketch's y axis) through `angle` radians. */
+  /** A solid of revolution about `axis` (a THREE.Ray in the sketch's frame, in its plane) through
+   * `angle` radians; by default about the frame's y axis, as THREE.LatheGeometry revolves its points
+   * (a sketch elsewhere than in a plane through that axis: about its plane's y axis through its
+   * plane's origin). */
   revolve(axis: THREE.Ray | null = null, angle = 2 * Math.PI): Part {
     const value = kernelOf(this) as sm.Sketch
-    return adopt(wrap(call(() => value.revolve(axis === null ? null : toAxis(axis), degrees(angle)))) as Part, this)
+    const about = axis ?? latheAxis(value)
+    return adopt(wrap(call(() => value.revolve(about === null ? null : toAxis(about), degrees(angle)))) as Part, this)
   }
 
-  /** A solid: the region swept along `path` (an Edge or Wire where it is, or a THREE.Curve in the
+  /** A solid: the region swept along `path` (a BrepEdge or Wire where it is, or a THREE.Curve in the
    * sketch's frame). */
-  sweep(path: Edge | Wire | THREE.Curve<THREE.Vector3>, options: SweepOptions = {}): Part {
+  sweep(path: BrepEdge | Wire | THREE.Curve<THREE.Vector3>, options: SweepOptions = {}): Part {
     const value = kernelOf(this) as sm.Sketch
     const p = pathOf(path, this)
     return adopt(wrap(call(() => value.sweep(p, sweepOptions(options, this) as never))) as Part, this)
@@ -1636,7 +1658,7 @@ export class Sketch extends Shell {
    * the face's center, its normal along the face's), a THREE.Plane, or a THREE.Matrix4 (both in
    * the sketch's frame).
    */
-  override on(target: Face | THREE.Plane | THREE.Matrix4): Sketch {
+  override on(target: BrepFace | THREE.Plane | THREE.Matrix4): Sketch {
     return same<Sketch>(this, (v: sm.Sketch) => v.on(placement(target, this)))
   }
 
@@ -1679,8 +1701,8 @@ export class Sketch extends Shell {
   }
 
   /** The region with its corners cut off (all, or those at `vertices`). */
-  chamfer(length: number, vertices: Iterable<Vertex | THREE.Vector3Like> | null = null): Sketch {
-    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof Vertex ? (subOf(x) as sm.Vertex) : vec(x)))
+  chamfer(length: number, vertices: Iterable<BrepVertex | THREE.Vector3Like> | null = null): Sketch {
+    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof BrepVertex ? (subOf(x) as sm.Vertex) : vec(x)))
     return same<Sketch>(this, (k: sm.Sketch) => k.chamfer(length, v))
   }
 
@@ -1690,11 +1712,12 @@ export class Sketch extends Shell {
     return new SectionProperties(call(() => value.sectionProperties()))
   }
 
-  /** A solid: the region swung around an outline (a sketch, face or curve on the ground, taken where
-   * it is), as a rim or a frame is (smlibpy's swing). The region stands in its frame's XY plane: draw
-   * it with x the distance from the y axis and y the height, and stand it up with
-   * `.on(new THREE.Matrix4().makeRotationX(Math.PI / 2))` (smlibpy's `.on(Plane.front)`). */
-  swing(outline: Sketch | Face | Wire | Edge): Part {
+  /** A solid: the region swung around an outline, as a rim or a frame is (smlibpy's swing): a
+   * revolve about z whose circle is the outline (a sketch, face or curve around the z axis, parallel
+   * to XY, taken where it is). The region stands in its frame's XZ plane, as for a lathe about z:
+   * draw it with x the distance from the z axis and y the height, and stand it up with
+   * `.on(new THREE.Matrix4().makeRotationX(Math.PI / 2))`, which turns its y to +z. */
+  swing(outline: Sketch | BrepFace | Wire | BrepEdge): Part {
     const value = kernelOf(this) as sm.Sketch
     const o = operand(outline, this, 'swing') as sm.Sketch | sm.Face | sm.Wire | sm.Edge
     return adopt(wrap(call(() => value.swing(o))) as Part, this)
@@ -1723,9 +1746,9 @@ export class Sketch extends Shell {
   }
 
   /** The region with its corners rounded (all, or those at `vertices`). */
-  fillet(radius: number, vertices: Iterable<Vertex | THREE.Vector3Like> | null = null): Sketch {
+  fillet(radius: number, vertices: Iterable<BrepVertex | THREE.Vector3Like> | null = null): Sketch {
     const value = kernelOf(this) as sm.Sketch
-    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof Vertex ? (subOf(x) as sm.Vertex) : vec(x)))
+    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof BrepVertex ? (subOf(x) as sm.Vertex) : vec(x)))
     return adopt(wrap(call(() => value.fillet(radius, v))) as Sketch, this)
   }
 }
@@ -1734,10 +1757,21 @@ Object.defineProperty(Sketch.prototype, 'isSketch', { value: true })
 
 /** @internal
  * A sweep path as the kernel's curve, in `into`'s frame. */
-export function pathOf(path: Edge | Wire | THREE.Curve<THREE.Vector3>, into: THREE.Object3D | null): sm.Edge | sm.Wire {
-  if (path instanceof Edge || path instanceof Wire) return operand(path, into, 'sweep') as sm.Edge | sm.Wire
+export function pathOf(path: BrepEdge | Wire | THREE.Curve<THREE.Vector3>, into: THREE.Object3D | null): sm.Edge | sm.Wire {
+  if (path instanceof BrepEdge || path instanceof Wire) return operand(path, into, 'sweep') as sm.Edge | sm.Wire
   const edges = edges3(path)
   return edges.length === 1 ? edges[0] : call(() => new sm.Wire(edges))
+}
+
+/** @internal
+ * The axis a sketch revolves about by default: its frame's y axis, as THREE.LatheGeometry revolves
+ * its points about y, where that axis lies in the sketch's plane (a sketch in the XY plane); else
+ * null, the kernel's default (the y axis of the sketch's plane, through its origin). */
+export function latheAxis(value: sm.Sketch): THREE.Ray | null {
+  const plane = threePlane(call(() => value.plane))
+  const size = Math.max(1, call(() => value.bbox()).diagonal)
+  if (Math.abs(plane.constant) > 1e-9 * size || Math.abs(plane.normal.y) > 1e-12) return null
+  return new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, 1, 0))
 }
 
 /** A closed triangle mesh of three's (welded by position) as the kernel's mesh. */
@@ -1758,7 +1792,7 @@ function meshOf(geometry: THREE.BufferGeometry): sm.Mesh {
     if (id === undefined) {
       id = vertices.length / 3
       ids.set(key, id)
-      vertices.push(p.x, -p.z, p.y)
+      vertices.push(p.x, p.y, p.z)
     }
     triangles.push(id)
   }
@@ -1774,11 +1808,11 @@ function meshOf(geometry: THREE.BufferGeometry): sm.Mesh {
 // --------------------------------------------------------------------------------- sub-shapes
 /** @internal
  * The kernel value of a face, edge, wire or vertex. */
-export function kernelOfShape(x: Face | Edge | Wire | Vertex): sm.Face | sm.Edge | sm.Wire | sm.Vertex {
+export function kernelOfShape(x: BrepFace | BrepEdge | Wire | BrepVertex): sm.Face | sm.Edge | sm.Wire | sm.Vertex {
   return subOf(x)
 }
 
-function subOf(x: Face | Edge | Wire | Vertex): sm.Face | sm.Edge | sm.Wire | sm.Vertex {
+function subOf(x: BrepFace | BrepEdge | Wire | BrepVertex): sm.Face | sm.Edge | sm.Wire | sm.Vertex {
   const s = state(x)
   if (s.owner !== null) kernelOf(s.owner) // (throws for a disposed body)
   const value = s.sub ?? s.curve?.value ?? null
@@ -1843,9 +1877,10 @@ const HIGHLIGHT = 0xff7a1a
 /**
  * A face of a body: a THREE.Mesh of the face's triangles, in its body's frame (add it as a child
  * of the body to draw it there; its own material is a highlight in front of the body's faces).
+ * (smlibpy's Face; three has a Face of its own, the face of a raycast hit.)
  */
-export class Face extends THREE.Mesh {
-  declare readonly isFace: true
+export class BrepFace extends THREE.Mesh {
+  declare readonly isBrepFace: true
   constructor() {
     super(PLACEHOLDER, PLACEHOLDER_MATERIAL)
     takeSub(this)
@@ -1916,23 +1951,23 @@ export class Face extends THREE.Mesh {
   }
 
   /** The shortest distance to a point (in its body's frame) or to another shape (where it is). */
-  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+  distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number {
     const f = this.face
     const o = isObject3D(other) ? operand(other, this, 'distanceTo') : vec(other)
     return call(() => f.distanceTo(o))
   }
 
   /** The face's edges: its body's (with `seams`, also the seams where its surface meets itself). */
-  edges(seams = false): ShapeList<Edge> {
+  edges(seams = false): ShapeList<BrepEdge> {
     return ownList(this, 'edges', (f) => (f as sm.Face).edges(seams))
   }
 
-  vertices(): ShapeList<Vertex> {
+  vertices(): ShapeList<BrepVertex> {
     return ownList(this, 'vertices', (f) => (f as sm.Face).vertices())
   }
 
   /** The faces of its body that share an edge with it. */
-  neighbors(): ShapeList<Face> {
+  neighbors(): ShapeList<BrepFace> {
     return ownList(this, 'faces', (f) => (f as sm.Face).neighbors())
   }
 
@@ -2031,29 +2066,29 @@ export class Face extends THREE.Mesh {
   }
 
   /** A curve (taken where it is) projected onto the face along its normals: the curves on it. */
-  project(curve: Edge | Wire): ShapeList<Edge> {
+  project(curve: BrepEdge | Wire): ShapeList<BrepEdge> {
     const f = this.face
     const c = operand(curve, this, 'project') as sm.Edge | sm.Wire
-    return toThree(call(() => f.project(c)), this) as ShapeList<Edge>
+    return toThree(call(() => f.project(c)), this) as ShapeList<BrepEdge>
   }
 
   /** The face's iso curves at parameter u or v (0 to 1). */
-  iso(options: { u?: number | null; v?: number | null } = {}): ShapeList<Edge> {
+  iso(options: { u?: number | null; v?: number | null } = {}): ShapeList<BrepEdge> {
     const f = this.face
-    return toThree(call(() => f.iso(options)), this) as ShapeList<Edge>
+    return toThree(call(() => f.iso(options)), this) as ShapeList<BrepEdge>
   }
 
   /**
    * A drawing wrapped onto the face, as a label onto a can: a sketch or curves in their own
-   * coordinates (as drawn, on the ground, wherever they are placed), their origin at `at` (a point of
+   * coordinates (as drawn in their XY plane, wherever they are placed), their origin at `at` (a point of
    * the face, in its body's frame; default its middle), their x axis along `direction`. The curves on
    * the face.
    */
-  wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at: THREE.Vector3Like | Vertex | null = null, options: { direction?: THREE.Vector3Like | null } = {}): ShapeList<Edge> {
+  wrap(shape: BrepEdge | Wire | Sketch | Iterable<BrepEdge>, at: THREE.Vector3Like | BrepVertex | null = null, options: { direction?: THREE.Vector3Like | null } = {}): ShapeList<BrepEdge> {
     const f = this.face
-    const drawing = shape instanceof Body ? kernelOf(shape) : isObject3D(shape) ? kernelOfShape(shape as Edge | Wire) : [...(shape as Iterable<Edge>)].map((e) => kernelOfShape(e) as sm.Edge)
-    const where = at === null ? null : at instanceof Vertex ? (kernelOfShape(at) as sm.Vertex) : vec(at)
-    return toThree(call(() => f.wrap(drawing as never, where, { direction: options.direction == null ? options.direction : vec(options.direction) })), this) as ShapeList<Edge>
+    const drawing = shape instanceof Body ? kernelOf(shape) : isObject3D(shape) ? kernelOfShape(shape as BrepEdge | Wire) : [...(shape as Iterable<BrepEdge>)].map((e) => kernelOfShape(e) as sm.Edge)
+    const where = at === null ? null : at instanceof BrepVertex ? (kernelOfShape(at) as sm.Vertex) : vec(at)
+    return toThree(call(() => f.wrap(drawing as never, where, { direction: options.direction == null ? options.direction : vec(options.direction) })), this) as ShapeList<BrepEdge>
   }
 
   /** The face as a sketch (a planar face) where it is. */
@@ -2075,10 +2110,10 @@ export class Face extends THREE.Mesh {
   }
 
   /** The face split along curves on it (taken where they are): the faces of the split sheet. */
-  split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face> {
+  split(curves: BrepEdge | Wire | Iterable<BrepEdge | Wire>): ShapeList<BrepFace> {
     const f = this.face
-    const c = isObject3D(curves) ? operand(curves, this, 'split') : [...(curves as Iterable<Edge | Wire>)].map((x) => operand(x, this, 'split'))
-    return toThree(call(() => f.split(c as never)), this) as ShapeList<Face>
+    const c = isObject3D(curves) ? operand(curves, this, 'split') : [...(curves as Iterable<BrepEdge | Wire>)].map((x) => operand(x, this, 'split'))
+    return toThree(call(() => f.split(c as never)), this) as ShapeList<BrepFace>
   }
 
   /** The face turned the other way, as a sheet. */
@@ -2094,7 +2129,7 @@ export class Face extends THREE.Mesh {
   }
 
   /** The face extended past its edges (or those given of them) by `distance`, as a sheet. */
-  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+  extend(distance: number, options: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: string } = {}): Shell {
     const f = this.face
     const owner = state(this).owner
     const sides = options.sides == null || owner === null ? options.sides : ownEdges(owner, options.sides, 'extend')
@@ -2103,7 +2138,7 @@ export class Face extends THREE.Mesh {
 
   /** True for the same face of the same body (of a clone too). */
   equals(other: unknown): boolean {
-    if (!(other instanceof Face)) return false
+    if (!(other instanceof BrepFace)) return false
     const a = state(this).sub as sm.Face | null
     const b = state(other).sub as sm.Face | null
     return a !== null && b !== null && call(() => a.equals(b))
@@ -2134,11 +2169,11 @@ export class Face extends THREE.Mesh {
   }
 }
 
-Object.defineProperty(Face.prototype, 'isFace', { value: true })
+Object.defineProperty(BrepFace.prototype, 'isBrepFace', { value: true })
 
 accessors(
-  Face.prototype,
-  (f: Face) => {
+  BrepFace.prototype,
+  (f: BrepFace) => {
     const s = state(f)
     const tess = ownerTessellation(f)
     return (s.ownGeometry ??= tess === null ? PLACEHOLDER : faceOf(tess, s.index))
@@ -2157,12 +2192,12 @@ accessors(
 )
 
 /** The sub-shapes of a face or edge, as its body's objects. */
-function ownList<T extends Face | Edge | Vertex>(x: Face | Edge, kind: 'faces' | 'edges' | 'vertices', of: (k: sm.Shape) => Iterable<sm.Shape>): ShapeList<T> {
+function ownList<T extends BrepFace | BrepEdge | BrepVertex>(x: BrepFace | BrepEdge, kind: 'faces' | 'edges' | 'vertices', of: (k: sm.Shape) => Iterable<sm.Shape>): ShapeList<T> {
   const value = subOf(x)
   const owner = state(x).owner
   const items = [...call(() => of(value))]
   if (owner === null) {
-    if (kind === 'vertices') return ShapeList.from(items.map((v) => sub(Vertex, null, -1, v as sm.Vertex))) as ShapeList<T>
+    if (kind === 'vertices') return ShapeList.from(items.map((v) => sub(BrepVertex, null, -1, v as sm.Vertex))) as ShapeList<T>
     return new ShapeList<T>()
   }
   const all = (owner[kind] as () => ShapeList<T>).call(owner)
@@ -2170,7 +2205,7 @@ function ownList<T extends Face | Edge | Vertex>(x: Face | Edge, kind: 'faces' |
 }
 
 /** The object of `list` whose kernel shape is `k`. */
-function find<T extends Face | Edge | Vertex>(list: readonly T[], k: sm.Shape): T | undefined {
+function find<T extends BrepFace | BrepEdge | BrepVertex>(list: readonly T[], k: sm.Shape): T | undefined {
   for (const x of list) if (state(x).sub === k) return x
   for (const x of list) if ((state(x).sub as { equals(o: unknown): boolean } | null)?.equals(k)) return x
   return undefined
@@ -2178,11 +2213,11 @@ function find<T extends Face | Edge | Vertex>(list: readonly T[], k: sm.Shape): 
 
 /**
  * An edge: a THREE.Line along the exact curve. Either an edge of a body (in its body's frame;
- * `owner` is the body), or a curve of its own (Line, Spline, Helix, ... or one of three's curves),
- * placed by its own transform.
+ * `owner` is the body), or a curve of its own (Segment, Spline, Helix, ... or one of three's curves),
+ * placed by its own transform. (smlibpy's Edge, named as BrepFace and BrepVertex are.)
  */
-export class Edge extends THREE.Line {
-  declare readonly isEdge: true
+export class BrepEdge extends THREE.Line {
+  declare readonly isBrepEdge: true
   /** An edge along one of three's curves (LineCurve3, CubicBezierCurve3, CatmullRomCurve3,
    * CurvePath, ...) in its own frame. Without a curve, an empty edge. */
   constructor(curve?: THREE.Curve<THREE.Vector3> | null, material?: THREE.Material | null) {
@@ -2191,7 +2226,7 @@ export class Edge extends THREE.Line {
     if (material != null) this.material = material
     if (internal(this) || curve == null) return
     const edges = edges3(curve)
-    if (edges.length !== 1) throw new RangeError(`Edge: the curve makes ${edges.length} edges; a Wire takes them`)
+    if (edges.length !== 1) throw new RangeError(`BrepEdge: the curve makes ${edges.length} edges; a Wire takes them`)
     setCurve(this, edges[0])
   }
 
@@ -2268,25 +2303,25 @@ export class Edge extends THREE.Line {
   }
 
   /** The shortest distance to a point (in its frame) or to another shape (where it is). */
-  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+  distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number {
     const e = this.edge
     const o = isObject3D(other) ? operand(other, this, 'distanceTo') : vec(other)
     return call(() => e.distanceTo(o))
   }
 
   /** The faces of its body that meet at it. */
-  faces(): ShapeList<Face> {
+  faces(): ShapeList<BrepFace> {
     return ownList(this, 'faces', (e) => (e as sm.Edge).faces())
   }
 
-  vertices(): ShapeList<Vertex> {
+  vertices(): ShapeList<BrepVertex> {
     return ownList(this, 'vertices', (e) => (e as sm.Edge).vertices())
   }
 
   /** The same curve the other way round (a curve of its own, where this one is). */
-  reversed(): Edge {
+  reversed(): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.reversed()), this) as Edge
+    return placedCurve(call(() => e.reversed()), this) as BrepEdge
   }
 
   /** How far the edge's curve, its ends and its faces may lie apart (the kernel's tolerance of the
@@ -2339,45 +2374,45 @@ export class Edge extends THREE.Line {
   }
 
   /** The edge's point nearest to `point` (both in its frame). */
-  closestPoint(point: THREE.Vector3Like | Vertex, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  closestPoint(point: THREE.Vector3Like | BrepVertex, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     const e = this.edge
     return vector3(call(() => e.closestPoint(at(point) as sm.Vector | sm.Vertex)), target)
   }
 
   /** The fraction of the length at which the edge comes nearest to `point`. */
-  paramAtPoint(point: THREE.Vector3Like | Vertex): number {
+  paramAtPoint(point: THREE.Vector3Like | BrepVertex): number {
     const e = this.edge
     return call(() => e.paramAtPoint(at(point) as sm.Vector | sm.Vertex))
   }
 
   /** The part of the edge from `start` to `end`: fractions of the length or points on it. */
-  trim(start: number | THREE.Vector3Like | Vertex, end: number | THREE.Vector3Like | Vertex): Edge {
+  trim(start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.trim(at(start), at(end))), this) as Edge
+    return placedCurve(call(() => e.trim(at(start), at(end))), this) as BrepEdge
   }
 
   /** The edge in two at a fraction of its length or a point on it. */
-  split(where: number | THREE.Vector3Like | Vertex): [Edge, Edge] {
+  split(where: number | THREE.Vector3Like | BrepVertex): [BrepEdge, BrepEdge] {
     const e = this.edge
-    return call(() => e.split(at(where))).map((x) => placedCurve(x, this)) as [Edge, Edge]
+    return call(() => e.split(at(where))).map((x) => placedCurve(x, this)) as [BrepEdge, BrepEdge]
   }
 
   /** The edge made longer by `distance` at its 'end' (default), 'start' or 'both'; `continuity`
    * 'G1', 'G2' or 'natural' for curves that are not lines or arcs. */
-  extend(distance: number, options: { end?: string; continuity?: string } = {}): Edge {
+  extend(distance: number, options: { end?: string; continuity?: string } = {}): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.extend(distance, options)), this) as Edge
+    return placedCurve(call(() => e.extend(distance, options)), this) as BrepEdge
   }
 
   /** Where the edge crosses another shape (taken where it is), in its frame. */
-  intersections(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options: { tolerance?: number | null } = {}): THREE.Vector3[] {
+  intersections(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options: { tolerance?: number | null } = {}): THREE.Vector3[] {
     const e = this.edge
     const o = toKernel(isObject3D(other) ? other : [...(other as Iterable<Body>)], this)
     return call(() => e.intersections(o as never, options)).map((p) => vector3(p))
   }
 
   /** The fractions of the length at which the edge crosses another shape. */
-  intersectionParams(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options: { tolerance?: number | null } = {}): number[] {
+  intersectionParams(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options: { tolerance?: number | null } = {}): number[] {
     const e = this.edge
     const o = toKernel(isObject3D(other) ? other : [...(other as Iterable<Body>)], this)
     return call(() => e.intersectionParams(o as never, options))
@@ -2420,9 +2455,9 @@ export class Edge extends THREE.Line {
   }
 
   /** A parallel curve `distance` away, in the curve's plane (or `plane`, in its frame). */
-  offset(distance: number, options: { plane?: THREE.Plane | null } = {}): Edge {
+  offset(distance: number, options: { plane?: THREE.Plane | null } = {}): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.offset(distance, { plane: options.plane == null ? options.plane : toPlane(options.plane) })), this) as Edge
+    return placedCurve(call(() => e.offset(distance, { plane: options.plane == null ? options.plane : toPlane(options.plane) })), this) as BrepEdge
   }
 
   /** The curve as lines and arcs within `tolerance`, as a wire. */
@@ -2432,13 +2467,13 @@ export class Edge extends THREE.Line {
   }
 
   /** The curve bent locally to pass through a point (in its frame), with a tangent there if given. */
-  through(point: THREE.Vector3Like | Vertex, options: { tangent?: THREE.Vector3Like | null; at?: number | null } = {}): Edge {
+  through(point: THREE.Vector3Like | BrepVertex, options: { tangent?: THREE.Vector3Like | null; at?: number | null } = {}): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.through(at(point) as never, { ...options, tangent: options.tangent == null ? options.tangent : vec(options.tangent) })), this) as Edge
+    return placedCurve(call(() => e.through(at(point) as never, { ...options, tangent: options.tangent == null ? options.tangent : vec(options.tangent) })), this) as BrepEdge
   }
 
   /** The curve with its ends moved onto points (and turned to tangents), in its frame. */
-  match(options: { start?: THREE.Vector3Like | Vertex | null; end?: THREE.Vector3Like | Vertex | null; startTangent?: THREE.Vector3Like | null; endTangent?: THREE.Vector3Like | null } = {}): Edge {
+  match(options: { start?: THREE.Vector3Like | BrepVertex | null; end?: THREE.Vector3Like | BrepVertex | null; startTangent?: THREE.Vector3Like | null; endTangent?: THREE.Vector3Like | null } = {}): BrepEdge {
     const e = this.edge
     const o = {
       start: options.start == null ? options.start : at(options.start),
@@ -2446,13 +2481,13 @@ export class Edge extends THREE.Line {
       startTangent: options.startTangent == null ? options.startTangent : vec(options.startTangent),
       endTangent: options.endTangent == null ? options.endTangent : vec(options.endTangent),
     }
-    return placedCurve(call(() => e.match(o as never)), this) as Edge
+    return placedCurve(call(() => e.match(o as never)), this) as BrepEdge
   }
 
   /** The edges of its body that run on from this one tangentially, this one included. */
-  tangentChain(): ShapeList<Edge> {
+  tangentChain(): ShapeList<BrepEdge> {
     const e = this.edge
-    return toThree(call(() => e.tangentChain()), this) as ShapeList<Edge>
+    return toThree(call(() => e.tangentChain()), this) as ShapeList<BrepEdge>
   }
 
   /** The curve as NURBS data: degree, knots, control points (Vector3s, in its frame) and weights
@@ -2464,27 +2499,27 @@ export class Edge extends THREE.Line {
   }
 
   /** The curve mirrored in `plane` (in its frame), a curve of its own where this one is. */
-  mirror(plane: THREE.Plane): Edge {
+  mirror(plane: THREE.Plane): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.mirror(toPlane(plane))), this) as Edge
+    return placedCurve(call(() => e.mirror(toPlane(plane))), this) as BrepEdge
   }
 
   /** The curve placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame): its
-   * origin to the face's center, its y axis along the face's normal. */
-  on(target: Face | THREE.Plane | THREE.Matrix4): Edge {
+   * origin to the face's center, its z axis along the face's normal. */
+  on(target: BrepFace | THREE.Plane | THREE.Matrix4): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.on(placement(target, this))), this) as Edge
+    return placedCurve(call(() => e.on(placement(target, this))), this) as BrepEdge
   }
 
   /** The curve with the knots it does not need taken out. */
-  removeKnots(): Edge {
+  removeKnots(): BrepEdge {
     const e = this.edge
-    return placedCurve(call(() => e.removeKnots()), this) as Edge
+    return placedCurve(call(() => e.removeKnots()), this) as BrepEdge
   }
 
   /** True for the same edge of the same body (of a clone too), or the same curve. */
   equals(other: unknown): boolean {
-    if (!(other instanceof Edge)) return false
+    if (!(other instanceof BrepEdge)) return false
     const a = state(this).sub ?? state(this).curve?.value ?? null
     const b = state(other).sub ?? state(other).curve?.value ?? null
     return a !== null && b !== null && call(() => (a as sm.Edge).equals(b))
@@ -2492,8 +2527,8 @@ export class Edge extends THREE.Line {
 
   /** An edge of a NURBS curve's data (the inverse of nurbs()): degree, knots (every knot as often as
    * its multiplicity), control points (Vector3s) and weights (null: non-rational). */
-  static fromNurbs(data: { degree: number; knots: readonly number[]; points: readonly THREE.Vector3Like[]; weights?: readonly number[] | null }): Edge {
-    return curveOf(call(() => sm.Edge.fromNurbs({ degree: data.degree, knots: data.knots, points: data.points.map((p) => vec(p)), weights: data.weights ?? null }))) as Edge
+  static fromNurbs(data: { degree: number; knots: readonly number[]; points: readonly THREE.Vector3Like[]; weights?: readonly number[] | null }): BrepEdge {
+    return curveOf(call(() => sm.Edge.fromNurbs({ degree: data.degree, knots: data.knots, points: data.points.map((p) => vec(p)), weights: data.weights ?? null }))) as BrepEdge
   }
 
   /**
@@ -2529,11 +2564,11 @@ export class Edge extends THREE.Line {
   }
 }
 
-Object.defineProperty(Edge.prototype, 'isEdge', { value: true })
+Object.defineProperty(BrepEdge.prototype, 'isBrepEdge', { value: true })
 
 accessors(
-  Edge.prototype,
-  (e: Edge) => {
+  BrepEdge.prototype,
+  (e: BrepEdge) => {
     const s = state(e)
     if (s.ownGeometry === null) {
       const tess = ownerTessellation(e)
@@ -2542,18 +2577,18 @@ accessors(
     }
     return s.ownGeometry
   },
-  (e: Edge) => new THREE.LineBasicMaterial({ color: state(e).owner === null ? 0x20242c : HIGHLIGHT }),
+  (e: BrepEdge) => new THREE.LineBasicMaterial({ color: state(e).owner === null ? 0x20242c : HIGHLIGHT }),
 )
 
 /** A point given to a curve's method: a fraction of its length, a point, or a vertex, as the kernel's. */
-function at(point: number | THREE.Vector3Like | Vertex): number | sm.Vector | sm.Vertex {
+function at(point: number | THREE.Vector3Like | BrepVertex): number | sm.Vector | sm.Vertex {
   if (typeof point === 'number') return point
-  if (point instanceof Vertex) return kernelOfShape(point) as sm.Vertex
+  if (point instanceof BrepVertex) return kernelOfShape(point) as sm.Vertex
   return vec(point)
 }
 
 /** @internal */
-export function setCurve(o: Edge | Wire, value: sm.Edge | sm.Wire): void {
+export function setCurve(o: BrepEdge | Wire, value: sm.Edge | sm.Wire): void {
   const s = state(o)
   s.curve = { value, refs: 1 }
   s.owner = null
@@ -2563,7 +2598,7 @@ export function setCurve(o: Edge | Wire, value: sm.Edge | sm.Wire): void {
 /** @internal
  * A curve of its own made from `like`: where `like` is (where its body is, for a face's, edge's or
  * vertex's), with its transform. */
-export function placedCurve(value: sm.Edge | sm.Wire, like: THREE.Object3D): Edge | Wire {
+export function placedCurve(value: sm.Edge | sm.Wire, like: THREE.Object3D): BrepEdge | Wire {
   const s = state(like)
   const c = curveOf(value)
   // (an edge of a body is where its body is)
@@ -2578,8 +2613,8 @@ function curvePolyline(value: sm.Edge | sm.Wire): Float32Array {
 
 /** A THREE.Curve along an edge's exact curve (in the edge's frame). */
 class ExactCurve extends THREE.Curve<THREE.Vector3> {
-  readonly edge: Edge
-  constructor(edge: Edge) {
+  readonly edge: BrepEdge
+  constructor(edge: BrepEdge) {
     super()
     this.edge = edge
   }
@@ -2614,12 +2649,12 @@ export class Wire extends THREE.Line {
   declare readonly isWire: true
   /** A wire of edges (where they are, in this wire's frame) or of one of three's curve paths (a
    * THREE.CurvePath, in its own frame). Without either, an empty wire. */
-  constructor(edges?: Iterable<Edge | Wire> | THREE.CurvePath<THREE.Vector3> | null, material?: THREE.Material | null, options: { sort?: boolean } = {}) {
+  constructor(edges?: Iterable<BrepEdge | Wire> | THREE.CurvePath<THREE.Vector3> | null, material?: THREE.Material | null, options: { sort?: boolean } = {}) {
     super(PLACEHOLDER, PLACEHOLDER_MATERIAL)
     takeSub(this)
     if (material != null) this.material = material
     if (internal(this) || edges == null) return
-    const kernel = typeof (edges as THREE.Curve<THREE.Vector3>).getPoint === 'function' ? edges3(edges as THREE.Curve<THREE.Vector3>) : [...(edges as Iterable<Edge>)].map((e) => operand(e, null, 'Wire') as sm.Edge)
+    const kernel = typeof (edges as THREE.Curve<THREE.Vector3>).getPoint === 'function' ? edges3(edges as THREE.Curve<THREE.Vector3>) : [...(edges as Iterable<BrepEdge>)].map((e) => operand(e, null, 'Wire') as sm.Edge)
     setCurve(this, call(() => new sm.Wire(kernel, options)))
   }
 
@@ -2642,9 +2677,9 @@ export class Wire extends THREE.Line {
   }
 
   /** Its edges, in order (curves of their own, in this wire's frame). */
-  edges(): ShapeList<Edge> {
+  edges(): ShapeList<BrepEdge> {
     const w = this.wire
-    return ShapeList.from([...call(() => w.edges())].map((e) => placedCurve(e, this) as Edge)) as ShapeList<Edge>
+    return ShapeList.from([...call(() => w.edges())].map((e) => placedCurve(e, this) as BrepEdge)) as ShapeList<BrepEdge>
   }
 
   pointAt(t = 0.5, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
@@ -2680,13 +2715,13 @@ export class Wire extends THREE.Line {
   }
 
   /** Its vertices, in order. */
-  vertices(): ShapeList<Vertex> {
+  vertices(): ShapeList<BrepVertex> {
     const w = this.wire
-    return toThree(call(() => w.vertices()), this) as ShapeList<Vertex>
+    return toThree(call(() => w.vertices()), this) as ShapeList<BrepVertex>
   }
 
   /** The shortest distance to a point (in its frame) or another shape (where it is). */
-  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+  distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number {
     const w = this.wire
     const o = isObject3D(other) ? operand(other, this, 'distanceTo') : vec(other)
     return call(() => w.distanceTo(o))
@@ -2699,28 +2734,28 @@ export class Wire extends THREE.Line {
   }
 
   /** The wire in two at a fraction of its length or a point on it. */
-  split(where: number | THREE.Vector3Like | Vertex): [Wire, Wire] {
+  split(where: number | THREE.Vector3Like | BrepVertex): [Wire, Wire] {
     const w = this.wire
     return call(() => w.split(at(where))).map((x) => placedCurve(x, this)) as [Wire, Wire]
   }
 
   /** The part of the wire from `start` to `end`: fractions of the length or points on it. */
-  trim(start: number | THREE.Vector3Like | Vertex, end: number | THREE.Vector3Like | Vertex): Wire {
+  trim(start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): Wire {
     const w = this.wire
     return placedCurve(call(() => w.trim(at(start), at(end))), this) as Wire
   }
 
   /** Where the wire crosses another shape (taken where it is), in its frame. */
-  intersections(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options: { tolerance?: number | null } = {}): THREE.Vector3[] {
+  intersections(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options: { tolerance?: number | null } = {}): THREE.Vector3[] {
     const w = this.wire
     const o = toKernel(isObject3D(other) ? other : [...(other as Iterable<Body>)], this)
     return call(() => w.intersections(o as never, options)).map((p) => vector3(p))
   }
 
   /** The wire as one edge (its edges joined into one curve). */
-  toEdge(): Edge {
+  toEdge(): BrepEdge {
     const w = this.wire
-    return placedCurve(call(() => w.toEdge()), this) as Edge
+    return placedCurve(call(() => w.toEdge()), this) as BrepEdge
   }
 
   /** A parallel wire `distance` away in its plane (or `plane`, in its frame); `corners` 'round',
@@ -2779,13 +2814,13 @@ export class Wire extends THREE.Line {
   }
 
   /** The wire placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame). */
-  on(target: Face | THREE.Plane | THREE.Matrix4): Wire {
+  on(target: BrepFace | THREE.Plane | THREE.Matrix4): Wire {
     const w = this.wire
     return placedCurve(call(() => w.on(placement(target, this))), this) as Wire
   }
 
   /** The wire with its corners (all, or those at `vertices`) rounded. */
-  fillet(radius: number, vertices: Iterable<THREE.Vector3Like | Vertex> | null = null): Wire {
+  fillet(radius: number, vertices: Iterable<THREE.Vector3Like | BrepVertex> | null = null): Wire {
     const w = this.wire
     const v = vertices === null ? null : [...vertices].map((x) => at(x) as sm.Vector | sm.Vertex)
     return placedCurve(call(() => w.fillet(radius, v)), this) as Wire
@@ -2835,10 +2870,11 @@ accessors(
   (w: Wire) => new THREE.LineBasicMaterial({ color: state(w).owner === null ? 0x20242c : HIGHLIGHT }),
 )
 
-/** A vertex of a body: a THREE.Points of one point, in its body's frame. */
-export class Vertex extends THREE.Points {
-  declare readonly isVertex: true
-  /** A vertex of a body (made by the package), or a point of its own: `new Vertex(point)`. */
+/** A vertex of a body: a THREE.Points of one point, in its body's frame. (smlibpy's Vertex, named
+ * as BrepFace and BrepEdge are.) */
+export class BrepVertex extends THREE.Points {
+  declare readonly isBrepVertex: true
+  /** A vertex of a body (made by the package), or a point of its own: `new BrepVertex(point)`. */
   constructor(point?: THREE.Vector3Like | null) {
     super(PLACEHOLDER, PLACEHOLDER_MATERIAL)
     takeSub(this)
@@ -2880,19 +2916,19 @@ export class Vertex extends THREE.Points {
   }
 
   /** The edges of its body that meet at it. */
-  edges(): ShapeList<Edge> {
+  edges(): ShapeList<BrepEdge> {
     const v = subOf(this) as sm.Vertex
-    return toThree(call(() => v.edges()), this) as ShapeList<Edge>
+    return toThree(call(() => v.edges()), this) as ShapeList<BrepEdge>
   }
 
   /** The faces of its body that meet at it. */
-  faces(): ShapeList<Face> {
+  faces(): ShapeList<BrepFace> {
     const v = subOf(this) as sm.Vertex
-    return toThree(call(() => v.faces()), this) as ShapeList<Face>
+    return toThree(call(() => v.faces()), this) as ShapeList<BrepFace>
   }
 
   /** The shortest distance to a point (in its frame) or another shape (where it is). */
-  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+  distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number {
     const v = subOf(this) as sm.Vertex
     const o = isObject3D(other) ? operand(other, this, 'distanceTo') : vec(other)
     return call(() => v.distanceTo(o))
@@ -2900,7 +2936,7 @@ export class Vertex extends THREE.Points {
 
   /** True for the same vertex of the same body (of a clone too), or the same point. */
   equals(other: unknown): boolean {
-    if (!(other instanceof Vertex)) return false
+    if (!(other instanceof BrepVertex)) return false
     const a = state(this).sub as sm.Vertex | null
     const b = state(other).sub as sm.Vertex | null
     return a !== null && b !== null && call(() => a.equals(b))
@@ -2938,11 +2974,11 @@ export class Vertex extends THREE.Points {
   }
 }
 
-Object.defineProperty(Vertex.prototype, 'isVertex', { value: true })
+Object.defineProperty(BrepVertex.prototype, 'isBrepVertex', { value: true })
 
 accessors(
-  Vertex.prototype,
-  (v: Vertex) => {
+  BrepVertex.prototype,
+  (v: BrepVertex) => {
     const s = state(v)
     if (s.ownGeometry === null) {
       const p = s.sub === null ? null : vector3((s.sub as sm.Vertex).point)
@@ -2950,19 +2986,20 @@ accessors(
     }
     return s.ownGeometry
   },
-  (v: Vertex) =>
+  (v: BrepVertex) =>
     state(v).owner === null
       ? new THREE.PointsMaterial({ color: 0x20242c, size: 6, sizeAttenuation: false })
       : new THREE.PointsMaterial({ color: HIGHLIGHT, size: 8, sizeAttenuation: false, depthTest: false }),
 )
 
 // ----------------------------------------------------------------------------------- selections
-type Item = Face | Edge | Vertex
+type Item = BrepFace | BrepEdge | BrepVertex
 
 /**
- * A list of faces, edges or vertices with smlibpy's selectors, in three's axes: `top()` is the
- * highest along +Y, `front()` the nearest along +Z, `parallelTo(new Vector3(0, 1, 0))` the ones
- * along Y. Points and directions are in the frame of the list's body.
+ * A list of faces, edges or vertices with smlibpy's selectors, in three's directions: `top()` is the
+ * highest along +y (up), `front()` the nearest along +z (towards three's default camera), `right()`
+ * the furthest along +x; `parallelTo(new Vector3(0, 1, 0))` the ones along y. Points and directions
+ * are in the frame of the list's body.
  */
 export class ShapeList<T = Item> extends Array<T> {
   /** The first item (a RangeError for an empty list). */
@@ -2989,30 +3026,34 @@ export class ShapeList<T = Item> extends Array<T> {
     return this[0]
   }
 
-  /** The items highest along +Y (smlibpy's top, +Z). */
+  /** The items highest along +y (up). */
   top(): ShapeList<T> {
-    return select(this, 'top', [])
+    return this.maxBy(UP)
   }
 
+  /** The items lowest along +y. */
   bottom(): ShapeList<T> {
-    return select(this, 'bottom', [])
+    return this.minBy(UP)
   }
 
-  /** The items nearest along +Z (towards three's default camera; smlibpy's front, -Y). */
+  /** The items furthest along +z (towards three's default camera). */
   front(): ShapeList<T> {
-    return select(this, 'front', [])
+    return this.maxBy(FRONT)
   }
 
+  /** The items furthest along -z. */
   back(): ShapeList<T> {
-    return select(this, 'back', [])
+    return this.minBy(FRONT)
   }
 
+  /** The items furthest along +x. */
   right(): ShapeList<T> {
-    return select(this, 'right', [])
+    return this.maxBy(RIGHT)
   }
 
+  /** The items furthest along -x. */
   left(): ShapeList<T> {
-    return select(this, 'left', [])
+    return this.minBy(RIGHT)
   }
 
   /** The largest face (or longest edge). */
@@ -3101,7 +3142,7 @@ export class ShapeList<T = Item> extends Array<T> {
   }
 
   /** The edges that run on tangentially from these, these included. */
-  tangentChain(): ShapeList<Edge> {
+  tangentChain(): ShapeList<BrepEdge> {
     return select(this, 'tangentChain', [])
   }
 
@@ -3131,12 +3172,12 @@ export class ShapeList<T = Item> extends Array<T> {
   }
 
   /** The items that came from these shapes' faces and edges (through the operations since). */
-  derivedFrom(...shapes: (Body | Face | Edge | Iterable<Body | Face | Edge>)[]): ShapeList<T> {
-    return select(this, 'derivedFrom', flatten(shapes as (Body | Face | Edge)[]))
+  derivedFrom(...shapes: (Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>)[]): ShapeList<T> {
+    return select(this, 'derivedFrom', flatten(shapes as (Body | BrepFace | BrepEdge)[]))
   }
 
   /** The edges (or faces) where what came from `a` meets what came from `b`. */
-  joining(a: Body | Face | Edge | Iterable<Body | Face | Edge>, b: Body | Face | Edge | Iterable<Body | Face | Edge>): ShapeList<T> {
+  joining(a: Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>, b: Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>): ShapeList<T> {
     return select(this, 'joining', [a, b])
   }
 
@@ -3161,17 +3202,17 @@ export class ShapeList<T = Item> extends Array<T> {
   }
 
   /** The vertices of the items. */
-  vertices(): ShapeList<Vertex> {
+  vertices(): ShapeList<BrepVertex> {
     return select(this, 'vertices', [])
   }
 
   /** The edges of the items. */
-  edges(): ShapeList<Edge> {
+  edges(): ShapeList<BrepEdge> {
     return select(this, 'edges', [])
   }
 
   /** The faces of the items. */
-  faces(): ShapeList<Face> {
+  faces(): ShapeList<BrepFace> {
     return select(this, 'faces', [])
   }
 
@@ -3215,6 +3256,8 @@ export class ShapeList<T = Item> extends Array<T> {
 export type SortKey<T> = THREE.Vector3Like | string | ((item: T) => number)
 
 const UP = Object.freeze(new THREE.Vector3(0, 1, 0))
+const FRONT = Object.freeze(new THREE.Vector3(0, 0, 1))
+const RIGHT = Object.freeze(new THREE.Vector3(1, 0, 0))
 
 /** A direction as the axis through the origin the kernel sorts along; anything else as it is. */
 function sortKey<T>(key: SortKey<T>): unknown {
@@ -3224,7 +3267,7 @@ function sortKey<T>(key: SortKey<T>): unknown {
 /** A kernel argument for an argument of a selector. */
 function argument(a: unknown, items: Map<unknown, unknown>): unknown {
   if (a instanceof Body) return kernelOf(a)
-  if (a instanceof Face || a instanceof Edge || a instanceof Vertex || a instanceof Wire) return subOf(a)
+  if (a instanceof BrepFace || a instanceof BrepEdge || a instanceof BrepVertex || a instanceof Wire) return subOf(a)
   if ((a as THREE.Box3 | null)?.isBox3) return boundBox(a as THREE.Box3)
   if (isRay(a)) return toAxis(a)
   if (typeof a === 'function') return (k: unknown) => (a as (x: unknown) => unknown)(items.get(k) ?? k)
@@ -3259,6 +3302,6 @@ function select<T, R>(list: ShapeList<T>, name: string, args: unknown[]): R {
 declare module 'three' {
   interface Intersection {
     /** The face of a body (Part, Shell, Sketch) a raycast hit, or the edge of one on its edge lines. */
-    brep?: Face | Edge | Vertex
+    brep?: BrepFace | BrepEdge | BrepVertex
   }
 }

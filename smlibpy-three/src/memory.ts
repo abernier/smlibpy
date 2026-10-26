@@ -7,8 +7,8 @@
 //
 //     for (const width of widths) {
 //       const volume = scope(() => {
-//         const plate = new Box(width, 60, 10) // (the box, its fillet and the cylinders go)
-//         return plate.fillet(plate.edges().parallelTo(Y), 4).cut(new Cylinder(3, 20)).volume
+//         const plate = new Box(width, 10, 60) // (the box, its fillet and the cylinder go)
+//         return plate.fillet(plate.edges().parallelTo(Y), 4).cut(new Cylinder(3, 3, 20)).volume
 //       })
 //     }
 //     part = scope(() => model(params)) // the part stays, what made it goes
@@ -16,7 +16,7 @@
 // Also what the kernel's memory holds (memoryUsage), where its warnings go (setWarningHandler), and
 // how long the kernel steps that can crash or loop may take (the guards). Each thread has a kernel
 // of its own, with its own memory, warnings and guards: a KernelWorker's worker too.
-import { describe, sm } from './kernel.ts'
+import { describe, sm, warnTo } from './kernel.ts'
 
 // ------------------------------------------------------------------------------------- scope
 // The package's scope runs `fn` in the kernel's own scope, which frees the kernel objects made on
@@ -188,7 +188,7 @@ export function memoryUsage(): MemoryUsage {
  */
 export function setWarningHandler(handler: ((message: string) => void) | null): void {
   if (handler !== null && typeof handler !== 'function') throw new TypeError(`setWarningHandler takes a function or null, not ${describe(handler)}`)
-  sm.setWarningHandler(handler ?? ((message: string) => console.warn(message)))
+  warnTo(handler)
 }
 
 // ------------------------------------------------------------------------------------ guards

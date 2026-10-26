@@ -1,18 +1,18 @@
-// smlibpy's curves as Edge (THREE.Line) and Wire subclasses, in three's coordinates: points are
-// THREE.Vector3s (or any { x, y, z }), angles radians. The curves smlibpy draws on a plane (arcs
-// about a center, ellipses, conics, polar lines, spirals) lie on the ground here, as smlibpy's lie on
-// its XY plane: on the plane of constant y through their center (three's XZ plane for the origin),
-// angles counterclockwise seen from above, from +x towards -z, and a curve's own 2D y along -z, as a
-// sketch's. Place them elsewhere with their transform. Any of three's own curves is an Edge or Wire
-// too: `new Edge(new THREE.CatmullRomCurve3(points))`.
+// smlibpy's curves as BrepEdge (THREE.Line) and Wire subclasses, in three's coordinates: points are
+// THREE.Vector3s (or any { x, y, z }), angles radians. The curves drawn in a plane (arcs about a
+// center, ellipses, conics, polar lines, spirals) lie in the XY plane, as three's EllipseCurve and
+// sketches do: in the plane of constant z through their center, angles counterclockwise seen from
+// +z, from +x towards +y. Place them elsewhere with their transform. A helix rises along +z, as
+// three's HelixCurve (addons) does. Any of three's own curves is a BrepEdge or Wire too:
+// `new BrepEdge(new THREE.CatmullRomCurve3(points))`.
 import * as THREE from 'three'
 import { call, degrees, describe, sm, vec } from './kernel.ts'
-import { curveOf, Edge, flatten, internal, operand, placedCurve, setCurve, Wire } from './shapes.ts'
+import { curveOf, BrepEdge, flatten, internal, operand, placedCurve, setCurve, Wire } from './shapes.ts'
 
 const point = (v: THREE.Vector3Like | null | undefined) => (v == null ? null : vec(v))
 
-/** A straight line from `start` to `end`. */
-export class Line extends Edge {
+/** A straight line from `start` to `end` (smlibpy's Line; `THREE.Line` is three's). */
+export class Segment extends BrepEdge {
   constructor(start: THREE.Vector3Like = new THREE.Vector3(), end: THREE.Vector3Like = new THREE.Vector3(1, 0, 0)) {
     super()
     if (internal(this)) return
@@ -20,9 +20,9 @@ export class Line extends Edge {
   }
 }
 
-/** A line `length` long from `start` in the direction `angle` radians from +x on the ground,
- * counterclockwise seen from above (π/2: along -z). */
-export class PolarLine extends Edge {
+/** A line `length` long from `start` in the direction `angle` radians from +x in the XY plane,
+ * counterclockwise seen from +z (π/2: along +y). */
+export class PolarLine extends BrepEdge {
   constructor(start: THREE.Vector3Like = new THREE.Vector3(), length = 1, angle = 0) {
     super()
     if (internal(this)) return
@@ -52,9 +52,9 @@ export class FilletPolyline extends Wire {
 }
 
 /** A circle around `center`, or the arc of it from `startAngle` over `arcSize` (radians, from +x
- * counterclockwise seen from above; a negative `arcSize` runs clockwise), on the plane of constant y
- * through `center`. `arcSize` 2π (the default) is the whole circle. */
-export class CenterArc extends Edge {
+ * counterclockwise seen from +z; a negative `arcSize` runs clockwise), in the plane of constant z
+ * through `center`, as three's ArcCurve. `arcSize` 2π (the default) is the whole circle. */
+export class CenterArc extends BrepEdge {
   constructor(center: THREE.Vector3Like = new THREE.Vector3(), radius = 1, startAngle = 0, arcSize = 2 * Math.PI) {
     super()
     if (internal(this)) return
@@ -63,7 +63,7 @@ export class CenterArc extends Edge {
 }
 
 /** The circular arc from `start` through `through` to `end` (in the plane of the three points). */
-export class ThreePointArc extends Edge {
+export class ThreePointArc extends BrepEdge {
   constructor(start: THREE.Vector3Like = new THREE.Vector3(), through: THREE.Vector3Like = new THREE.Vector3(1, 1, 0), end: THREE.Vector3Like = new THREE.Vector3(2, 0, 0)) {
     super()
     if (internal(this)) return
@@ -74,9 +74,9 @@ export class ThreePointArc extends Edge {
 /** Which side an arc between two points bulges to. */
 export interface ArcSideOptions {
   /**
-   * The direction the arc is seen from (default up, +y): its left is the left of start to end seen
-   * from there, and it lies in the plane through `start` and `end` that faces it. Give one for two
-   * points one above the other, or for an arc in an upright plane.
+   * The direction the arc is seen from (default +z, the front): its left is the left of start to end
+   * seen from there, and it lies in the plane through `start` and `end` that faces it. Give one for
+   * two points one behind the other, or for an arc in another plane.
    */
   normal?: THREE.Vector3Like
 }
@@ -84,21 +84,21 @@ export interface ArcSideOptions {
 /** The plane whose normal says where the left of an arc's chord is (the kernel's arcs take a plane),
  * or a RangeError for a chord along it. */
 function sidePlane(start: THREE.Vector3Like, end: THREE.Vector3Like, normal: THREE.Vector3Like | undefined, what: string): sm.Plane | undefined {
-  const n = new THREE.Vector3(0, 1, 0)
+  const n = new THREE.Vector3(0, 0, 1)
   if (normal !== undefined) n.set(normal.x, normal.y, normal.z)
   const chord = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z)
   if (chord.length() > 0 && n.length() > 0 && n.clone().cross(chord).length() <= 1e-12 * n.length() * chord.length()) {
-    throw new RangeError(`${what}: the chord from start to end runs along the normal (${normal === undefined ? 'up, by default' : 'the one given'}), so it has no left side to bulge to; give a normal across it: { normal }`)
+    throw new RangeError(`${what}: the chord from start to end runs along the normal (${normal === undefined ? '+z, by default' : 'the one given'}), so it has no left side to bulge to; give a normal across it: { normal }`)
   }
   return normal === undefined ? undefined : call(() => new sm.Plane([0, 0, 0], null, vec(normal)))
 }
 
 /**
  * The shorter arc of `radius` from `start` to `end`. A positive radius bulges to the left of start to
- * end seen from above (going along +x: towards -z), a negative one to the right; `normal` sees it
- * from elsewhere.
+ * end seen from +z (going along +x: towards +y), a negative one to the right; `normal` sees it from
+ * elsewhere.
  */
-export class RadiusArc extends Edge {
+export class RadiusArc extends BrepEdge {
   constructor(start: THREE.Vector3Like = new THREE.Vector3(), end: THREE.Vector3Like = new THREE.Vector3(2, 0, 0), radius = 1, options: ArcSideOptions = {}) {
     super()
     if (internal(this)) return
@@ -108,9 +108,9 @@ export class RadiusArc extends Edge {
 }
 
 /** The arc from `start` to `end` whose middle is `sagitta` from the middle of the chord: to its left
- * seen from above for a positive sagitta (`normal` sees it from elsewhere), to its right for a
+ * seen from +z for a positive sagitta (`normal` sees it from elsewhere), to its right for a
  * negative one. */
-export class SagittaArc extends Edge {
+export class SagittaArc extends BrepEdge {
   constructor(start: THREE.Vector3Like = new THREE.Vector3(), end: THREE.Vector3Like = new THREE.Vector3(2, 0, 0), sagitta = 1, options: ArcSideOptions = {}) {
     super()
     if (internal(this)) return
@@ -121,8 +121,8 @@ export class SagittaArc extends Edge {
 
 /** The arc from `start` to `end` that leaves `start` along `tangent` (a line if `end` lies straight
  * ahead). */
-export class TangentArc extends Edge {
-  constructor(start: THREE.Vector3Like = new THREE.Vector3(), end: THREE.Vector3Like = new THREE.Vector3(1, 0, -1), tangent: THREE.Vector3Like = new THREE.Vector3(1, 0, 0)) {
+export class TangentArc extends BrepEdge {
+  constructor(start: THREE.Vector3Like = new THREE.Vector3(), end: THREE.Vector3Like = new THREE.Vector3(1, 1, 0), tangent: THREE.Vector3Like = new THREE.Vector3(1, 0, 0)) {
     super()
     if (internal(this)) return
     setCurve(this, call(() => sm.TangentArc(vec(start), vec(end), vec(tangent))))
@@ -130,13 +130,13 @@ export class TangentArc extends Edge {
 }
 
 /**
- * An ellipse around `center` on the plane of constant y through it, `xRadius` along x and `yRadius`
- * along z, or the arc of it from `startAngle` to `endAngle` (radians counterclockwise seen from
- * above): the point at angle a lies xRadius cos a along x and yRadius sin a along -z from the
- * center. The arc runs counterclockwise, also across 0 (from 5π/3 to π/3 it passes +x); equal
- * angles give the whole ellipse.
+ * An ellipse around `center` in the plane of constant z through it, `xRadius` along x and `yRadius`
+ * along y, or the arc of it from `startAngle` to `endAngle` (radians counterclockwise seen from +z),
+ * as three's EllipseCurve: the point at angle a lies xRadius cos a along x and yRadius sin a along y
+ * from the center. The arc runs counterclockwise, also across 0 (from 5π/3 to π/3 it passes +x);
+ * equal angles give the whole ellipse.
  */
-export class EllipticalArc extends Edge {
+export class EllipticalArc extends BrepEdge {
   constructor(center: THREE.Vector3Like = new THREE.Vector3(), xRadius = 1, yRadius = 0.5, startAngle = 0, endAngle = 2 * Math.PI) {
     super()
     if (internal(this)) return
@@ -145,13 +145,13 @@ export class EllipticalArc extends Edge {
 }
 
 /**
- * A piece of a parabola on the plane of constant y through its `vertex`, opening towards -z (a
- * sketch's +y on the ground; a negative `focalLength`: towards +z): the points `x` along x from the
- * vertex and `x² / (4 focalLength)` towards -z from it, for `x` from `start` to `end`. Exact (a
- * quadratic B-spline). `new ParabolicArc(new THREE.Vector3(), 10, -20, 20)` runs from (-20, 0, -10)
- * through the vertex to (20, 0, -10); its focus is (0, 0, -10).
+ * A piece of a parabola in the plane of constant z through its `vertex`, opening towards +y (a
+ * negative `focalLength`: towards -y): the points `x` along x from the vertex and
+ * `x² / (4 focalLength)` along +y from it, for `x` from `start` to `end`. Exact (a quadratic
+ * B-spline). `new ParabolicArc(new THREE.Vector3(), 10, -20, 20)` runs from (-20, 10, 0) through the
+ * vertex to (20, 10, 0); its focus is (0, 10, 0).
  */
-export class ParabolicArc extends Edge {
+export class ParabolicArc extends BrepEdge {
   constructor(vertex: THREE.Vector3Like = new THREE.Vector3(), focalLength = 1, start = -1, end = 1) {
     super()
     if (internal(this)) return
@@ -160,12 +160,11 @@ export class ParabolicArc extends Edge {
 }
 
 /**
- * A piece of the branch on the +x side of `center` of the hyperbola x²/xRadius² - v²/yRadius² = 1 on
- * the plane of constant y through `center`, where v runs towards -z (a sketch's y on the ground):
- * from v = `start` to v = `end`. Its vertex is `xRadius` along x from the center, its asymptotes have
+ * A piece of the branch on the +x side of `center` of the hyperbola x²/xRadius² - y²/yRadius² = 1 in
+ * the plane of constant z through `center`: from y = `start` to y = `end`. Its vertex is `xRadius` along x from the center, its asymptotes have
  * the slopes ±yRadius / xRadius. Exact (a rational quadratic B-spline).
  */
-export class HyperbolicArc extends Edge {
+export class HyperbolicArc extends BrepEdge {
   constructor(center: THREE.Vector3Like = new THREE.Vector3(), xRadius = 1, yRadius = 1, start = -1, end = 1) {
     super()
     if (internal(this)) return
@@ -179,8 +178,8 @@ export class HyperbolicArc extends Edge {
  * 0.5 a parabola, less an ellipse (flatter), more a hyperbola (fuller); √2 - 1 a circular arc for
  * a square corner. Exact (a rational quadratic B-spline).
  */
-export class ConicArc extends Edge {
-  constructor(start: THREE.Vector3Like = new THREE.Vector3(), apex: THREE.Vector3Like = new THREE.Vector3(1, 0, 0), end: THREE.Vector3Like = new THREE.Vector3(1, 0, -1), rho = 0.5) {
+export class ConicArc extends BrepEdge {
+  constructor(start: THREE.Vector3Like = new THREE.Vector3(), apex: THREE.Vector3Like = new THREE.Vector3(1, 0, 0), end: THREE.Vector3Like = new THREE.Vector3(1, 1, 0), rho = 0.5) {
     super()
     if (internal(this)) return
     setCurve(this, call(() => sm.ConicArc(vec(start), vec(apex), vec(end), rho)))
@@ -192,7 +191,7 @@ export class ConicArc extends Edge {
  * (`[start, end]`, either may be null), or one at every point (the curve passes through each in its
  * direction); `closed`: a loop back to the first point, as smooth there as everywhere else.
  */
-export class Spline extends Edge {
+export class Spline extends BrepEdge {
   constructor(points: readonly THREE.Vector3Like[] = [], options: { tangents?: readonly (THREE.Vector3Like | null)[] | null; closed?: boolean } = {}) {
     super()
     if (internal(this) || !points.length) return
@@ -202,7 +201,7 @@ export class Spline extends Edge {
 }
 
 /** A Bézier curve of these control points (rational with `weights`, one per point). */
-export class Bezier extends Edge {
+export class Bezier extends BrepEdge {
   constructor(points: readonly THREE.Vector3Like[] = [], options: { weights?: readonly number[] | null } = {}) {
     super()
     if (internal(this) || !points.length) return
@@ -214,21 +213,21 @@ export class Bezier extends Edge {
 export interface HelixOptions {
   /** The center of the circle it starts on (default the origin). */
   center?: THREE.Vector3Like
-  /** The direction of its axis, which it rises along (default up, +y; another one turns where it
+  /** The direction of its axis, which it rises along (default +z; another one turns where it
    * starts too). */
   direction?: THREE.Vector3Like
   /** The radius at its end: a conical helix (default `radius`). */
   endRadius?: number | null
-  /** Turn the other way: clockwise seen from above as it rises (default counterclockwise). */
+  /** Turn the other way: clockwise seen from where it rises to (default counterclockwise). */
   leftHanded?: boolean
 }
 
 /**
- * A helix `height` high, rising `pitch` per turn, of `radius`: around y from the origin up, starting
- * on +x and turning counterclockwise seen from above as it rises (right-handed). Any number of
- * turns.
+ * A helix `height` high, rising `pitch` per turn, of `radius`: around z from the origin along +z, as
+ * three's HelixCurve (addons) rises, starting on +x and turning counterclockwise seen from +z as it
+ * rises (right-handed). Any number of turns.
  */
-export class Helix extends Edge {
+export class Helix extends BrepEdge {
   constructor(pitch = 1, height = 1, radius = 1, options: HelixOptions = {}) {
     super()
     if (internal(this)) return
@@ -238,12 +237,12 @@ export class Helix extends Edge {
 }
 
 /**
- * A flat (Archimedean) spiral on the ground around the origin: its radius grows (or shrinks) evenly
+ * A flat (Archimedean) spiral in the XY plane around the origin: its radius grows (or shrinks) evenly
  * with the angle from `startRadius` to `endRadius` over `turns` turns, starting on +x and turning
- * counterclockwise seen from above (`clockwise`: the other way). Either radius may be 0. A B-spline
+ * counterclockwise seen from +z (`clockwise`: the other way). Either radius may be 0. A B-spline
  * within 1e-4 of the exact spiral; `new Spiral(2, 20, 5)` runs from (2, 0, 0) to (20, 0, 0).
  */
-export class Spiral extends Edge {
+export class Spiral extends BrepEdge {
   constructor(startRadius = 0, endRadius = 1, turns = 1, options: { clockwise?: boolean } = {}) {
     super()
     if (internal(this)) return
@@ -271,10 +270,10 @@ export interface FitCurveOptions {
  * point to the last; fewer than six points give the Spline through them. A ModelingError says how
  * close the best fit came where none keeps within the tolerance.
  */
-export function fitCurve(points: Iterable<THREE.Vector3Like>, options: FitCurveOptions = {}): Edge {
+export function fitCurve(points: Iterable<THREE.Vector3Like>, options: FitCurveOptions = {}): BrepEdge {
   const pts = [...points].map(vec)
   const tangents = options.tangents == null ? options.tangents : (options.tangents.map(point) as sm.Vector[])
-  return curveOf(call(() => sm.fitCurve(pts, { tolerance: options.tolerance, degree: options.degree, tangents, closed: options.closed }))) as Edge
+  return curveOf(call(() => sm.fitCurve(pts, { tolerance: options.tolerance, degree: options.degree, tangents, closed: options.closed }))) as BrepEdge
 }
 
 /**
@@ -283,15 +282,15 @@ export function fitCurve(points: Iterable<THREE.Vector3Like>, options: FitCurveO
  * become B-splines too (arcs rational ones). The edges are taken where they are; the copies are
  * placed as the first edge is (in its frame, with its transform).
  */
-export function makeCompatible(...edges: (Edge | Iterable<Edge>)[]): Edge[] {
-  const list = flatten<Edge>(edges)
+export function makeCompatible(...edges: (BrepEdge | Iterable<BrepEdge>)[]): BrepEdge[] {
+  const list = flatten<BrepEdge>(edges)
   for (const e of list as unknown[]) {
-    if (!(e instanceof Edge)) {
+    if (!(e instanceof BrepEdge)) {
       throw new TypeError(`makeCompatible takes edges, not ${describe(e)}${e instanceof Wire ? ' (give wire.edges())' : ''}`)
     }
   }
   if (list.length < 2) throw new RangeError(`makeCompatible needs two or more edges, got ${list.length}`)
   const first = list[0]
   const kernel = list.map((e) => operand(e, first, 'makeCompatible') as sm.Edge)
-  return call(() => sm.makeCompatible(kernel)).map((e) => placedCurve(e, first) as Edge)
+  return call(() => sm.makeCompatible(kernel)).map((e) => placedCurve(e, first) as BrepEdge)
 }

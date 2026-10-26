@@ -1,10 +1,10 @@
 // Sheet metal: bends with an inside radius and a K-factor, flanges, and the flat pattern, in three's
-// terms: angles in radians, bend lines THREE.Rays (or straight Edges), and a sheet lying on the
-// ground (three's XZ plane) bending up (+Y), as smlibpy's lies on XY and bends up (+Z).
+// terms: angles in radians, bend lines THREE.Rays (or straight Edges), and a flat pattern lying in
+// the XY plane, as a sketch does, its bends folding up towards +z.
 //
-//     const blank = new Box(100, 40, 2, { align: { y: 'min' } }) // 100 along x, 40 along z, 2 thick
-//     const line = new THREE.Ray(new THREE.Vector3(20, 2, 0), new THREE.Vector3(0, 0, 1)) // on its top
-//     const bracket = fold(blank, line, Math.PI / 2, { radius: 2 }) // the +x end folded up
+//     const blank = new Box(100, 40, 2, { align: { z: 'min' } }) // 100 along x, 40 along y, 2 thick
+//     const line = new THREE.Ray(new THREE.Vector3(20, 0, 2), new THREE.Vector3(0, 1, 0)) // on its top
+//     const bracket = fold(blank, line, Math.PI / 2, { radius: 2 }) // the +x end folded up, to +z
 //     const pattern = flatPattern(bracket) // the blank again, with its outline and bend lines
 //
 // A bend takes the strip of the bend allowance, angle * (radius + kFactor * thickness), of the flat
@@ -13,7 +13,7 @@
 // with its transform, as results of operations on it are.
 import * as THREE from 'three'
 import { axis as toAxis, call, degrees, describe, radians, ray, sm, vec } from './kernel.ts'
-import { adopt, Edge, Face, isObject3D, isRay, kernelOf, kernelOfShape, operand, placedCurve, ShapeList, wrap, Part, type Body, type Sketch, type Vertex, type Wire } from './shapes.ts'
+import { adopt, BrepEdge, BrepFace, isObject3D, isRay, kernelOf, kernelOfShape, operand, placedCurve, ShapeList, wrap, Part, type Body, type Sketch, type BrepVertex, type Wire } from './shapes.ts'
 
 // (this module and shapes.ts import each other: what it takes from shapes.ts is used in calls only,
 // never while the module loads)
@@ -115,10 +115,10 @@ export class Bend {
   readonly length: number
   /** From `bends`: the axis of its cylinders, a THREE.Ray in the part's frame (else null). */
   readonly axis: THREE.Ray | null
-  /** In a FlatPattern: the bend line, the middle of its strip on the bottom of the flat (an Edge with
+  /** In a FlatPattern: the bend line, the middle of its strip on the bottom of the flat (a BrepEdge with
    * the pattern's transform; else null). */
-  readonly line: Edge | null
-  /** In a FlatPattern: 'up' where the sheet beyond the line folds up (+Y), else 'down' (else null). */
+  readonly line: BrepEdge | null
+  /** In a FlatPattern: 'up' where the sheet beyond the line folds up (+z), else 'down' (else null). */
   readonly direction: 'up' | 'down' | null
 
   constructor(
@@ -128,7 +128,7 @@ export class Bend {
     kFactor: number,
     length: number,
     axis: THREE.Ray | null = null,
-    line: Edge | null = null,
+    line: BrepEdge | null = null,
     direction: 'up' | 'down' | null = null,
   ) {
     this.angle = angle
@@ -155,15 +155,15 @@ export class Bend {
 }
 
 /**
- * The unfolded part, laid on the ground of the part's frame (three's XZ plane, as smlibpy lays it on
- * XY) and with the part's transform: its bottom face at y = 0 and its top at y = thickness, the
- * longer side of the smallest rectangle around it along x, and, seen from above as a sketch is
- * drawn, its corner at the origin: x from 0 to its length, z from minus its width to 0.
+ * The unfolded part, laid in the XY plane of the part's frame, as a sketch lies, and with the part's
+ * transform: its bottom face at z = 0 and its top at z = thickness, the longer side of the smallest
+ * rectangle around it along x, and its corner at the origin: x from 0 to its length, y from 0 to its
+ * width.
  */
 export class FlatPattern {
   /** The flat part. */
   readonly part: Part
-  /** The cut contour (outer boundary and holes) as a sketch at y = 0. */
+  /** The cut contour (outer boundary and holes) as a sketch at z = 0. */
   readonly outline: Sketch
   /** The bends, each with its bend line, angle, radius, direction and K-factor. */
   readonly bends: Bend[]
@@ -180,12 +180,12 @@ export class FlatPattern {
     this.kFactor = kFactor
   }
 
-  /** The bend lines (each bend's `line`), at y = 0. */
-  get bendLines(): ShapeList<Edge> {
-    return ShapeList.from(this.bends.flatMap((b) => (b.line === null ? [] : [b.line]))) as ShapeList<Edge>
+  /** The bend lines (each bend's `line`), at z = 0. */
+  get bendLines(): ShapeList<BrepEdge> {
+    return ShapeList.from(this.bends.flatMap((b) => (b.line === null ? [] : [b.line]))) as ShapeList<BrepEdge>
   }
 
-  /** The size of the blank: its length along x, its thickness along y and its width along z,
+  /** The size of the blank: its length along x, its width along y and its thickness along z,
    * measured on its edges (a new THREE.Vector3). */
   get size(): THREE.Vector3 {
     // (on the edges: the surface of a fitted face, a hole's wall that crossed a bend, may reach past
@@ -199,7 +199,7 @@ export class FlatPattern {
   toString(): string {
     const s = this.size
     const g = (x: number) => +x.toPrecision(6)
-    return `FlatPattern(${g(s.x)} x ${g(s.z)}, thickness=${g(this.thickness)}, ${this.bends.length} bends, kFactor=${this.kFactor === null ? 'per bend' : g(this.kFactor)})`
+    return `FlatPattern(${g(s.x)} x ${g(s.y)}, thickness=${g(this.thickness)}, ${this.bends.length} bends, kFactor=${this.kFactor === null ? 'per bend' : g(this.kFactor)})`
   }
 }
 
@@ -212,7 +212,7 @@ function bendOf(b: sm.Bend, like: Part): Bend {
     b.kFactor,
     b.length,
     b.axis === null ? null : ray(b.axis),
-    b.line === null ? null : (placedCurve(b.line, like) as Edge),
+    b.line === null ? null : (placedCurve(b.line, like) as BrepEdge),
     b.direction as 'up' | 'down' | null,
   )
 }
@@ -228,8 +228,8 @@ export interface FoldOptions {
   /** A point on the side of the line that stays in place (in the part's frame), or a shape there
    * (where it is: its center; a vertex's point). By default the side that reaches farther from the
    * line stays. */
-  fixed?: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex | null
-  /** Bend only along the segment `line` (an Edge), not across the whole sheet; the strip next to the
+  fixed?: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex | null
+  /** Bend only along the segment `line` (a BrepEdge), not across the whole sheet; the strip next to the
    * segment must be cut free from the rest of the sheet (relief cuts). */
   partial?: boolean
 }
@@ -238,16 +238,16 @@ export interface FoldOptions {
  * The part (a sheet of constant thickness: a plate, or a part bent before) folded along a line by
  * `angle` radians, up to π (a hem): the strip of the bend allowance centered on the line becomes the
  * bend, exact cylinders of `radius` and `radius + thickness`. The line lies on the top or bottom face
- * of the sheet: a THREE.Ray in the part's frame, or a straight Edge (where it is). A positive angle
+ * of the sheet: a THREE.Ray in the part's frame, or a straight BrepEdge (where it is). A positive angle
  * folds the sheet toward the side the face with the line faces (a line on the top folds it up), a
  * negative one the other way.
  */
-export function fold(part: Part, line: THREE.Ray | Edge, angle: number, options: FoldOptions): Part {
+export function fold(part: Part, line: THREE.Ray | BrepEdge, angle: number, options: FoldOptions): Part {
   const value = sheet(part, 'fold')
   let l: sm.Axis | sm.Edge
-  if (line instanceof Edge) l = operand(line, part, 'fold') as sm.Edge
+  if (line instanceof BrepEdge) l = operand(line, part, 'fold') as sm.Edge
   else if (isRay(line)) l = toAxis(line)
-  else throw new TypeError(`fold: the bend line is a THREE.Ray or a straight Edge, not ${describe(line)}`)
+  else throw new TypeError(`fold: the bend line is a THREE.Ray or a straight BrepEdge, not ${describe(line)}`)
   if (typeof angle !== 'number') throw new TypeError(`fold: the angle is a number of radians, not ${describe(angle)}`)
   if (angle === 0 || !(Math.abs(angle) <= Math.PI)) throw new RangeError(`fold: the angle must be between -π and π radians and not 0 (got ${angle})`)
   const fixed = options?.fixed
@@ -268,16 +268,16 @@ export interface FlangeOptions {
 
 /**
  * The part with a flange along a straight edge of the sheet, where a top or bottom face meets a side
- * face square to it (an edge of the part, picked by selectors: `plate.edges().parallelTo(Z).top().right()`):
+ * face square to it (an edge of the part, picked by selectors: `plate.edges().parallelTo(Y).front().right()`):
  * the sheet extended beyond the edge and bent there, so the sheet keeps its size. `length` is the
  * flange's outside length, from the virtual sharp (where the outside faces of sheet and flange meet)
  * to its end: for a right angle, its height over the outside face of the sheet.
  */
-export function flange(part: Part, edge: Edge | Iterable<Edge>, length: number, options: FlangeOptions): Part {
+export function flange(part: Part, edge: BrepEdge | Iterable<BrepEdge>, length: number, options: FlangeOptions): Part {
   const value = sheet(part, 'flange')
-  const edges = isObject3D(edge) ? [edge] : [...(edge as Iterable<Edge>)]
+  const edges = isObject3D(edge) ? [edge] : [...(edge as Iterable<BrepEdge>)]
   const own = edges.map((e) => {
-    if (!(e instanceof Edge)) throw new TypeError(`flange: give an edge of the part, not ${describe(e)}`)
+    if (!(e instanceof BrepEdge)) throw new TypeError(`flange: give an edge of the part, not ${describe(e)}`)
     // (an edge of the part or of a clone of it as it is; another body's, where it is, for the edge of
     // the part in its place)
     return e.owner !== null && kernelOf(e.owner) === value ? (kernelOfShape(e) as sm.Edge) : (operand(e, part, 'flange') as sm.Edge)
@@ -304,7 +304,7 @@ export interface UnfoldOptions {
   /** The K-factor of each bend (see KFactor); default: the one each bend was folded with, else 0.44. */
   kFactor?: KFactor
   /** The planar face of the part that stays in place (default: the largest planar face). */
-  fixed?: Face | null
+  fixed?: BrepFace | null
 }
 
 /**
@@ -312,8 +312,8 @@ export interface UnfoldOptions {
  * stays where it is, the rest of the sheet unfolds into its plane. With the K-factor the part was bent
  * with (by default each bend's own, from fold and flange, else 0.44), it is the blank it was bent from.
  * Rolled parts (one bend, no flat sheet), bends at a free end of the sheet (a curl) and bends over π
- * unroll at the neutral radius `radius + kFactor * thickness`. For the flat pattern on the ground, with
- * its outline and bend lines, see `flatPattern`.
+ * unroll at the neutral radius `radius + kFactor * thickness`. For the flat pattern in the XY plane,
+ * with its outline and bend lines, see `flatPattern`.
  */
 export function unfold(part: Part, options: UnfoldOptions = {}): Part {
   const value = sheet(part, 'unfold')
@@ -323,9 +323,9 @@ export function unfold(part: Part, options: UnfoldOptions = {}): Part {
 
 /**
  * The flat pattern of a sheet metal part (see FlatPattern): the part unfolded with `fixed` (default:
- * the largest planar face) as its bottom, laid on the ground of the part's frame with the longer side
- * along x, its cut contour as a sketch, and its bends with their bend lines; a bend is 'up' where the
- * sheet beyond its line folds up (+Y). `kFactor` as for `unfold`.
+ * the largest planar face) as its bottom, laid in the XY plane of the part's frame with the longer
+ * side along x, its cut contour as a sketch, and its bends with their bend lines; a bend is 'up' where
+ * the sheet beyond its line folds up (+z). `kFactor` as for `unfold`.
  */
 export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPattern {
   const value = sheet(part, 'flatPattern')
@@ -338,7 +338,7 @@ export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPatter
 
 function unfoldOptions(options: UnfoldOptions, what: string): sm.UnfoldOptions {
   const fixed = options?.fixed
-  if (fixed != null && !(fixed instanceof Face)) throw new TypeError(`${what}: fixed is a planar face of the part, not ${describe(fixed)}`)
+  if (fixed != null && !(fixed instanceof BrepFace)) throw new TypeError(`${what}: fixed is a planar face of the part, not ${describe(fixed)}`)
   return { ...options, kFactor: kFactorOf(options?.kFactor) as sm.KFactor | undefined, fixed: fixed == null ? fixed : (kernelOfShape(fixed) as sm.Face) }
 }
 

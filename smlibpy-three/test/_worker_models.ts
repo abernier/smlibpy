@@ -1,15 +1,19 @@
 // The functions the test worker exposes (_worker.ts runs them in a worker, worker.test.ts calls
 // them): plain smlibpy-three, as an app's models module has them.
 import * as THREE from 'three'
-import { Box, Cylinder, Edge, Face, FontError, GridLocations, KernelError, Line, ModelingError, Part, STEPLoader, TriangleMesh, Vertex, Wire, type Sketch } from '../src/index.ts'
+import { Box, Cylinder, BrepEdge, BrepFace, FontError, GridLocations, KernelError, Segment, ModelingError, Part, STEPLoader, TriangleMesh, BrepVertex, Wire, type Sketch } from '../src/index.ts'
 import { sm } from '../src/kernel.ts'
 
 const Y = new THREE.Vector3(0, 1, 0)
+const Z = new THREE.Vector3(0, 0, 1)
 
-/** A plate with rounded corners and four holes, named and placed. */
+/** A plate with rounded corners and four holes, named and placed: lying in the XY plane, 10 thick
+ * along z (as a sketch extruded), its holes on a grid in the XY plane, along z. */
 export function plate(width: number): Part {
   const box = new Box(width, 60, 10)
-  const part = box.fillet(box.edges().parallelTo(Y), 6).cut(new Cylinder(3, 20).at(GridLocations(width - 20, 40, 2, 2)))
+  const hole = new Cylinder(3, 3, 20)
+  hole.rotation.x = Math.PI / 2 // (a cylinder stands along y: turned along z)
+  const part = box.fillet(box.edges().parallelTo(Z), 6).cut(hole.at(GridLocations(width - 20, 40, 2, 2)))
   part.name = 'plate'
   part.position.set(10, 20, 30)
   part.rotation.set(0.1, 0.5, 0)
@@ -18,7 +22,7 @@ export function plate(width: number): Part {
 
 export const volume = (part: Part): number => part.volume
 
-export const round = (part: Part, edge: Edge | Wire, radius: number): Part => part.fillet(edge, radius)
+export const round = (part: Part, edge: BrepEdge | Wire, radius: number): Part => part.fillet(edge, radius)
 
 export const cut = (part: Part, tool: Part): Part => part.cut(tool)
 
@@ -26,18 +30,18 @@ export const extrude = (sketch: Sketch, amount: number): Part => sketch.extrude(
 
 /** What a face is over there: whether it came with its own body (the same object), its place and
  * its center (in its body's frame). */
-export const faceInfo = (part: Part, face: Face) => ({ same: face.owner === part, index: face.index, center: face.center(), area: face.area })
+export const faceInfo = (part: Part, face: BrepFace) => ({ same: face.owner === part, index: face.index, center: face.center(), area: face.area })
 
 /** What a vertex and an edge are over there. */
-export const subInfo = (part: Part, vertex: Vertex, edge: Edge) => ({
+export const subInfo = (part: Part, vertex: BrepVertex, edge: BrepEdge) => ({
   same: vertex.owner === part && edge.owner === part,
   point: vertex.point,
   length: edge.length,
 })
 
 /** A curve over there: its kind, length and owner. */
-export const curveInfo = (curve: Edge | Wire, part: Part | null = null) => ({
-  type: curve instanceof Edge ? curve.geomType : 'wire',
+export const curveInfo = (curve: BrepEdge | Wire, part: Part | null = null) => ({
+  type: curve instanceof BrepEdge ? curve.geomType : 'wire',
   length: curve.length,
   owned: part !== null && curve.owner === part,
   position: curve.position.toArray(),
@@ -69,15 +73,15 @@ export const values = () => ({
 
 /** A curve of its own and a group of parts, one of them in a material of its own. */
 export function assembly() {
-  const line = new Line(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0))
+  const line = new Segment(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0))
   line.position.y = 5
   line.name = 'axis'
   const group = new THREE.Group()
   group.name = 'assembly'
   group.position.x = 100
-  const base = new Box(40, 40, 10)
+  const base = new Box(40, 10, 40) // (10 high)
   base.name = 'base'
-  const pin = new Cylinder(4, 30)
+  const pin = new Cylinder(4, 4, 30) // (standing on the base)
   pin.name = 'pin'
   pin.position.y = 20
   pin.material = new THREE.MeshStandardMaterial({ color: 'red' })

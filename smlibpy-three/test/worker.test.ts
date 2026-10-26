@@ -1,5 +1,6 @@
 // The worker entry: functions of smlibpy-three run in a worker (here a Node worker thread) and take
-// and give the package's objects. Bodies cross with their transform, name and settings, faces and
+// and give the package's objects. Bodies cross with their transform, name and settings (and coming
+// back with their tessellation, made in the worker: the calling thread only draws it), faces and
 // edges as their body and their place in it, curves with their transform, three's values as
 // three's, groups with their children; materials stay, as their color; errors arrive as the
 // package's; a call that takes too long ends with its worker, and the next call gets a new one.
@@ -8,8 +9,9 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
-import { Box, Cylinder, Edge, Face, FontError, KernelError, Line, ModelingError, Part, Polyline, Rectangle, STEPExporter, ShapeList, Sketch, Spline, TriangleMesh, Wire } from '../src/index.ts'
+import { Box, Cylinder, BrepEdge, BrepFace, FontError, KernelError, Segment, ModelingError, Part, Polyline, Rectangle, STEPExporter, ShapeList, Sketch, Spline, TriangleMesh, Wire } from '../src/index.ts'
 import { kernelOf } from '../src/shapes.ts'
+import { counts } from '../src/tessellation.ts'
 import { KernelWorker, expose, type Crossed } from '../src/worker.ts'
 import type * as Models from './_worker_models.ts'
 import { plate } from './_worker_models.ts'
@@ -19,14 +21,14 @@ import { close, closeBox, closeVector, noKernel, Y } from './_util.ts'
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 const crossed: [
   Equal<Crossed<Box>, Part>,
-  Equal<Crossed<Line>, Edge>,
+  Equal<Crossed<Segment>, BrepEdge>,
   Equal<Crossed<Polyline>, Wire>,
   Equal<Crossed<Rectangle>, Sketch>,
   Equal<Crossed<{ part: Box; n: number }>, { part: Part; n: number }>,
-  Equal<Crossed<[Box, Line, string]>, [Part, Edge, string]>,
+  Equal<Crossed<[Box, Segment, string]>, [Part, BrepEdge, string]>,
   Equal<Crossed<Box[]>, Part[]>,
   Equal<Crossed<Map<string, Box>>, Map<string, Part>>,
-  Equal<Crossed<ShapeList<Face>>, ShapeList<Face>>,
+  Equal<Crossed<ShapeList<BrepFace>>, ShapeList<BrepFace>>,
   Equal<Crossed<THREE.Vector3>, THREE.Vector3>,
   Equal<Crossed<THREE.Group>, THREE.Group>,
   Equal<Crossed<TriangleMesh>, TriangleMesh>,
@@ -38,7 +40,15 @@ const cad = new KernelWorker<typeof Models>(WORKER)
 after(() => cad.terminate())
 
 /** The vertical edge of `part` nearest to (x, z) in its frame. */
-const verticalEdge = (part: Part, x: number, z: number): Edge => part.edges().parallelTo(Y).nearest(new THREE.Vector3(x, 0, z))
+const verticalEdge = (part: Part, x: number, z: number): BrepEdge => part.edges().parallelTo(Y).nearest(new THREE.Vector3(x, 0, z))
+
+/** Fails unless two arrays (a geometry's) have the same length and items within `tol`. */
+function closeArrays(actual: ArrayLike<number>, expected: ArrayLike<number>, tol: number, what: string): void {
+  assert.equal(actual.length, expected.length, `${what}: length`)
+  let worst = 0
+  for (let i = 0; i < actual.length; i++) worst = Math.max(worst, Math.abs(actual[i] - expected[i]))
+  assert.ok(worst <= tol, `${what}: ${worst} apart`)
+}
 
 test('a part made in the worker arrives as a Part, with its transform and name, exact', async () => {
   const part = await cad.call('plate', [80])
@@ -60,8 +70,48 @@ test('a part made in the worker arrives as a Part, with its transform and name, 
   assert.equal(await cad.call('volume', [part]), part.volume)
 })
 
+test('a body from the worker brings its tessellation, made there: drawn and raycast here, it is not tessellated again', async () => {
+  const before = counts.tessellated
+  const part = await cad.call('plate', [80])
+  // drawn: its faces and the lines of its edges, a face and an edge by themselves
+  const drawn = part.geometry
+  assert.ok(drawn.getAttribute('position').count > 0)
+  assert.ok(part.edgeLines.geometry.getAttribute('position').count > 0)
+  assert.ok(part.faces()[0].geometry.getAttribute('position').count > 0)
+  assert.ok(part.edges()[0].geometry.getAttribute('position').count > 0)
+  // raycast with three's Raycaster: down onto its top (+z in its frame), the face hit as `brep`
+  part.updateMatrixWorld()
+  const down = new THREE.Raycaster(new THREE.Vector3(0, 0, 50).applyMatrix4(part.matrixWorld), new THREE.Vector3(0, 0, -1).transformDirection(part.matrixWorld))
+  const [hit] = down.intersectObject(part, false)
+  assert.equal(hit.brep, part.faces().front().one())
+  close(hit.distance, 45, 1e-4)
+  assert.equal(counts.tessellated, before)
+  // the same body made here is tessellated here, when three first reads its geometry
+  const here = plate(80)
+  const mine = here.geometry
+  assert.equal(counts.tessellated, before + 1)
+  // three draws the same of both (the same settings): the same triangles, positions within float
+  // precision, and the same ranges of each face and edge, which raycasts find their faces by
+  closeArrays(drawn.getAttribute('position').array, mine.getAttribute('position').array, 1e-5, 'positions')
+  closeArrays(drawn.getAttribute('normal').array, mine.getAttribute('normal').array, 1e-6, 'normals')
+  assert.deepEqual([...drawn.getIndex()!.array], [...mine.getIndex()!.array])
+  const counted = (body: Part) => [...body.faces()].map((f) => f.geometry.getAttribute('position').count)
+  assert.deepEqual(counted(part), counted(here))
+  closeArrays(part.edgeLines.geometry.getAttribute('position').array, here.edgeLines.geometry.getAttribute('position').array, 1e-5, 'edge lines')
+  here.updateMatrixWorld()
+  const [mineHit] = down.intersectObject(here, false)
+  close(hit.distance, mineHit.distance, 1e-5)
+  assert.equal(hit.brep.index, (mineHit.brep as BrepFace).index)
+  assert.equal(counts.tessellated, before + 1)
+  // its settings changed here (finer than the 15 degrees between normals), it is tessellated here
+  const triangles = drawn.getIndex()!.count / 3
+  part.tolerance = 0.01
+  assert.ok(part.geometry.getIndex()!.count / 3 > triangles)
+  assert.equal(counts.tessellated, before + 2)
+})
+
 test('an edge picked here is rounded there; a face and a vertex cross as their body and their place in it', async () => {
-  const part = new Box(60, 40, 10).cut(new Cylinder(5, 20))
+  const part = new Box(60, 10, 40).cut(new Cylinder(5, 5, 20)) // (10 high, a hole down through it)
   part.position.set(-5, 2, 7)
   part.name = 'block'
   const edge = verticalEdge(part, 30, 20)
@@ -95,12 +145,12 @@ test('operands are taken where they are in the world: a tool in another group cu
   a.rotation.y = 0.3
   const b = new THREE.Group()
   b.position.set(0, 0, 10)
-  const part = new Box(40, 30, 20)
+  const part = new Box(40, 20, 30)
   part.position.set(-50, 0, 0)
   a.add(part)
-  const tool = new Cylinder(6, 50)
+  const tool = new Cylinder(6, 6, 50)
   tool.position.set(5, 0, -10)
-  tool.rotation.x = Math.PI / 2
+  tool.rotation.x = Math.PI / 2 // (along z)
   b.add(tool)
   // over there each is where it is here in the world (in a stand-in of its parent)
   const worlds = await cad.call('worlds', [part, tool])
@@ -184,8 +234,8 @@ test('sketches, curves of their own and the curves of a body cross with their tr
   assert.equal(info.type, 'bspline')
   close(info.length, spline.length, 1e-9)
   assert.deepEqual(info.position, [1, 2, 3])
-  const back = (await cad.call('echo', [spline])) as Edge
-  assert.ok(back instanceof Edge && back.owner === null)
+  const back = (await cad.call('echo', [spline])) as BrepEdge
+  assert.ok(back instanceof BrepEdge && back.owner === null)
   assert.ok(back.position.equals(spline.position))
   closeVector(back.pointAt(0.3), spline.pointAt(0.3), 1e-9)
   const path = new Polyline([new THREE.Vector3(), new THREE.Vector3(10, 0, 0), new THREE.Vector3(10, 10, 0)])
@@ -202,7 +252,7 @@ test('sketches, curves of their own and the curves of a body cross with their tr
 
 test('groups cross with their children; materials stay, their colors cross, and results made from a body get its material again', async () => {
   const { line, group } = await cad.call('assembly', [])
-  assert.ok(line instanceof Edge && line.geomType === 'line')
+  assert.ok(line instanceof BrepEdge && line.geomType === 'line')
   assert.equal(line.name, 'axis')
   assert.equal(line.position.y, 5)
   closeVector(line.end, { x: 10, y: 0, z: 0 }, 1e-12)
@@ -216,7 +266,7 @@ test('groups cross with their children; materials stay, their colors cross, and 
   assert.equal((pin.material as THREE.MeshStandardMaterial).color.getHex(), 0xff0000)
   assert.equal((base.material as THREE.MeshStandardMaterial).color.getHex(), (new Box(1, 1, 1).material as THREE.MeshStandardMaterial).color.getHex())
   // a material from here: over there in its color; on what comes back made from its body, itself
-  const part = new Box(30, 20, 10)
+  const part = new Box(30, 10, 20)
   const mine = new THREE.MeshPhysicalMaterial({ color: 0x3366ff, name: 'blue' })
   part.material = mine
   assert.deepEqual(await cad.call('materialOf', [part]), { name: 'blue', color: 0x3366ff })
@@ -236,7 +286,7 @@ test('groups cross with their children; materials stay, their colors cross, and 
 })
 
 test('triangle meshes cross as their triangles, both ways; the sender keeps its own', async () => {
-  const part = new Box(30, 20, 10).cut(new Cylinder(4, 20))
+  const part = new Box(30, 10, 20).cut(new Cylinder(4, 4, 20))
   const mesh = await cad.call('meshOf', [part, 0.05])
   assert.ok(mesh instanceof TriangleMesh)
   const here = new TriangleMesh(part, null, { tolerance: 0.05 })

@@ -1,11 +1,12 @@
-// Deformations in three's terms: the default axis is three's y (up), angles are radians, the bend's
-// frame is a THREE.Matrix4, points are THREE.Vector3s, a lattice is indexed along x, y (up) and z;
-// shapes deform in their own frame and keep their transform.
+// Deformations in three's terms: twist, taper and unroll default to three's y axis (up, along which
+// cylinders stand) through the origin, bend to the identity frame (a part along x bends toward +y),
+// angles are radians, the bend's frame is a THREE.Matrix4, points are THREE.Vector3s, a lattice is
+// indexed along x, y and z; shapes deform in their own frame and keep their transform.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
-import { Box, CenterArc, Cylinder, Edge, Helix, Line, ModelingError, Part, Rectangle, Shell, Sketch, Wire } from '../src/index.ts'
+import { Box, CenterArc, Cylinder, BrepEdge, Helix, Segment, ModelingError, Part, Rectangle, Shell, Sketch, Wire } from '../src/index.ts'
 import { bend, Lattice, taper, twist, unroll } from '../src/deform.ts'
 import { box, close, closeBox, closeVector, Y } from './_util.ts'
 
@@ -22,30 +23,37 @@ function noKernel(value: unknown, path = 'value', seen = new Set<unknown>()): vo
 }
 
 const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
+const Z = v(0, 0, 1)
 
 test('a bar standing along y twists about y: its volume stays, its top turns a quarter', () => {
-  const bar = new Box(30, 10, 100) // 30 along x, 10 along z, 100 high
+  const bar = new Box(30, 100, 10) // 30 along x, 100 high (y), 10 along z
   const twisted = twist(bar, Math.PI / 2)
   assert.ok(twisted instanceof Part)
   close(twisted.volume, 30 * 10 * 100, 1e-3)
   assert.equal(twisted.faces().length, 6)
+  // (about the default axis: y, through the origin)
+  closeBox(twisted.bbox(), twist(bar, Math.PI / 2, { axis: new THREE.Ray(v(0, 0, 0), Y) }).bbox(), 0)
   // the bottom stays, the top is turned by a quarter about y: 10 along x, 30 along z
   const bottom = twisted.faces().bottom().one()
   const top = twisted.faces().top().one()
   assert.equal(top.geomType, 'plane')
   closeBox(bottom.bbox(), box([-15, -50, -5], [15, -50, 5]), 1e-6)
   closeBox(top.bbox(), box([-5, 50, -15], [5, 50, 15]), 1e-6)
-  // counterclockwise seen from above (+y), as three's rotations about y turn
+  // counterclockwise seen from the tip of the axis (+y), as three's rotations about y turn
   const corner = v(15, 50, 5).applyAxisAngle(Y, Math.PI / 2)
   assert.ok(top.vertices().some((x) => x.point.distanceTo(corner) < 1e-6))
   // start and end limit it; what lies beyond end turns as a whole
-  const baluster = twist(new Box(16, 16, 200), 2 * Math.PI, { start: -50, end: 50 })
+  const baluster = twist(new Box(16, 200, 16), 2 * Math.PI, { start: -50, end: 50 })
   assert.equal(baluster.faces().length, 14)
 })
 
 test('a cylinder standing along y tapers into an exact cone', () => {
-  const grip = taper(new Cylinder(10, 50), 0.5)
+  const grip = taper(new Cylinder(10, 10, 50), 0.5)
   close(grip.volume, (Math.PI * 50 * (10 * 10 + 10 * 5 + 5 * 5)) / 3, 1e-6)
+  // (along the default axis: y, through the origin)
+  const alongY = taper(new Cylinder(10, 10, 50), 0.5, { axis: new THREE.Ray(v(0, 0, 0), Y) })
+  close(alongY.volume, grip.volume, 1e-9)
+  closeBox(alongY.faces().top().one().bbox(), grip.faces().top().one().bbox(), 1e-9)
   closeBox(grip.bbox(), box([-10, -25, -10], [10, 25, 10]), 1e-9)
   assert.ok(grip.faces().some((f) => f.geomType === 'cone'))
   close(grip.faces().top().one().area, Math.PI * 25, 1e-9)
@@ -59,6 +67,8 @@ test('bend and unroll: a bar bent up into a quarter circle unrolls into the bar 
   const bar = new Box(100, 10, 10) // along x
   const bent = bend(bar, Math.PI / 2) // the whole bar, up (+y) about an axis along z
   close(bent.volume, 10000, 1e-6)
+  // (the default frame is the identity)
+  closeBox(bend(bar, Math.PI / 2, { frame: new THREE.Matrix4() }).bbox(), bent.bbox(), 0)
   const r = 100 / (Math.PI / 2)
   closeBox(bent.bbox(), box([-50, -5, -5], [-50 + r + 5, r, 5]), 1e-4) // (the kernel's box of the bend's faces: within 1e-5)
   const cylinders = bent.faces().cylinders()
@@ -73,7 +83,7 @@ test('bend and unroll: a bar bent up into a quarter circle unrolls into the bar 
   close(flat.volume, 10000, 1e-6)
   assert.equal(flat.faces().planar().length, 6)
   // a radius bends a piece of the length radius * angle, centered on the frame's origin
-  const elbow = bend(new Box(160, 10, 6), Math.PI / 2, { radius: 25 })
+  const elbow = bend(new Box(160, 6, 10), Math.PI / 2, { radius: 25 })
   assert.equal(elbow.faces().cylinders().length, 2)
   close(elbow.volume, 160 * 10 * 6, 1e-6)
 })
@@ -81,19 +91,26 @@ test('bend and unroll: a bar bent up into a quarter circle unrolls into the bar 
 test("the bend's frame is a THREE.Matrix4: x along the part, y toward the inside of the bend", () => {
   // a cylinder standing along y, bent toward +x: x of the frame along y, y of the frame along x
   const frame = new THREE.Matrix4().makeBasis(v(0, 1, 0), v(1, 0, 0), v(0, 0, -1))
-  const elbow = bend(new Cylinder(5, 100), Math.PI / 2, { plane: frame })
+  const elbow = bend(new Cylinder(5, 5, 100), Math.PI / 2, { frame })
   const r = 100 / (Math.PI / 2)
   closeBox(elbow.bbox(), box([-5, -50, -5], [r, -50 + r + 5, 5]), 1e-6)
   close(elbow.volume, Math.PI * 25 * 100, 1e-4) // (its round faces fitted within 1e-6)
-  // a sketch bends into a curved sheet: a Shell, no longer a sketch
-  const sheet = bend(new Rectangle(100, 10), Math.PI / 2)
+  // a sketch (in the XY plane) bends out of its plane, toward +z: x of the frame along x, y of the
+  // frame along z (the frame turned a quarter about x); a curved sheet, a Shell, no longer a sketch
+  const sheet = bend(new Rectangle(100, 10), Math.PI / 2, { frame: new THREE.Matrix4().makeRotationX(Math.PI / 2) })
   assert.ok(sheet instanceof Shell && !(sheet instanceof Sketch))
-  close(sheet.area, 1000, 1e-6)
-  assert.throws(() => bend(new Box(100, 10, 10), Math.PI / 2, { plane: new THREE.Plane() as never }), /THREE\.Matrix4/)
+  close(sheet.area, 1000, 1e-6) // (the sketch is the neutral layer: it keeps its length)
+  closeBox(sheet.bbox(), box([-50, -5, 0], [-50 + r, 5, r]), 1e-4) // (the kernel's box of bent faces: within 1e-5)
+  // with the identity, it bends in its own plane, toward +y: still flat, at z = 0
+  const flat = bend(new Rectangle(100, 10), Math.PI / 2)
+  assert.ok(flat instanceof Shell && !(flat instanceof Sketch))
+  close(flat.area, 1000, 1e-6)
+  closeBox(flat.bbox(), box([-50, -5, 0], [-50 + r + 5, r, 0]), 1e-4)
+  assert.throws(() => bend(new Box(100, 10, 10), Math.PI / 2, { frame: new THREE.Plane() as never }), /THREE\.Matrix4/)
 })
 
 test('a lattice is indexed along x, y (up) and z, and lifts the top of a box along +y', () => {
-  const block = new Box(60, 40, 20) // 60 along x, 40 along z, 20 high
+  const block = new Box(60, 20, 40) // 60 along x, 20 high (y), 40 along z
   const lattice = new Lattice(block, 3)
   assert.deepEqual(lattice.counts, [3, 3, 3])
   closeBox(lattice.box, block.bbox())
@@ -126,7 +143,7 @@ test('a lattice is indexed along x, y (up) and z, and lifts the top of a box alo
 })
 
 test('a lattice is edited in place: points, scale, rotate, reset, clone and copy', () => {
-  const block = new Box(60, 40, 20)
+  const block = new Box(60, 20, 40)
   const lattice = new Lattice(block, 3)
   lattice.points[1][2][1].y += 8 // writable, as smlibpy's points are
   close(lattice.map(v(0, 10, 0)).y, 12, 1e-12)
@@ -161,21 +178,24 @@ test('points and curves deform as the shapes do', () => {
   closeVector(one, { x: 200 / Math.PI, y: 200 / Math.PI, z: 0 }, 1e-9)
   assert.deepEqual(twist([], 1), [])
   // a wire bent in its middle: a line, an exact arc and a line
-  const path = bend(new Wire([new Line(v(-50, 0, 0), v(50, 0, 0))]), Math.PI / 2, { radius: 10 })
+  const path = bend(new Wire([new Segment(v(-50, 0, 0), v(50, 0, 0))]), Math.PI / 2, { radius: 10 })
   assert.ok(path instanceof Wire)
   assert.deepEqual([...path.edges()].map((e) => e.geomType), ['line', 'circle', 'line'])
-  // an edge stays one edge: a circle tapered halfway is 3/4 its size
-  const rim = taper(new CenterArc(v(0, 50, 0), 10), 0.5, { start: 0, end: 100 })
-  assert.ok(rim instanceof Edge)
+  // an edge stays one edge: a circle (in the plane z = 50, as three's circles lie) tapered halfway
+  // along z is 3/4 its size
+  const rim = taper(new CenterArc(v(0, 0, 50), 10), 0.5, { start: 0, end: 100, axis: new THREE.Ray(v(0, 0, 0), Z) })
+  assert.ok(rim instanceof BrepEdge)
   assert.equal(rim.geomType, 'circle')
   close(rim.radius, 7.5, 1e-9)
-  // a helix about y unrolls straight
-  assert.equal(unroll(new Helix(100, 40, 10), { radius: 10 }).geomType, 'line')
+  // a helix about y unrolls straight about the default axis (y), one rising along +z (as three's
+  // HelixCurve) about the z axis
+  assert.equal(unroll(new Helix(100, 40, 10, { direction: Y }), { radius: 10 }).geomType, 'line')
+  assert.equal(unroll(new Helix(100, 40, 10), { radius: 10, axis: new THREE.Ray(v(0, 0, 0), Z) }).geomType, 'line')
 })
 
 test('shapes deform in their own frame and keep their transform', () => {
-  const bar = new Box(30, 10, 100)
-  const moved = new Box(30, 10, 100)
+  const bar = new Box(30, 100, 10)
+  const moved = new Box(30, 100, 10)
   moved.position.set(100, -20, 5)
   moved.rotation.set(0.3, 0.2, 0.1)
   moved.name = 'bar'
@@ -192,7 +212,7 @@ test('shapes deform in their own frame and keep their transform', () => {
   // an edge of a moved body: a curve of its own where the body is, its foot in place, its top turned
   const edge = moved.edges().parallelTo(Y).first
   const turned = twist(edge, Math.PI / 2)
-  assert.ok(turned instanceof Edge && turned.owner === null)
+  assert.ok(turned instanceof BrepEdge && turned.owner === null)
   closeVector(turned.position, moved.position, 0)
   const [foot, top] = edge.start.y < edge.end.y ? [edge.start, edge.end] : [edge.end, edge.start]
   const tip = top.applyAxisAngle(Y, Math.PI / 2)
@@ -208,10 +228,12 @@ test('shapes deform in their own frame and keep their transform', () => {
 
 test("errors speak radians and three's types; the kernel's are the package's own", () => {
   const bar = new Box(100, 10, 10)
-  assert.throws(() => twist(bar.faces().first as never, 1), (e: unknown) => e instanceof TypeError && /Part, Shell, Edge, Wire or points/.test(e.message))
+  assert.throws(() => twist(bar.faces().first as never, 1), (e: unknown) => e instanceof TypeError && /Part, Shell, BrepEdge, Wire or points/.test(e.message))
   assert.throws(() => bend(bar, 3 * Math.PI), (e: unknown) => e instanceof RangeError && /2π radians/.test(e.message))
   assert.throws(() => twist(bar, Number.NaN), RangeError)
   assert.throws(() => twist(bar, 1, { axis: v(0, 1, 0) as never }), /THREE\.Ray/)
+  // (smlibpy's `plane` of a bend is `frame` here: a THREE.Matrix4)
+  assert.throws(() => bend(bar, 1, { plane: new THREE.Matrix4() } as never), { name: 'TypeError', message: /the option `frame`/ })
   // the bar reaches 5 from its neutral layer toward an axis only 2 away
   let error: unknown
   try {
@@ -224,15 +246,16 @@ test("errors speak radians and three's types; the kernel's are the package's own
 })
 
 test('nothing of smlibwasm comes out of the deformations', () => {
-  const block = new Box(60, 40, 20)
+  const block = new Box(60, 20, 40)
   const lattice = new Lattice(block, 3).move([1, -1, 1], v(0, 8, 0))
   const results: unknown[] = [
     twist(block, 1),
     taper(block, 0.5),
     bend(new Box(100, 10, 10), Math.PI / 2),
     bend(new Rectangle(100, 10), Math.PI / 2),
+    bend(new Rectangle(100, 10), Math.PI / 2, { frame: new THREE.Matrix4().makeRotationX(Math.PI / 2) }),
     twist(block.edges().parallelTo(Y).first, 1),
-    bend(new Wire([new Line(v(-50, 0, 0), v(50, 0, 0))]), Math.PI / 2, { radius: 10 }),
+    bend(new Wire([new Segment(v(-50, 0, 0), v(50, 0, 0))]), Math.PI / 2, { radius: 10 }),
     twist(v(10, 0, 0), 1, { start: 0, end: 10 }),
     twist([v(10, 0, 0)], 1, { start: 0, end: 10 }),
     lattice,

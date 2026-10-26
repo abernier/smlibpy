@@ -3,7 +3,7 @@
 // Vertices are split per face, so a face owns a range of vertices and a range of triangles; a
 // vertex's face is found from its index, whatever order a BVH puts the triangles in. Normals are
 // the kernel's normals of the exact surfaces, not normals averaged over triangles. Everything is
-// in three's coordinates (Y up), in the body's own frame.
+// in three's coordinates, in the body's own frame.
 import * as THREE from 'three'
 import { sm, type SmBody } from './kernel.ts'
 
@@ -17,11 +17,14 @@ export interface Tessellation {
   /** The edges as line segments (two points each). Edge e owns the segments [edgeSegmentStart[e], edgeSegmentStart[e + 1]). */
   readonly edges: THREE.BufferGeometry
   readonly edgeSegmentStart: Uint32Array
-  /** Each edge's points in order (x, y, z each): what an Edge of the body draws. */
+  /** Each edge's points in order (x, y, z each): what a BrepEdge of the body draws. */
   readonly edgePoints: readonly Float32Array[]
   /** How many objects draw it: disposed when the last one is. */
   refs: number
 }
+
+/** How many bodies this thread tessellated (for tests: a worker's results come tessellated). */
+export const counts = { tessellated: 0 }
 
 // (corner normals that differ by more than this split a vertex: the apex of a cone)
 const COS_SPLIT = Math.cos(Math.PI / 180)
@@ -33,6 +36,7 @@ const COS_SPLIT = Math.cos(Math.PI / 180)
  * and `edgeAngle` the largest turn along an edge, in radians.
  */
 export function tessellate(body: SmBody, edges: readonly sm.Edge[], tolerance: number | null, angle: number, edgeAngle: number): Tessellation {
+  counts.tessellated++
   const diagonal = body.bbox().diagonal
   const tol = tolerance ?? Math.max(diagonal * 1e-3, 1e-6)
   const meshes = sm.faceMeshes(body, tol, (angle * 180) / Math.PI)
@@ -78,10 +82,9 @@ function faceGeometry(meshes: readonly sm.Mesh[]): { geometry: THREE.BufferGeome
       for (let corner = 0; corner < 3; corner++) {
         const p = tri[i + corner]
         if (nm !== null) n.set(nm[i * 3 + corner * 3], nm[i * 3 + corner * 3 + 1], nm[i * 3 + corner * 3 + 2])
-        // kernel (x, y, z) to three (x, z, -y)
         const nx = n.x
-        const ny = n.z
-        const nz = -n.y
+        const ny = n.y
+        const nz = n.z
         let at = -1
         const copies = made.get(p)
         if (copies !== undefined) {
@@ -95,8 +98,8 @@ function faceGeometry(meshes: readonly sm.Mesh[]): { geometry: THREE.BufferGeome
         if (at < 0) {
           at = v++
           positions[at * 3] = pts[p * 3]
-          positions[at * 3 + 1] = pts[p * 3 + 2]
-          positions[at * 3 + 2] = -pts[p * 3 + 1]
+          positions[at * 3 + 1] = pts[p * 3 + 1]
+          positions[at * 3 + 2] = pts[p * 3 + 2]
           normals[at * 3] = nx
           normals[at * 3 + 1] = ny
           normals[at * 3 + 2] = nz
@@ -140,6 +143,44 @@ function vertexColors(colors: readonly ([number, number, number] | null)[], face
   return new THREE.BufferAttribute(out, 3)
 }
 
+/** A tessellation as plain arrays, to cross to another thread (a worker's results come drawn). */
+export interface TessellationData {
+  readonly position: Float32Array
+  readonly normal: Float32Array
+  readonly color: Float32Array | null
+  readonly index: Uint16Array | Uint32Array
+  readonly faceVertexStart: Uint32Array
+  readonly faceTriangleStart: Uint32Array
+  readonly edgePoints: readonly Float32Array[]
+}
+
+/** The arrays of a tessellation (its own: sending copies them). */
+export function tessellationData(t: Tessellation): TessellationData {
+  const color = t.faces.getAttribute('color')
+  return {
+    position: t.faces.getAttribute('position').array as Float32Array,
+    normal: t.faces.getAttribute('normal').array as Float32Array,
+    color: color === undefined ? null : (color.array as Float32Array),
+    index: t.faces.getIndex()!.array as Uint16Array | Uint32Array,
+    faceVertexStart: t.faceVertexStart,
+    faceTriangleStart: t.faceTriangleStart,
+    edgePoints: t.edgePoints,
+  }
+}
+
+/** A tessellation of arrays another thread made (`tessellationData`). */
+export function fromTessellationData(d: TessellationData): Tessellation {
+  const faces = new THREE.BufferGeometry()
+  faces.setAttribute('position', new THREE.BufferAttribute(d.position, 3))
+  faces.setAttribute('normal', new THREE.BufferAttribute(d.normal, 3))
+  if (d.color !== null) faces.setAttribute('color', new THREE.BufferAttribute(d.color, 3))
+  faces.setIndex(new THREE.BufferAttribute(d.index, 1))
+  faces.computeBoundingBox()
+  faces.computeBoundingSphere()
+  const { geometry: edges, edgeSegmentStart } = segments(d.edgePoints)
+  return { faces, faceVertexStart: d.faceVertexStart, faceTriangleStart: d.faceTriangleStart, edges, edgeSegmentStart, edgePoints: d.edgePoints, refs: 0 }
+}
+
 /** Polylines as one geometry of line segments, and where each polyline's segments start. */
 function segments(lines: readonly Float32Array[]): { geometry: THREE.BufferGeometry; edgeSegmentStart: Uint32Array } {
   const edgeSegmentStart = new Uint32Array(lines.length + 1)
@@ -161,7 +202,7 @@ function segments(lines: readonly Float32Array[]): { geometry: THREE.BufferGeome
   return { geometry, edgeSegmentStart }
 }
 
-/** A geometry of one polyline (an Edge's or a Wire's, for THREE.Line). */
+/** A geometry of one polyline (a BrepEdge's or a Wire's, for THREE.Line). */
 export function lineGeometry(points: Float32Array): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(points, 3))
@@ -170,7 +211,7 @@ export function lineGeometry(points: Float32Array): THREE.BufferGeometry {
   return geometry
 }
 
-/** The triangles of face `f` of a tessellation, as a geometry of their own (a Face's). */
+/** The triangles of face `f` of a tessellation, as a geometry of their own (a BrepFace's). */
 export function faceOf(tess: Tessellation, f: number): THREE.BufferGeometry {
   const v0 = tess.faceVertexStart[f]
   const v1 = tess.faceVertexStart[f + 1]
@@ -228,7 +269,7 @@ export function polyline(curve: sm.Edge | sm.Wire, tolerance: number, angle: num
   for (const e of edges) {
     const pts = edgePoints(e, tolerance, angle)
     // (a wire's edges meet: each one after the first starts where the one before ended)
-    for (let i = out.length ? 1 : 0; i < pts.length; i++) out.push(pts[i].x, pts[i].z, -pts[i].y)
+    for (let i = out.length ? 1 : 0; i < pts.length; i++) out.push(pts[i].x, pts[i].y, pts[i].z)
   }
   return Float32Array.from(out)
 }

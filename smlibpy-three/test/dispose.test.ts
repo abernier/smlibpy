@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import { memoryUsage } from '@classcad/smlibwasm'
-import { Box, Cylinder, Line, Part, Sphere } from '../src/index.ts'
+import { Box, Cylinder, Segment, Part, Ball } from '../src/index.ts'
 
 /** Counts 'dispose' events of an object (a geometry, a material, an Object3D). */
 function disposals(target: THREE.EventDispatcher<{ dispose: object }>): { count: number } {
@@ -15,7 +15,7 @@ function disposals(target: THREE.EventDispatcher<{ dispose: object }>): { count:
 }
 
 test('dispose() frees the tessellation and the own materials, never an assigned material', () => {
-  const part = new Box(20, 20, 20).cut(new Cylinder(5, 30))
+  const part = new Box(20, 20, 20).cut(new Cylinder(5, 5, 30))
   const geometry = disposals(part.geometry)
   const lines = disposals(part.edgeLines.geometry)
   const own = disposals(part.edgeLines.material as THREE.Material)
@@ -32,7 +32,7 @@ test('dispose() frees the tessellation and the own materials, never an assigned 
 })
 
 test('a disposed body still draws as it was; operations on it throw', () => {
-  const part = new Sphere(5)
+  const part = new Ball(5)
   const geometry = part.geometry
   part.dispose()
   // (three uploads a disposed geometry again when it draws it)
@@ -44,7 +44,7 @@ test('a disposed body still draws as it was; operations on it throw', () => {
 })
 
 test('clones keep the body and its tessellation until the last one is disposed', () => {
-  const part = new Box(10, 10, 10).cut(new Cylinder(2, 20))
+  const part = new Box(10, 10, 10).cut(new Cylinder(2, 2, 20))
   const clone = part.clone()
   const geometry = disposals(part.geometry)
   assert.equal(clone.geometry, part.geometry)
@@ -58,7 +58,7 @@ test('clones keep the body and its tessellation until the last one is disposed',
 
 test("dispose() frees the kernel's body at once", () => {
   const before = memoryUsage().handles
-  const parts = Array.from({ length: 20 }, (_, i) => new Box(10 + i, 10, 10).cut(new Cylinder(2, 20)))
+  const parts = Array.from({ length: 20 }, (_, i) => new Box(10 + i, 10, 10).cut(new Cylinder(2, 2, 20)))
   for (const p of parts) p.geometry // (tessellated, as when drawn)
   const made = memoryUsage().handles
   assert.ok(made >= before + 20)
@@ -77,7 +77,7 @@ test('faces, edges and curves free what they made', () => {
   assert.equal(faceGeometry.count, 1)
   assert.equal(faceMaterial.count, 1)
   assert.ok(part.volume > 0) // (the body is its body's)
-  const line = new Line(new THREE.Vector3(), new THREE.Vector3(1, 2, 3))
+  const line = new Segment(new THREE.Vector3(), new THREE.Vector3(1, 2, 3))
   const lineGeometry = disposals(line.geometry)
   line.dispose()
   assert.equal(lineGeometry.count, 1)

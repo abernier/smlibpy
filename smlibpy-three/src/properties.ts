@@ -2,15 +2,11 @@
 // Matrix3) and axes, angles in radians, faces and edges as the package's objects. Each is in the
 // frame of the shape it was measured on.
 import * as THREE from 'three'
-import { C, axis as toAxis, radians, sm, threePlane, vec, vector3 } from './kernel.ts'
-import { toThree, type Body, type Edge, type Face, type ShapeList, type Vertex } from './shapes.ts'
-
-// C as a 3x3 rotation: tensors turn from the kernel's axes to three's as R · I · Rᵀ
-const R = new THREE.Matrix3().setFromMatrix4(C)
+import { axis as toAxis, radians, sm, threePlane, vec, vector3 } from './kernel.ts'
+import { toThree, type Body, type BrepEdge, type BrepFace, type ShapeList, type BrepVertex } from './shapes.ts'
 
 function matrix3(rows: readonly (readonly number[])[]): THREE.Matrix3 {
-  const m = new THREE.Matrix3().set(...(rows.flat() as [number, number, number, number, number, number, number, number, number]))
-  return R.clone().multiply(m).multiply(R.clone().transpose())
+  return new THREE.Matrix3().set(...(rows.flat() as [number, number, number, number, number, number, number, number, number]))
 }
 
 /**
@@ -126,18 +122,18 @@ export interface ClosestPoints {
   readonly otherPoint: THREE.Vector3
   readonly distance: number
   /** The faces the points lie on, where they lie on faces. */
-  readonly face: Face | null
-  readonly otherFace: Face | null
+  readonly face: BrepFace | null
+  readonly otherFace: BrepFace | null
 }
 
 /** @internal
  * `otherFace` gives the other shape's own face for a face of the kernel's (moved) copy of it. */
-export function closestPointsOf(k: sm.ClosestPoints, like: Body, otherFace: (k: sm.Face) => Face | null): ClosestPoints {
+export function closestPointsOf(k: sm.ClosestPoints, like: Body, otherFace: (k: sm.Face) => BrepFace | null): ClosestPoints {
   return Object.freeze({
     point: vector3(k.point),
     otherPoint: vector3(k.otherPoint),
     distance: k.distance,
-    face: k.face === null ? null : (toThree(k.face, like) as Face),
+    face: k.face === null ? null : (toThree(k.face, like) as BrepFace),
     otherFace: k.otherFace === null ? null : otherFace(k.otherFace),
   })
 }
@@ -185,41 +181,41 @@ export interface RayHit {
   readonly distance: number
   /** The face's outward normal there. */
   readonly normal: THREE.Vector3
-  readonly face: Face | null
+  readonly face: BrepFace | null
 }
 
 /** @internal */
 export function rayHitOf(k: sm.Hit, like: THREE.Object3D): RayHit {
-  return Object.freeze({ point: vector3(k.point), distance: k.distance, normal: vector3(k.normal), face: k.face === null ? null : (toThree(k.face, like) as Face) })
+  return Object.freeze({ point: vector3(k.point), distance: k.distance, normal: vector3(k.normal), face: k.face === null ? null : (toThree(k.face, like) as BrepFace) })
 }
 
 /** A defect the kernel's check found (smlibpy's Problem). */
 export interface Problem {
-  readonly shape: Body | Face | Edge | Vertex
+  readonly shape: Body | BrepFace | BrepEdge | BrepVertex
   readonly message: string
   readonly value: number | null
   readonly tolerance: number | null
   readonly category: string
   readonly test: string
-  readonly other: Body | Face | Edge | Vertex | null
+  readonly other: Body | BrepFace | BrepEdge | BrepVertex | null
 }
 
 /** @internal */
 export function problemOf(k: sm.Problem, like: Body): Problem {
   return Object.freeze({
-    shape: toThree(k.shape, like) as Body | Face | Edge | Vertex,
+    shape: toThree(k.shape, like) as Body | BrepFace | BrepEdge | BrepVertex,
     message: k.message,
     value: k.value,
     tolerance: k.tolerance,
     category: k.category,
     test: k.test,
-    other: k.other === null ? null : (toThree(k.other, like) as Body | Face | Edge | Vertex),
+    other: k.other === null ? null : (toThree(k.other, like) as Body | BrepFace | BrepEdge | BrepVertex),
   })
 }
 
 /** How a face drafts for a mold pulled along a direction (smlibpy's FaceDraft). */
 export interface FaceDraft {
-  readonly face: Face
+  readonly face: BrepFace
   /** The smallest and largest draft angle over the face, in radians (negative: an undercut). */
   readonly minAngle: number
   readonly maxAngle: number
@@ -234,37 +230,37 @@ export class DraftAnalysis {
   /** The draft a face needs, in radians. */
   readonly minAngle: number
   readonly faces: readonly FaceDraft[]
-  readonly #list: (faces: Face[]) => ShapeList<Face>
+  readonly #list: (faces: BrepFace[]) => ShapeList<BrepFace>
 
   /** @internal */
-  constructor(k: sm.DraftAnalysis, like: Body, list: (faces: Face[]) => ShapeList<Face>) {
+  constructor(k: sm.DraftAnalysis, like: Body, list: (faces: BrepFace[]) => ShapeList<BrepFace>) {
     this.direction = vector3(k.direction)
     this.minAngle = radians(k.minAngle)
-    this.faces = Object.freeze(k.faces.map((fd) => Object.freeze({ face: toThree(fd.face, like) as Face, minAngle: radians(fd.minAngle), maxAngle: radians(fd.maxAngle), kind: fd.kind })))
+    this.faces = Object.freeze(k.faces.map((fd) => Object.freeze({ face: toThree(fd.face, like) as BrepFace, minAngle: radians(fd.minAngle), maxAngle: radians(fd.maxAngle), kind: fd.kind })))
     this.#list = list
   }
 
-  #kind(kind: string): ShapeList<Face> {
+  #kind(kind: string): ShapeList<BrepFace> {
     return this.#list(this.faces.filter((f) => f.kind === kind).map((f) => f.face))
   }
 
   /** Faces drafted at least `minAngle`. */
-  get positive(): ShapeList<Face> {
+  get positive(): ShapeList<BrepFace> {
     return this.#kind('positive')
   }
 
   /** Faces drafted less than `minAngle`. */
-  get insufficient(): ShapeList<Face> {
+  get insufficient(): ShapeList<BrepFace> {
     return this.#kind('insufficient')
   }
 
   /** Faces along the pull direction. */
-  get vertical(): ShapeList<Face> {
+  get vertical(): ShapeList<BrepFace> {
     return this.#kind('vertical')
   }
 
   /** Faces that hold the mold back. */
-  get undercut(): ShapeList<Face> {
+  get undercut(): ShapeList<BrepFace> {
     return this.#kind('undercut')
   }
 
@@ -274,7 +270,7 @@ export class DraftAnalysis {
   }
 
   /** A face's smallest and largest draft, in radians. */
-  angles(face: Face): [number, number] {
+  angles(face: BrepFace): [number, number] {
     const f = this.faces.find((x) => x.face === face)
     if (f === undefined) throw new RangeError('angles: the face is not one of the analysis')
     return [f.minAngle, f.maxAngle]

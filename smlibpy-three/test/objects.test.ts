@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
-import { Body, Box, Cylinder, Edge, EdgeLines, Face, GridLocations, Line, Part, Polyline, Rectangle, Shell, Sketch, Sphere, Vertex, Wire } from '../src/index.ts'
+import { Body, Box, Cylinder, BrepEdge, EdgeLines, BrepFace, GridLocations, Segment, Part, Polyline, Rectangle, Shell, Sketch, Ball, BrepVertex, Wire } from '../src/index.ts'
 import { box, close, closeBox, closeVector, Y } from './_util.ts'
 
 test('bodies are meshes, their edges line segments, faces meshes, curves lines, vertices points', () => {
@@ -19,10 +19,10 @@ test('bodies are meshes, their edges line segments, faces meshes, curves lines, 
   assert.ok(part.edgeLines instanceof EdgeLines && part.edgeLines instanceof THREE.LineSegments)
   assert.deepEqual(part.children, [part.edgeLines])
   assert.equal(part.edgeLines.body, part)
-  assert.ok(part.faces().first instanceof Face && part.faces().first instanceof THREE.Mesh)
-  assert.ok(part.edges().first instanceof Edge && part.edges().first instanceof THREE.Line)
-  assert.ok(part.vertices().first instanceof Vertex && part.vertices().first instanceof THREE.Points)
-  assert.ok(new Line() instanceof THREE.Line)
+  assert.ok(part.faces().first instanceof BrepFace && part.faces().first instanceof THREE.Mesh)
+  assert.ok(part.edges().first instanceof BrepEdge && part.edges().first instanceof THREE.Line)
+  assert.ok(part.vertices().first instanceof BrepVertex && part.vertices().first instanceof THREE.Points)
+  assert.ok(new Segment() instanceof THREE.Line)
   assert.ok(new Polyline([new THREE.Vector3(), new THREE.Vector3(1, 0, 0), new THREE.Vector3(1, 1, 0)]) instanceof Wire)
   const sketch = new Rectangle(10, 5)
   assert.ok(sketch instanceof Sketch && sketch instanceof Shell && sketch instanceof THREE.Mesh)
@@ -31,7 +31,7 @@ test('bodies are meshes, their edges line segments, faces meshes, curves lines, 
 })
 
 test('the geometry is the tessellation: split per face, with the exact normals', () => {
-  const part = new Sphere(10).cut(new Box(30, 30, 30, { align: { y: 'min' } }))
+  const part = new Ball(10).cut(new Box(30, 30, 30, { align: { y: 'min' } }))
   const g = part.geometry
   const faces = part.faces()
   const triangles = g.getIndex()!.count / 3
@@ -63,7 +63,7 @@ test('in a scene: added, moved, measured by Box3 as any mesh', () => {
   const group = new THREE.Group()
   group.position.set(100, 0, 0)
   scene.add(group)
-  const part = new Box(20, 10, 4)
+  const part = new Box(20, 4, 10)
   part.position.set(0, 50, 0)
   part.rotation.y = Math.PI / 2
   group.add(part)
@@ -80,13 +80,13 @@ test('in a scene: added, moved, measured by Box3 as any mesh', () => {
 })
 
 test('operations take tools where they are and give results where their receiver is', () => {
-  const plate = new Box(80, 60, 10) // 80 along x, 60 along z, 10 high
+  const plate = new Box(80, 10, 60) // 80 along x, 10 high (y), 60 along z
   plate.name = 'plate'
   const material = new THREE.MeshPhysicalMaterial({ color: 'steelblue' })
   plate.material = material
   plate.position.set(5, 0, 0)
   // a hole along x through the plate's middle, placed by its transform
-  const tool = new Cylinder(2, 200)
+  const tool = new Cylinder(2, 2, 200)
   tool.rotation.z = Math.PI / 2
   tool.position.set(5, 0, 10)
   const cut = plate.cut(tool)
@@ -104,7 +104,7 @@ test('operations take tools where they are and give results where their receiver
   // tools in a group: where the group puts them
   const group = new THREE.Group()
   group.position.set(0, 0, -20)
-  const pin = new Cylinder(3, 30)
+  const pin = new Cylinder(3, 3, 30)
   pin.position.set(5, 0, 0)
   group.add(pin)
   const drilled = plate.cut(pin, tool)
@@ -113,7 +113,7 @@ test('operations take tools where they are and give results where their receiver
 })
 
 test('clone and copy share the body and its tessellation, as three shares geometry', () => {
-  const part = new Box(10, 10, 10).cut(new Cylinder(2, 20))
+  const part = new Box(10, 10, 10).cut(new Cylinder(2, 2, 20))
   const child = new THREE.Object3D()
   part.add(child)
   part.position.set(1, 2, 3)
@@ -165,7 +165,7 @@ test('faces, edges and vertices are one object each, and draw in place as childr
 })
 
 test('selectors work in three axes: top is +y, front is +z', () => {
-  const part = new Box(30, 20, 10)
+  const part = new Box(30, 10, 20) // 30 along x, 10 high (y), 20 along z
   closeVector(part.faces().top().one().normalAt(), Y)
   closeVector(part.faces().bottom().one().normalAt(), { x: 0, y: -1, z: 0 })
   closeVector(part.faces().front().one().normalAt(), { x: 0, y: 0, z: 1 })
@@ -174,16 +174,23 @@ test('selectors work in three axes: top is +y, front is +z', () => {
   for (const e of part.edges().parallelTo(Y)) close(e.length, 10)
   const sorted = part.faces().sortBy(new THREE.Vector3(0, 0, 1))
   closeVector(sorted.last.normalAt(), { x: 0, y: 0, z: 1 })
+  // (sorts, groups and maxima go along +y, up, by default)
+  closeVector(part.faces().sortBy().last.normalAt(), Y)
+  assert.deepEqual(part.faces().groupBy().map((g) => g.length), [1, 4, 1])
+  assert.equal(part.faces().maxBy().one(), part.faces().top().one())
+  assert.equal(part.faces().minBy().one(), part.faces().bottom().one())
   close(part.faces().largest().area, 30 * 20)
   close(part.faces().nearest(new THREE.Vector3(100, 0, 0)).center().x, 15)
 })
 
 test('at() places clones by matrices, as InstancedMesh places instances', () => {
-  const hole = new Cylinder(3, 20)
+  // (the grid lies in the XY plane, as sketches do: a pin along y, turned to z, at each place)
+  const hole = new Cylinder(3, 3, 20)
+  hole.rotation.x = Math.PI / 2
   const holes = hole.at(GridLocations(40, 20, 2, 2))
   assert.equal(holes.length, 4)
   for (const h of holes) assert.equal(h.geometry, hole.geometry)
-  const plate = new Box(60, 40, 8).cut(holes) // 60 along x, 40 along z, 8 high
+  const plate = new Box(60, 40, 8).cut(holes) // 60 along x, 40 along y, 8 thick (z): lying in XY too
   close(plate.volume, 60 * 8 * 40 - 4 * Math.PI * 9 * 8, 1e-6)
   assert.equal(plate.faces().cylinders().length, 4)
 })
@@ -198,7 +205,7 @@ test('a Part from a BufferGeometry (a closed mesh, welded)', () => {
 })
 
 test('toJSON writes plain three objects ObjectLoader reads back', () => {
-  const part = new Box(10, 10, 10).cut(new Cylinder(2, 20))
+  const part = new Box(10, 10, 10).cut(new Cylinder(2, 2, 20))
   const json = part.toJSON()
   const back = new THREE.ObjectLoader().parse(json)
   assert.ok(back instanceof THREE.Mesh)
@@ -225,20 +232,20 @@ test('materials: the own one until one is assigned; null gives it back', () => {
 })
 
 test("a tool's scale goes to the kernel too, also one different per axis", () => {
-  const block = new Box(100, 100, 20)
-  const pin = new Cylinder(5, 40)
+  const block = new Box(100, 20, 100)
+  const pin = new Cylinder(5, 5, 40)
   pin.scale.set(2, 1, 1) // an elliptic pin: 10 by 5
   close(block.cut(pin).volume, 100 * 100 * 20 - Math.PI * 10 * 5 * 20, 1e-6)
-  const ball = new Sphere(4)
+  const ball = new Ball(4)
   ball.scale.setScalar(2)
   // (radius 8, cut to 5 above and below: less two caps 3 high)
   const cap = (Math.PI * 3 ** 2 * (3 * 8 - 3)) / 3
-  close(new Box(100, 100, 10).intersect(ball).volume, (4 / 3) * Math.PI * 8 ** 3 - 2 * cap, 1e-6)
+  close(new Box(100, 10, 100).intersect(ball).volume, (4 / 3) * Math.PI * 8 ** 3 - 2 * cap, 1e-6)
 })
 
 test("three's own exporters write a body's tessellation, as any mesh's", async () => {
   const { STLExporter } = await import('three/addons/exporters/STLExporter.js')
-  const part = new Box(10, 10, 10).cut(new Cylinder(2, 20))
+  const part = new Box(10, 10, 10).cut(new Cylinder(2, 2, 20))
   const stl = new STLExporter().parse(part) as string
   // (its edge lines are LineSegments, which STLExporter leaves out)
   assert.equal(stl.match(/facet normal/g)!.length, part.geometry.getIndex()!.count / 3)

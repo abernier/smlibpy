@@ -4,11 +4,12 @@
 // module of their own; they take and return the package's objects, which cross in both directions:
 //
 //     // models.js
-//     import * as THREE from 'three'
-//     import { Box, Cylinder, GridLocations } from '@classcad/smlibpy-three'
+//     import { Box, Cylinder, GridLocations, Z } from '@classcad/smlibpy-three'
 //     export function plate(width) {
-//       const box = new Box(width, 60, 10)
-//       return box.fillet(box.edges().parallelTo(new THREE.Vector3(0, 1, 0)), 6).cut(new Cylinder(3, 20).at(GridLocations(width - 20, 40, 2, 2)))
+//       const box = new Box(width, 60, 10) // a plate in the XY plane, 10 thick
+//       const pin = new Cylinder(3, 3, 20)
+//       pin.rotation.x = Math.PI / 2 // along z, through the plate
+//       return box.fillet(box.edges().parallelTo(Z), 6).cut(pin.at(GridLocations(width - 20, 40, 2, 2)))
 //     }
 //     export const round = (part, edge, radius) => part.fillet(edge, radius)
 //
@@ -29,8 +30,9 @@
 //   its transform, name, uuid, visibility, shadow, culling, render order and layers, its user data
 //   (as JSON, as three copies it), its tessellation settings and whether its edge lines show. Going
 //   to the worker, a body is there where it is here in the world: a stand-in parent (a THREE.Group)
-//   stands where its parent is, so operands placed in groups cut where they do here. Bodies arrive
-//   as Part, Shell or Sketch (a Box as a Part), without children.
+//   stands where its parent is, so operands placed in groups cut where they do here. Coming back,
+//   a body brings the tessellation three draws of it, made in the worker: the calling thread only
+//   uploads it. Bodies arrive as Part, Shell or Sketch (a Box as a Part), without children.
 // - Materials stay on their thread (they hold textures and the renderer's state): a body or curve
 //   crosses with its material's color and name, and over there has a material of that color, which
 //   stands for this thread's. What comes back with such a material (the body itself, its clone, the
@@ -39,8 +41,8 @@
 //   the color of the one it had.
 // - Faces, edges and vertices of bodies as their body and their place in it: the edge picked here
 //   is the same edge of the same body there. A body's wires and edge lines as well.
-// - Curves of their own (Edge, Wire, Line, Spline, ...) as their exact kernel curves, with their
-//   transform; vertices of their own as their point. They arrive as Edge, Wire and Vertex.
+// - Curves of their own (BrepEdge, Wire, Segment, Spline, ...) as their exact kernel curves, with their
+//   transform; vertices of their own as their point. They arrive as BrepEdge, Wire and BrepVertex.
 // - Triangle meshes (TriangleMesh) as their triangles, which the receiving thread takes over
 //   without a copy (the sender keeps its own), with their transform and material as bodies have.
 // - THREE.Group and THREE.Object3D with their children; ShapeLists, arrays, plain objects, Maps and
@@ -61,7 +63,8 @@ import * as THREE from 'three'
 import { KernelWorker as Transport, expose as exposeTransport } from '@classcad/smlibwasm/worker'
 import { FontError, KernelError, ModelingError } from './errors.ts'
 import type { TriangleMesh } from './mesh.ts'
-import type { Body, Edge, EdgeLines, Face, Part, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
+import type { Body, BrepEdge, EdgeLines, BrepFace, Part, ShapeList, Shell, Sketch, BrepVertex, Wire } from './shapes.ts'
+import type { TessellationData } from './tessellation.ts'
 
 // biome-ignore lint: the functions of a worker take and return anything
 type Any = any
@@ -88,8 +91,8 @@ type ThreeValue =
 
 /**
  * What a value of type `T` is once it has crossed to or from a worker: bodies as Part, Shell or
- * Sketch and curves as Edge or Wire (the classes of the package's results: a Box arrives as a Part,
- * a Line as an Edge), groups as THREE.Group or THREE.Object3D, lists, arrays and plain objects item
+ * Sketch and curves as BrepEdge or Wire (the classes of the package's results: a Box arrives as a Part,
+ * a Segment as a BrepEdge), groups as THREE.Group or THREE.Object3D, lists, arrays and plain objects item
  * by item, the rest as it is (functions do not cross).
  */
 export type Crossed<T> =
@@ -99,9 +102,9 @@ export type Crossed<T> =
   T extends Part ? Part :
   T extends Shell ? Shell :
   T extends Wire ? Wire :
-  T extends Edge ? Edge :
-  T extends Face ? Face :
-  T extends Vertex ? Vertex :
+  T extends BrepEdge ? BrepEdge :
+  T extends BrepFace ? BrepFace :
+  T extends BrepVertex ? BrepVertex :
   T extends EdgeLines ? EdgeLines :
   T extends TriangleMesh ? TriangleMesh :
   T extends ShapeList<infer U> ? ShapeList<Crossed<U>> :
@@ -185,7 +188,7 @@ export class KernelWorker<M extends object = Record<string, (...args: Any[]) => 
 
   /**
    * Calls the worker's function `name` with `args`; resolves to what it returns, as it arrives
-   * (bodies as Part, Shell or Sketch, curves as Edge or Wire: `Crossed`). Bodies, curves, faces,
+   * (bodies as Part, Shell or Sketch, curves as BrepEdge or Wire: `Crossed`). Bodies, curves, faces,
    * edges and vertices of bodies, groups, three's values and plain data cross in both directions
    * (see the module's comment); other objects are a TypeError.
    */
@@ -345,7 +348,7 @@ type Shapes = typeof import('./shapes.ts')
 type Kernel = typeof import('./kernel.ts')
 type Meshes = typeof import('./mesh.ts')
 /** What this module uses of the package, which it loads (with the kernel) only when a value needs it. */
-type Package = Pick<Shapes, 'Body' | 'Edge' | 'EdgeLines' | 'Face' | 'ShapeList' | 'Vertex' | 'Wire' | 'curveOf' | 'kernelOf' | 'kernelOfShape' | 'wrap'> &
+type Package = Pick<Shapes, 'Body' | 'BrepEdge' | 'EdgeLines' | 'BrepFace' | 'ShapeList' | 'BrepVertex' | 'Wire' | 'curveOf' | 'drawnData' | 'kernelOf' | 'kernelOfShape' | 'takeDrawn' | 'wrap'> &
   Pick<Kernel, 'call' | 'sm' | 'translate'> &
   Pick<Meshes, 'TriangleMesh' | 'kernelMesh'>
 
@@ -354,15 +357,17 @@ let loading: Promise<Package> | null = null
 function load(): Promise<Package> {
   loading ??= Promise.all([import('./shapes.ts'), import('./kernel.ts'), import('./mesh.ts')]).then(([s, k, m]) => ({
     Body: s.Body,
-    Edge: s.Edge,
+    BrepEdge: s.BrepEdge,
     EdgeLines: s.EdgeLines,
-    Face: s.Face,
+    BrepFace: s.BrepFace,
     ShapeList: s.ShapeList,
-    Vertex: s.Vertex,
+    BrepVertex: s.BrepVertex,
     Wire: s.Wire,
     curveOf: s.curveOf,
+    drawnData: s.drawnData,
     kernelOf: s.kernelOf,
     kernelOfShape: s.kernelOfShape,
+    takeDrawn: s.takeDrawn,
     wrap: s.wrap,
     call: k.call,
     sm: k.sm,
@@ -379,7 +384,7 @@ function needsPackage(value: unknown, seen = new Set<object>()): boolean {
   if (value === null || typeof value !== 'object' || seen.has(value)) return false
   seen.add(value)
   const v = value as Record<string, unknown>
-  if (v.isBody === true || v.isFace === true || v.isEdge === true || v.isWire === true || v.isVertex === true || v.isEdgeLines === true || v.isTriangleMesh === true) return true
+  if (v.isBody === true || v.isBrepFace === true || v.isBrepEdge === true || v.isWire === true || v.isBrepVertex === true || v.isEdgeLines === true || v.isTriangleMesh === true) return true
   if (Array.isArray(value)) return Object.getPrototypeOf(value) !== Array.prototype || value.some((x) => needsPackage(x, seen))
   if (value instanceof Map) return [...value].some(([k, x]) => needsPackage(k, seen) || needsPackage(x, seen))
   if (value instanceof Set) return [...value].some((x) => needsPackage(x, seen))
@@ -402,6 +407,8 @@ interface BodyRecord {
   lines: boolean
   material: MaterialRecord | null
   lineMaterial: MaterialRecord | null
+  /** Coming from the worker: the tessellation three draws of it, made there (null: none). */
+  drawn: TessellationData | null
 }
 
 /** What three needs of an Object3D, as three's toJSON keeps it (without its geometry, material and
@@ -497,15 +504,15 @@ class Packer {
 
   #value(v: Record<string, unknown>, top: boolean): unknown {
     const pkg = this.#pkg
-    // the package's objects (by their flags first: a Vertex has x, y and z too)
+    // the package's objects (by their flags first: a BrepVertex has x, y and z too)
     if (pkg !== null) {
       if (v.isBody === true) return { [TAG]: 'Body', body: this.#body(v as unknown as Body) }
-      if (v.isFace === true || v.isVertex === true || v.isEdge === true) {
-        const shape = v as unknown as Face | Edge | Vertex
-        if (shape.owner !== null && shape.index >= 0) return { [TAG]: v.isFace === true ? 'Face' : v.isEdge === true ? 'Edge' : 'Vertex', body: this.#body(shape.owner), index: shape.index }
-        if (v.isVertex === true) return this.#point(v as unknown as Vertex, top)
+      if (v.isBrepFace === true || v.isBrepVertex === true || v.isBrepEdge === true) {
+        const shape = v as unknown as BrepFace | BrepEdge | BrepVertex
+        if (shape.owner !== null && shape.index >= 0) return { [TAG]: v.isBrepFace === true ? 'BrepFace' : v.isBrepEdge === true ? 'BrepEdge' : 'BrepVertex', body: this.#body(shape.owner), index: shape.index }
+        if (v.isBrepVertex === true) return this.#point(v as unknown as BrepVertex, top)
       }
-      if (v.isEdge === true || v.isWire === true) return this.#curve(v as unknown as Edge | Wire, top)
+      if (v.isBrepEdge === true || v.isWire === true) return this.#curve(v as unknown as BrepEdge | Wire, top)
       if (v.isEdgeLines === true) {
         const body = (v as unknown as EdgeLines).body
         if (body === null) throw new TypeError('edge lines of no body cannot go to or come from a worker')
@@ -558,6 +565,8 @@ class Packer {
       lines: b.edgeLines.visible,
       material: this.#material(b.material),
       lineMaterial: this.#material(b.edgeLines.material),
+      // (the worker tessellates what it sends back: the calling thread only draws it)
+      drawn: this.#toWorker ? null : pkg.drawnData(b),
     }
     at = this.bodies.push(record) - 1
     this.#places.set(b, at)
@@ -566,7 +575,7 @@ class Packer {
 
   /** An edge or wire: a body's wire (its edges are the body's), a curve in a body's frame (the curves
    * where a plane cuts it), or a curve of its own. */
-  #curve(c: Edge | Wire, top: boolean): unknown {
+  #curve(c: BrepEdge | Wire, top: boolean): unknown {
     const pkg = this.#pkg as Package
     this.usesPackage = true
     const value = pkg.kernelOfShape(c)
@@ -578,7 +587,7 @@ class Packer {
   }
 
   /** A vertex of its own: its point. */
-  #point(v: Vertex, top: boolean): unknown {
+  #point(v: BrepVertex, top: boolean): unknown {
     this.usesPackage = true
     return { [TAG]: 'Point', point: v.point.toArray(), object: objectRecord(v), parent: top ? this.#parent(v) : -1, material: this.#material(v.material as THREE.Material) }
   }
@@ -661,6 +670,7 @@ class Unpacker {
       applyObject(b, r.object)
       b.tolerance = r.tolerance
       b.angle = r.angle
+      if (r.drawn !== null) (pkg as Package).takeDrawn(b, r.drawn)
       b.edgeLines.visible = r.lines
       this.#material(b, r.material, 'mesh')
       this.#material(b.edgeLines, r.lineMaterial, 'line')
@@ -703,11 +713,11 @@ class Unpacker {
       }
       case 'Body':
         return this.#bodies[r.body]
-      case 'Face':
+      case 'BrepFace':
         return this.#sub(this.#bodies[r.body].faces(), r.index, 'face')
-      case 'Edge':
+      case 'BrepEdge':
         return this.#sub(this.#bodies[r.body].edges(), r.index, 'edge')
-      case 'Vertex':
+      case 'BrepVertex':
         return this.#sub(this.#bodies[r.body].vertices(), r.index, 'vertex')
       case 'EdgeLines':
         return this.#bodies[r.body].edgeLines
@@ -723,7 +733,7 @@ class Unpacker {
         return c
       }
       case 'Point': {
-        const p = new pkg.Vertex(new THREE.Vector3().fromArray(r.point))
+        const p = new pkg.BrepVertex(new THREE.Vector3().fromArray(r.point))
         applyObject(p, r.object)
         this.#material(p, r.material, 'points')
         this.#place(p, r.parent)

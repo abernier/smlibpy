@@ -1,11 +1,11 @@
 // Deformations: twist, taper, bend and unroll parts, sheets, edges, wires and points, or deform them
 // with a lattice of control points, in three's terms: angles in radians, axes THREE.Rays (by
-// default three's y axis, up, through the origin), the frame of a bend a THREE.Matrix4, points
-// THREE.Vector3s, and a Lattice whose points are indexed along three's x, y (up) and z.
+// default three's y axis, up, through the origin, along which cylinders stand), the frame of a bend
+// a THREE.Matrix4, points THREE.Vector3s, and a Lattice whose points are indexed along x, y and z.
 //
-//     const column = twist(new Box(20, 20, 120), Math.PI / 2)          // a quarter turn over its height
-//     const grip = taper(new Cylinder(12, 80), 0.7)                     // 70 % of the diameter at the top
-//     const hook = bend(new Box(160, 10, 6), Math.PI, { radius: 25 })   // a U, bent up, with straight legs
+//     const column = twist(new Box(20, 120, 20), Math.PI / 2)          // a quarter turn over its height
+//     const grip = taper(new Cylinder(12, 12, 80), 0.7)                // 70 % of the diameter at the top
+//     const hook = bend(new Box(160, 6, 10), Math.PI, { radius: 25 })  // a U, bent up, with straight legs
 //     const lattice = new Lattice(block, 3)                             // 3 x 3 x 3 points around it
 //     lattice.move([1, -1, 1], new THREE.Vector3(0, 8, 0))              // the top layer's middle point up by 8
 //     const pillow = lattice.apply(block)
@@ -16,7 +16,7 @@
 // the coordinates the axis is given in.
 import * as THREE from 'three'
 import { axis as toAxis, boundBox, box3, call, degrees, describe, sm, vec, vector3, type SmBody } from './kernel.ts'
-import { adopt, Body, Edge, isObject3D, isRay, kernelOf, kernelOfShape, placedCurve, wrap, Wire, type Part, type Shell } from './shapes.ts'
+import { adopt, Body, BrepEdge, isObject3D, isRay, kernelOf, kernelOfShape, placedCurve, wrap, Wire, type Part, type Shell } from './shapes.ts'
 
 // (this module and shapes.ts import each other: what it takes from shapes.ts is used in calls only,
 // never while the module loads)
@@ -42,7 +42,8 @@ export interface TwistOptions extends RangeOptions {
 
 /** Options of tapers. */
 export interface TaperOptions extends RangeOptions {
-  /** The line the cross-sections shrink toward, in the shape's frame (default: its y axis). */
+  /** The line the cross-sections shrink toward, in the shape's frame (default: its y axis, through
+   * the origin). */
   axis?: THREE.Ray | null
 }
 
@@ -56,9 +57,10 @@ export interface BendOptions extends RangeOptions {
    * The frame of the bend, in the shape's frame: its x axis runs along the part, a positive angle
    * bends the part toward its y axis, the bend axis is parallel to x × y, and the layer through its
    * origin spanned by x and x × y is the neutral layer, which keeps its length. Default: the
-   * identity (a part lying along x bends up, toward +y, about an axis along z).
+   * identity (a part lying along x bends up, toward +y, about an axis along z). (smlibpy's `plane`:
+   * a frame, which a THREE.Plane is not.)
    */
-  plane?: THREE.Matrix4 | null
+  frame?: THREE.Matrix4 | null
 }
 
 /** Options of unrolls. */
@@ -75,8 +77,8 @@ export interface UnrollOptions {
 }
 
 /** What a deformation takes: a body, a curve, a point or points. */
-type Input = Part | Shell | Edge | Wire | THREE.Vector3Like | readonly THREE.Vector3Like[]
-type Output = Part | Shell | Edge | Wire | THREE.Vector3 | THREE.Vector3[]
+type Input = Part | Shell | BrepEdge | Wire | THREE.Vector3Like | readonly THREE.Vector3Like[]
+type Output = Part | Shell | BrepEdge | Wire | THREE.Vector3 | THREE.Vector3[]
 
 /**
  * The shape twisted about an axis by `angle` radians over its length (or from `start` to `end`):
@@ -87,7 +89,7 @@ type Output = Part | Shell | Edge | Wire | THREE.Vector3 | THREE.Vector3[]
  * become NURBS within `tolerance`.
  *
  * A Part gives a Part and a Shell (or Sketch) a Shell, in the shape's frame with its transform; an
- * Edge gives an Edge and a Wire a Wire, curves of their own where the shape is; a point (a
+ * BrepEdge gives a BrepEdge and a Wire a Wire, curves of their own where the shape is; a point (a
  * THREE.Vector3 or `{ x, y, z }`) gives the THREE.Vector3 the twist moves it to, an array of points
  * an array. Give points `start` and `end` (the range of the part they belong to): a point has no
  * length along the axis. An edge's or wire's default range is its own; give it the part's `start`
@@ -95,7 +97,7 @@ type Output = Part | Shell | Edge | Wire | THREE.Vector3 | THREE.Vector3[]
  */
 export function twist(shape: Part, angle: number, options?: TwistOptions): Part
 export function twist(shape: Shell, angle: number, options?: TwistOptions): Shell
-export function twist(shape: Edge, angle: number, options?: TwistOptions): Edge
+export function twist(shape: BrepEdge, angle: number, options?: TwistOptions): BrepEdge
 export function twist(shape: Wire, angle: number, options?: TwistOptions): Wire
 export function twist(point: THREE.Vector3Like, angle: number, options?: TwistOptions): THREE.Vector3
 export function twist(points: readonly THREE.Vector3Like[], angle: number, options?: TwistOptions): THREE.Vector3[]
@@ -114,7 +116,7 @@ export function twist(shape: Input, angle: number, options: TwistOptions = {}): 
  */
 export function taper(shape: Part, scale: number, options?: TaperOptions): Part
 export function taper(shape: Shell, scale: number, options?: TaperOptions): Shell
-export function taper(shape: Edge, scale: number, options?: TaperOptions): Edge
+export function taper(shape: BrepEdge, scale: number, options?: TaperOptions): BrepEdge
 export function taper(shape: Wire, scale: number, options?: TaperOptions): Wire
 export function taper(point: THREE.Vector3Like, scale: number, options?: TaperOptions): THREE.Vector3
 export function taper(points: readonly THREE.Vector3Like[], scale: number, options?: TaperOptions): THREE.Vector3[]
@@ -125,7 +127,7 @@ export function taper(shape: Input, scale: number, options: TaperOptions = {}): 
 
 /**
  * The shape bent around an axis by `angle` radians (less than a full turn; positive: toward the y
- * axis of `plane`), like a bar over a mandrel. Material on the inside of the neutral layer is
+ * axis of `frame`), like a bar over a mandrel. Material on the inside of the neutral layer is
  * compressed, on the outside stretched. The bend axis lies `radius` from the neutral layer on the
  * side the part bends toward, and the part must not reach it. `start` and `end` are distances along
  * the frame's x axis from its origin (default: where the part begins and ends along it, so
@@ -134,12 +136,12 @@ export function taper(shape: Input, scale: number, options: TaperOptions = {}): 
  *
  * Plane faces across the bend become exact cylinders about the bend axis and lines across it exact
  * arcs, so a bent plate is sheet metal to `bends` and `unfold`. A Wire comes back with every piece an
- * edge of its own (a straight path bent in its middle: line, arc, line), an Edge as one edge. Shapes,
+ * edge of its own (a straight path bent in its middle: line, arc, line), a BrepEdge as one edge. Shapes,
  * curves and points otherwise as for `twist`.
  */
 export function bend(shape: Part, angle: number, options?: BendOptions): Part
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell
-export function bend(shape: Edge, angle: number, options?: BendOptions): Edge
+export function bend(shape: BrepEdge, angle: number, options?: BendOptions): BrepEdge
 export function bend(shape: Wire, angle: number, options?: BendOptions): Wire
 export function bend(point: THREE.Vector3Like, angle: number, options?: BendOptions): THREE.Vector3
 export function bend(points: readonly THREE.Vector3Like[], angle: number, options?: BendOptions): THREE.Vector3[]
@@ -148,7 +150,9 @@ export function bend(shape: Input, angle: number, options: BendOptions = {}): Ou
     throw new RangeError(`bend: the angle must be less than a full turn (2π radians; a full turn would make the part touch itself), not ${angle}`)
   }
   const a = degrees(angle)
-  const o = { ...options, plane: options.plane == null ? undefined : bendPlane(options.plane) }
+  if ('plane' in options) throw new TypeError("bend: the bend's frame is the option `frame` (a THREE.Matrix4), not `plane`")
+  const { frame, ...rest } = options
+  const o = { ...rest, plane: bendPlane(frame ?? new THREE.Matrix4()) }
   return deformed(shape, 'bend', (k) => sm.bend(k as sm.Part, a, o))
 }
 
@@ -163,7 +167,7 @@ export function bend(shape: Input, angle: number, options: BendOptions = {}): Ou
  */
 export function unroll(shape: Part, options: UnrollOptions): Part
 export function unroll(shape: Shell, options: UnrollOptions): Shell
-export function unroll(shape: Edge, options: UnrollOptions): Edge
+export function unroll(shape: BrepEdge, options: UnrollOptions): BrepEdge
 export function unroll(shape: Wire, options: UnrollOptions): Wire
 export function unroll(point: THREE.Vector3Like, options: UnrollOptions): THREE.Vector3
 export function unroll(points: readonly THREE.Vector3Like[], options: UnrollOptions): THREE.Vector3[]
@@ -182,7 +186,7 @@ function deformed(shape: unknown, what: string, run: (value: unknown) => unknown
     // (a deformed sketch is no longer planar: a Shell)
     return adopt(wrap(call(() => run(value)) as SmBody), shape) as Part | Shell
   }
-  if (shape instanceof Edge || shape instanceof Wire) {
+  if (shape instanceof BrepEdge || shape instanceof Wire) {
     const value = kernelOfShape(shape)
     return placedCurve(call(() => run(value)) as sm.Edge | sm.Wire, shape)
   }
@@ -197,7 +201,7 @@ function deformed(shape: unknown, what: string, run: (value: unknown) => unknown
 function pointOf(p: unknown, what: string): sm.Vector {
   const v = p as { x?: unknown; y?: unknown; z?: unknown } | null
   if (v === null || typeof v !== 'object' || isObject3D(v) || typeof v.x !== 'number' || typeof v.y !== 'number' || typeof v.z !== 'number') {
-    throw new TypeError(`${what}: give a Part, Shell, Edge, Wire or points (THREE.Vector3s), not ${describe(p)}`)
+    throw new TypeError(`${what}: give a Part, Shell, BrepEdge, Wire or points (THREE.Vector3s), not ${describe(p)}`)
   }
   return vec(v as THREE.Vector3Like)
 }
@@ -209,22 +213,23 @@ function checkAngle(angle: unknown, what: string): number {
   return angle
 }
 
-function axisOf(r: THREE.Ray | null | undefined): sm.Axis | undefined {
-  return r == null ? undefined : toAxis(r)
+/** An axis given, or three's y axis through the origin (the kernel's default is its z axis). */
+function axisOf(r: THREE.Ray | null | undefined): sm.Axis {
+  return r == null ? call(() => new sm.Axis([0, 0, 0], [0, 1, 0])) : toAxis(r)
 }
 
 /** The frame of a bend (a THREE.Matrix4: x along the part, y toward the inside of the bend) as the
  * kernel's plane: origin, x direction and normal x × y. */
 function bendPlane(m: THREE.Matrix4): sm.Plane {
   if ((m as { isMatrix4?: boolean } | null)?.isMatrix4 !== true) {
-    throw new TypeError(`bend: plane is a THREE.Matrix4 (its x axis along the part, its y axis toward the inside of the bend), not ${describe(m)}`)
+    throw new TypeError(`bend: frame is a THREE.Matrix4 (its x axis along the part, its y axis toward the inside of the bend), not ${describe(m)}`)
   }
   const x = new THREE.Vector3()
   const y = new THREE.Vector3()
   m.extractBasis(x, y, new THREE.Vector3())
   const normal = new THREE.Vector3().crossVectors(x, y)
   if (!(normal.length() > 1e-12 * Math.max(x.length() * y.length(), 1e-300))) {
-    throw new RangeError('bend: the x and y axes of plane must point in different directions')
+    throw new RangeError('bend: the x and y axes of frame must point in different directions')
   }
   const origin = new THREE.Vector3().setFromMatrixPosition(m)
   return call(() => new sm.Plane(vec(origin), vec(x.normalize()), vec(normal.normalize())))
@@ -235,7 +240,7 @@ function bendPlane(m: THREE.Matrix4): sm.Plane {
  * all of them, or an array of numbers. */
 export type LatticeLayers = number | null | readonly number[]
 
-/** A selection of points of a lattice: `[i, j, k]` along three's x, y (up) and z, each a
+/** A selection of points of a lattice: `[i, j, k]` along x, y (up) and z, each a
  * `LatticeLayers`; the points are every combination (`[1, -1, 1]` is the middle of the top layer of
  * a 3 x 3 x 3 lattice, `[null, -1, null]` the whole top layer). */
 export type LatticeIndex = readonly [LatticeLayers, LatticeLayers, LatticeLayers]
@@ -249,7 +254,7 @@ export type LatticeAxis = 'x' | 'y' | 'z' | THREE.Vector3Like | THREE.Ray
  * lattice to a shape, and space inside the box moves smoothly with them (a Bezier volume; space
  * outside follows the same polynomial). A lattice whose points were not moved changes nothing.
  *
- * Its points are indexed along three's x, y (up) and z: `points[i][j][k]` is the point i along x, j
+ * Its points are indexed along x, y (up) and z: `points[i][j][k]` is the point i along x, j
  * along y and k along z, a THREE.Vector3 in the frame of the shapes the lattice is applied to (the
  * frame of the shape whose box it was made around, as a plane given to a method is). `move`, `scale`
  * and `rotate` take a selection `[i, j, k]` (see `LatticeIndex`, or `layer()`), change the lattice in
@@ -261,16 +266,15 @@ export type LatticeAxis = 'x' | 'y' | 'z' | THREE.Vector3Like | THREE.Ray
  * by 2.
  */
 export class Lattice {
-  /** Where the points are, `points[i][j][k]` along three's x, y (up) and z, in the frame of the
+  /** Where the points are, `points[i][j][k]` along x, y (up) and z, in the frame of the
    * shapes the lattice is applied to. Writable: `lattice.points[1][2][1].y += 5` lifts one point. */
   points: THREE.Vector3[][][]
-  // the kernel's lattice: its box, its counts and its points along the kernel's x, y and z, which are
-  // three's x, -z and y (so three's k runs the other way along the kernel's j)
+  // the kernel's lattice: its box, its counts and its points along x, y and z
   #lattice: sm.Lattice
   #rest: THREE.Vector3[][][]
 
   /**
-   * @param box A THREE.Box3, or a shape (anything with `bbox()`: a Part, Shell, Face, Edge or Wire),
+   * @param box A THREE.Box3, or a shape (anything with `bbox()`: a Part, Shell, BrepFace, BrepEdge or Wire),
    *   whose bounding box (in its frame) is used.
    * @param counts Points per axis, one number for all or three ([x, y, z]), 2 to 12: 2 moves the
    *   corners only (a trilinear map), 3 adds the middles (default). More points concentrate a
@@ -282,7 +286,7 @@ export class Lattice {
     if (b === null) throw new TypeError(`Lattice: give a THREE.Box3, or a shape whose box to take, not ${describe(box)}`)
     const c = typeof counts === 'number' ? [counts, counts, counts] : Array.from(counts)
     if (c.length !== 3) throw new RangeError('Lattice: counts are one number, or three ([x, y, z])')
-    this.#lattice = call(() => new sm.Lattice(boundBox(b), [c[0], c[2], c[1]], options))
+    this.#lattice = call(() => new sm.Lattice(boundBox(b), [c[0], c[1], c[2]], options))
     this.#rest = fromKernel(this.#lattice.rest)
     this.points = copyGrid(this.#rest)
   }
@@ -290,7 +294,7 @@ export class Lattice {
   /** Points per axis: [x, y, z]. */
   get counts(): [number, number, number] {
     const [x, y, z] = this.#lattice.counts
-    return [x, z, y]
+    return [x, y, z]
   }
 
   /** The box the points started on (a new THREE.Box3). */
@@ -383,7 +387,7 @@ export class Lattice {
 
   /**
    * The shape deformed by the lattice, which is in the shape's frame: a Part gives a Part and a Shell
-   * (or Sketch) a Shell, in the shape's frame with its transform; an Edge an Edge and a Wire a Wire
+   * (or Sketch) a Shell, in the shape's frame with its transform; a BrepEdge a BrepEdge and a Wire a Wire
    * (exact B-splines; lines and arcs it only moves stay lines and arcs), curves of their own where
    * the shape is; points their THREE.Vector3s (as `map`). The result is exact, unless a face's image
    * needs a degree above 12: such faces are within `tolerance`. A lattice that folds a part onto
@@ -392,7 +396,7 @@ export class Lattice {
    */
   apply(shape: Part, options?: { tolerance?: number | null }): Part
   apply(shape: Shell, options?: { tolerance?: number | null }): Shell
-  apply(shape: Edge, options?: { tolerance?: number | null }): Edge
+  apply(shape: BrepEdge, options?: { tolerance?: number | null }): BrepEdge
   apply(shape: Wire, options?: { tolerance?: number | null }): Wire
   apply(point: THREE.Vector3Like, options?: { tolerance?: number | null }): THREE.Vector3
   apply(points: readonly THREE.Vector3Like[], options?: { tolerance?: number | null }): THREE.Vector3[]
@@ -463,7 +467,7 @@ export class Lattice {
         for (let k = 0; k < nz; k++) {
           const p = vec(this.points[i][j][k])
           if (!(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))) throw new RangeError('Lattice: the points must be finite')
-          points[i][nz - 1 - k][j] = [p.x, p.y, p.z]
+          points[i][j][k] = [p.x, p.y, p.z]
         }
       }
     }
@@ -471,19 +475,9 @@ export class Lattice {
   }
 }
 
-/** The kernel's grid (along its x, y and z) as three's (along x, y and z): three's y is the kernel's
- * z, and three's z the kernel's -y, so that index runs the other way. */
+/** The kernel's grid of points as THREE.Vector3s. */
 function fromKernel(grid: readonly (readonly (readonly (readonly number[])[])[])[]): THREE.Vector3[][][] {
-  const ny = grid[0].length // (the kernel's y: three's z)
-  const nz = grid[0][0].length // (the kernel's z: three's y)
-  return grid.map((plane) =>
-    Array.from({ length: nz }, (_, j) =>
-      Array.from({ length: ny }, (_, k) => {
-        const p = plane[ny - 1 - k][j]
-        return new THREE.Vector3(p[0], p[2], 0 - p[1])
-      }),
-    ),
-  )
+  return grid.map((plane) => plane.map((row) => row.map((p) => new THREE.Vector3(p[0], p[1], p[2]))))
 }
 
 function copyGrid(grid: readonly (readonly (readonly THREE.Vector3Like[])[])[]): THREE.Vector3[][][] {

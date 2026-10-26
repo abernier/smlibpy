@@ -16,17 +16,24 @@
 import * as THREE from 'three'
 import { axis as toAxis, box3, call, degrees, describe, location, plane as toPlane, sm, vec, vector3 } from './kernel.ts'
 import { MassProperties, type RayHit } from './properties.ts'
-import { Body, Face, Part, ShapeList, curveOf, flatten, frameOf, operand, wrap, type Wire } from './shapes.ts'
+import { Body, BrepFace, Part, ShapeList, curveOf, flatten, frameOf, operand, wrap, type Wire } from './shapes.ts'
 import { track } from './memory.ts'
 
 // --------------------------------------------------------------------------------------- state
 const STATE = Symbol('smlibpy-three.mesh')
 
-/** A kernel mesh, how many TriangleMeshes hold it (clones share it), and the geometry they draw. */
+/** A kernel mesh, how many TriangleMeshes hold it (clones share it), and the geometry they draw; or
+ * the geometry of three's an app assigned, which becomes the kernel's mesh when one is first needed. */
 interface Held {
-  value: sm.Mesh
+  value: sm.Mesh | null
+  source: THREE.BufferGeometry | null
   refs: number
   geometry: THREE.BufferGeometry | null
+}
+
+/** The kernel's mesh of what a state holds (an assigned geometry welded on the first call). */
+function valueOf(held: Held): sm.Mesh {
+  return (held.value ??= call(() => weld(held.source as THREE.BufferGeometry)))
 }
 
 interface State {
@@ -56,7 +63,7 @@ function state(o: object): State {
 }
 
 const DEFAULT_ANGLE = (15 * Math.PI) / 180
-const UP = new THREE.Vector3(0, 1, 0)
+const Z = new THREE.Vector3(0, 0, 1)
 const IDENTITY = new THREE.Matrix4()
 // (corner normals that differ by more than this split a vertex: the edges of a box)
 const COS_SPLIT = Math.cos(Math.PI / 180)
@@ -88,7 +95,7 @@ function meshFor(value: sm.Mesh): TriangleMesh {
 export function kernelMesh(mesh: TriangleMesh): sm.Mesh {
   const s = state(mesh)
   if (s.held === null) throw new TypeError(`this ${mesh.constructor.name} was disposed`)
-  return s.held.value
+  return valueOf(s.held)
 }
 
 /** @internal
@@ -182,15 +189,17 @@ export interface MeshHit extends RayHit {
 
 // --------------------------------------------------------------------------------------- the class
 /**
- * A triangle mesh (smlibpy's Mesh): a THREE.Mesh whose geometry is its triangles, in three's
- * coordinates (Y up) and in the kernel's order, with the kernel's corner normals where it has them
- * (a tessellation's are the exact surfaces' normals) and each triangle's own normal otherwise. Its
+ * A triangle mesh (smlibpy's Mesh): a THREE.Mesh whose geometry is its triangles, in the kernel's
+ * order, with the kernel's corner normals where it has them (a tessellation's are the exact
+ * surfaces' normals) and each triangle's own normal otherwise. Its
  * geometry is made when three first reads it; clones share it and the kernel's mesh, as three's
  * clones share their geometry. It raycasts, renders, exports (STLExporter, GLTFExporter) and
  * measures (Box3.setFromObject) as any mesh; `intersectRay` is the kernel's exact ray cast.
  *
  * Its own material is a MeshStandardMaterial drawn on both sides (meshes of scans and STL files
- * are often open). Assigning a geometry changes what three draws, not the mesh.
+ * are often open). Assigning a geometry makes it the mesh, as a THREE.Mesh's geometry is its shape:
+ * three draws it as it is, and the kernel's operations take it (its corners welded by position) when
+ * one first needs it.
  */
 export class TriangleMesh extends THREE.Mesh {
   declare readonly isTriangleMesh: true
@@ -201,7 +210,7 @@ export class TriangleMesh extends THREE.Mesh {
    * tessellated where they are in the world (`options`: how finely), into one mesh; or nothing:
    * an empty mesh. The mesh is in its own frame, which is the world's until it is moved.
    */
-  constructor(source?: THREE.BufferGeometry | Body | Face | Iterable<Body | Face> | null, material?: THREE.Material | THREE.Material[] | null, options: TessellateOptions = {}) {
+  constructor(source?: THREE.BufferGeometry | Body | BrepFace | Iterable<Body | BrepFace> | null, material?: THREE.Material | THREE.Material[] | null, options: TessellateOptions = {}) {
     super(PLACEHOLDER, PLACEHOLDER_MATERIAL)
     const s = state(this)
     s.ready = true
@@ -209,14 +218,14 @@ export class TriangleMesh extends THREE.Mesh {
     track(this)
     if (material != null) this.material = material
     if (s.internal) {
-      if (incoming !== null) s.held = { value: incoming, refs: 1, geometry: null }
+      if (incoming !== null) s.held = { value: incoming, source: null, refs: 1, geometry: null }
       return
     }
     let value: sm.Mesh
     if (source == null) value = new sm.Mesh([], [])
     else if ((source as THREE.BufferGeometry).isBufferGeometry === true) value = weld(source as THREE.BufferGeometry)
-    else value = tessellated(flatten([source as Body | Face | Iterable<Body | Face>]), null, options.tolerance ?? null, options.angle ?? DEFAULT_ANGLE, options.maxEdge ?? null, 'TriangleMesh')
-    s.held = { value, refs: 1, geometry: null }
+    else value = tessellated(flatten([source as Body | BrepFace | Iterable<Body | BrepFace>]), null, options.tolerance ?? null, options.angle ?? DEFAULT_ANGLE, options.maxEdge ?? null, 'TriangleMesh')
+    s.held = { value, source: null, refs: 1, geometry: null }
   }
 
   // -- measuring --------------------------------------------------------------------------------
@@ -256,17 +265,10 @@ export class TriangleMesh extends THREE.Mesh {
     return vector3(call(() => value.centroid))
   }
 
-  /** One unit normal per triangle (x, y, z each, three's axes), in the kernel's order. */
+  /** One unit normal per triangle (x, y, z each), in the kernel's order. */
   get triangleNormals(): Float32Array {
     const value = kernelMesh(this)
-    const k = call(() => value.triangleNormals)
-    const out = new Float32Array(k.length)
-    for (let i = 0; i < k.length; i += 3) {
-      out[i] = k[i]
-      out[i + 1] = k[i + 2]
-      out[i + 2] = 0 - k[i + 1]
-    }
-    return out
+    return Float32Array.from(call(() => value.triangleNormals))
   }
 
   /**
@@ -327,11 +329,11 @@ export class TriangleMesh extends THREE.Mesh {
   }
 
   /**
-   * Sections across `axis` (a direction in this mesh's frame; default +Y, up), `step` apart: the
+   * Sections across `axis` (a direction in this mesh's frame; default +z, as a part's slices), `step` apart: the
    * mesh cut into layers `step` thick from its lowest point along the axis up, each cut in its
    * middle (the contours of a printer's layers). Layers whose plane cuts nothing are left out.
    */
-  slices(step: number, axis: THREE.Vector3Like = UP): ShapeList<Wire>[] {
+  slices(step: number, axis: THREE.Vector3Like = Z): ShapeList<Wire>[] {
     const value = kernelMesh(this)
     const d = vec(axis)
     return call(() => value.slices(step, d)).map((layer) => placedWires(layer, this))
@@ -487,25 +489,37 @@ function release(s: State): void {
   held.refs--
   if (held.refs <= 0) {
     held.geometry?.dispose()
-    held.value.dispose()
+    held.value?.dispose()
   }
 }
 
-// (an assigned value, else the mesh's own: the geometry made when three first reads it, shared by
-// clones; the material made on first use. Assigning null, or the own one back, restores the own.)
+// (an assigned geometry, which is the mesh from then on, as a THREE.Mesh's geometry is its shape:
+// three draws it as it is, and the kernel takes it, welded, when an operation first needs it; else
+// the mesh's own: the geometry made when three first reads it, shared by clones. Assigning null, or
+// the own one back, draws the own. The material: an assigned one, else the own, made on first use.)
 Object.defineProperty(TriangleMesh.prototype, 'geometry', {
   configurable: true,
   get(this: TriangleMesh): THREE.BufferGeometry {
     const s = state(this)
     if (!s.ready) return PLACEHOLDER
     if (s.geometry !== null) return s.geometry
-    if (s.held !== null) return (s.held.geometry ??= geometryOf(s.held.value))
+    if (s.held !== null) return (s.held.geometry ??= geometryOf(valueOf(s.held)))
     return s.drawn ?? PLACEHOLDER
   },
   set(this: TriangleMesh, value: THREE.BufferGeometry | null | undefined) {
     const s = state(this)
     if (!s.ready) return
-    s.geometry = value == null || value === s.held?.geometry ? null : value
+    if (value == null || value === s.held?.geometry) {
+      s.geometry = null
+      return
+    }
+    if (value === s.geometry) return
+    if ((value as { isBufferGeometry?: boolean }).isBufferGeometry !== true) throw new TypeError(`TriangleMesh: a geometry is a THREE.BufferGeometry, not ${describe(value)}`)
+    release(s)
+    s.held = { value: null, source: value, refs: 1, geometry: null }
+    s.geometry = value
+    s.drawn = null
+    s.disposed = false
   },
 })
 
@@ -524,17 +538,17 @@ Object.defineProperty(TriangleMesh.prototype, 'material', {
 })
 
 /**
- * One TriangleMesh of bodies and faces (Part, Shell, Sketch, Face), each tessellated where it is:
+ * One TriangleMesh of bodies and faces (Part, Shell, Sketch, BrepFace), each tessellated where it is:
  * in the frame of the first one, with its transform, name and material (a face's: its body's), as
  * the result of an operation called on it; the others moved into that frame. `tolerance` is the
  * largest distance of the triangles from the exact faces (null: 0.1 % of each body's diagonal),
  * `angle` the largest angle between neighbouring normals in radians, `maxEdge` the longest edge a
  * triangle may have. (`new TriangleMesh(bodies)` takes them into the world's frame instead.)
  */
-export function tessellate(shapes: Body | Face | Iterable<Body | Face>, tolerance: number | null = null, angle: number = DEFAULT_ANGLE, options: { maxEdge?: number | null } = {}): TriangleMesh {
+export function tessellate(shapes: Body | BrepFace | Iterable<Body | BrepFace>, tolerance: number | null = null, angle: number = DEFAULT_ANGLE, options: { maxEdge?: number | null } = {}): TriangleMesh {
   const list = flatten([shapes])
   const first = list[0]
-  if (!(first instanceof Body || first instanceof Face)) {
+  if (!(first instanceof Body || first instanceof BrepFace)) {
     throw new TypeError(first === undefined ? 'tessellate: give a body or more' : `tessellate: give bodies (Part, Shell, Sketch) or faces, not ${describe(first)}`)
   }
   const frame = frameOf(first)
@@ -549,7 +563,7 @@ export function tessellate(shapes: Body | Face | Iterable<Body | Face>, toleranc
 function tessellated(shapes: readonly unknown[], into: THREE.Object3D | null, tolerance: number | null, angle: number, maxEdge: number | null, what: string): sm.Mesh {
   if (!shapes.length) throw new RangeError(`${what}: give a body or more`)
   const values = shapes.map((x) => {
-    if (!(x instanceof Body || x instanceof Face)) throw new TypeError(`${what}: give a THREE.BufferGeometry, or bodies (Part, Shell, Sketch) and faces, not ${describe(x)}`)
+    if (!(x instanceof Body || x instanceof BrepFace)) throw new TypeError(`${what}: give a THREE.BufferGeometry, or bodies (Part, Shell, Sketch) and faces, not ${describe(x)}`)
     return operand(x, into, what)
   })
   const options = maxEdge === null ? {} : { maxEdge }
@@ -558,8 +572,7 @@ function tessellated(shapes: readonly unknown[], into: THREE.Object3D | null, to
 
 // --------------------------------------------------------------------------------- conversions
 /**
- * A mesh of three's (any BufferGeometry of triangles, indexed or not) as the kernel's, in the
- * kernel's axes: corners welded by position (at 1e-6, as `new Part(geometry)` welds them), so that
+ * A mesh of three's (any BufferGeometry of triangles, indexed or not) as the kernel's: corners welded by position (at 1e-6, as `new Part(geometry)` welds them), so that
  * a geometry split per face (BoxGeometry) closes; triangles of two welded corners left out; its
  * normals, where it has them, kept as corner normals.
  */
@@ -587,7 +600,7 @@ function weld(geometry: THREE.BufferGeometry): sm.Mesh {
       if (id === undefined) {
         id = vertices.length / 3
         ids.set(key, id)
-        vertices.push(p.x, 0 - p.z, p.y)
+        vertices.push(p.x, p.y, p.z)
       }
       at[c] = id
     }
@@ -596,7 +609,7 @@ function weld(geometry: THREE.BufferGeometry): sm.Mesh {
     if (normal !== null) {
       for (const k of corners) {
         n.fromBufferAttribute(normal, k).normalize()
-        normals.push(n.x, 0 - n.z, n.y)
+        normals.push(n.x, n.y, n.z)
       }
     }
   }
@@ -605,7 +618,7 @@ function weld(geometry: THREE.BufferGeometry): sm.Mesh {
 
 /**
  * The kernel's mesh as three's geometry: its triangles in its order (so three's `faceIndex` is the
- * kernel's triangle), in three's axes, with its corner normals (or each triangle's own); a point
+ * kernel's triangle), with its corner normals (or each triangle's own); a point
  * is one vertex where the normals of its corners agree, split where they differ.
  */
 function geometryOf(m: sm.Mesh): THREE.BufferGeometry {
@@ -625,17 +638,16 @@ function geometryOf(m: sm.Mesh): THREE.BufferGeometry {
     // (corner normals: three per corner; a triangle's own: three per triangle)
     const n = corner ?? flat!
     const o = corner !== null ? i * 3 : i - (i % 3)
-    // kernel (x, y, z) to three (x, z, -y)
     const nx = n[o]
-    const ny = n[o + 2]
-    const nz = 0 - n[o + 1]
+    const ny = n[o + 1]
+    const nz = n[o + 2]
     let at = first[p]
     while (at >= 0 && normals[at * 3] * nx + normals[at * 3 + 1] * ny + normals[at * 3 + 2] * nz < COS_SPLIT) at = next[at]
     if (at < 0) {
       at = count++
       positions[at * 3] = v[p * 3]
-      positions[at * 3 + 1] = v[p * 3 + 2]
-      positions[at * 3 + 2] = 0 - v[p * 3 + 1]
+      positions[at * 3 + 1] = v[p * 3 + 1]
+      positions[at * 3 + 2] = v[p * 3 + 2]
       normals[at * 3] = nx
       normals[at * 3 + 1] = ny
       normals[at * 3 + 2] = nz

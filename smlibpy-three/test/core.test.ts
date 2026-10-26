@@ -14,22 +14,23 @@ import {
   CounterSinkHole,
   Cylinder,
   DraftAnalysis,
-  Edge,
-  Face,
+  BrepEdge,
+  BrepFace,
   Hole,
-  Line,
+  Segment,
   Locations,
   MassProperties,
   Part,
+  Polygon,
   Polyline,
   Pyramid,
   Rectangle,
   SectionProperties,
   Shell,
   Sketch,
-  Sphere,
+  Ball,
   Torus,
-  Vertex,
+  BrepVertex,
   Wire,
   X,
   Y as UP,
@@ -50,7 +51,7 @@ import {
 } from '../src/index.ts'
 import { box, close, closeBox, closeVector, noKernel, Y } from './_util.ts'
 
-const PLATE = () => new Box(40, 30, 10) // 40 along x, 30 along z, 10 high
+const PLATE = () => new Box(40, 10, 30) // 40 along x, 10 high (y), 30 along z
 
 test('every body: equals, info, check, compact', async () => {
   const part = PLATE()
@@ -91,24 +92,33 @@ test('closest points and exact ray hits, in the receiver frame', async () => {
 })
 
 test('silhouette, projection and outline are curves where the body is', async () => {
-  const cylinder = new Cylinder(5, 20)
+  const cylinder = new Cylinder(5, 5, 20)
   cylinder.position.set(10, 0, 0)
   const sil = cylinder.silhouette(new THREE.Vector3(1, 0, 0))
   assert.ok(sil.length >= 2)
-  for (const e of sil) assert.ok(e instanceof Edge && e.owner === null)
+  for (const e of sil) assert.ok(e instanceof BrepEdge && e.owner === null)
   closeVector(sil[0].position, cylinder.position, 0)
-  const top = PLATE().outline()
-  // the box's top view: its outline on the ground plane (y = 0)
+  // (by default seen from +z, as three's default camera sees it: the sides' contour at x = -5 and 5)
+  const contour = cylinder.silhouette()
+  const sides = [...contour].filter((e) => e.bbox().getSize(new THREE.Vector3()).x < 1e-9) // (the straight ones, along y)
+  assert.deepEqual(sides.map((e) => Math.round(e.center().x)).sort((p, q) => p - q), [-5, 5])
+  for (const e of sides) close(e.center().z, 0, 1e-9)
+  const front = PLATE().outline()
+  // the box's front view: its outline on the XY plane (z = 0)
   const b = new THREE.Box3()
-  for (const e of top) b.union(e.bbox())
-  closeBox(b, box([-20, 0, -15], [20, 0, 15]), 1e-6)
-  const [visible, hidden] = PLATE().outline(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), { hidden: true })
+  for (const e of front) b.union(e.bbox())
+  closeBox(b, box([-20, -5, 0], [20, 5, 0]), 1e-6)
+  // the top view: onto the XZ plane, seen from +y
+  const [visible, hidden] = PLATE().outline(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), { hidden: true })
   assert.ok(visible.length > 0 && Array.isArray(hidden))
-  const sphere = new Sphere(10)
-  const onSphere = sphere.project(new Line(new THREE.Vector3(-5, 20, 0), new THREE.Vector3(5, 20, 0)), new THREE.Vector3(0, -1, 0), { nearest: true })
+  const t = new THREE.Box3()
+  for (const e of visible) t.union(e.bbox())
+  closeBox(t, box([-20, 0, -15], [20, 0, 15]), 1e-6)
+  const sphere = new Ball(10)
+  const onSphere = sphere.project(new Segment(new THREE.Vector3(-5, 20, 0), new THREE.Vector3(5, 20, 0)), new THREE.Vector3(0, -1, 0), { nearest: true })
   assert.ok(onSphere.length >= 1)
   for (const p of [onSphere[0].start, onSphere[0].end]) close(p.length(), 10, 1e-6)
-  await noKernel([sil, top, visible, onSphere])
+  await noKernel([sil, contour, front, visible, onSphere])
 })
 
 test('parts: shells, voids, cells, merge, classify', async () => {
@@ -123,7 +133,7 @@ test('parts: shells, voids, cells, merge, classify', async () => {
   assert.equal(merged.faces().shared().length, 1)
   const [where, on] = merged.classify(new THREE.Vector3(0, 5, 0))
   assert.equal(where, 'on')
-  assert.ok(on instanceof Face || on instanceof Edge)
+  assert.ok(on instanceof BrepFace || on instanceof BrepEdge)
   assert.equal(merged.classify(new THREE.Vector3(5, 0, 0))[0], 'inside')
   assert.equal(merged.classify(new THREE.Vector3(50, 0, 0))[0], 'outside')
   const cell = merged.cellAt(new THREE.Vector3(5, 0, 0))
@@ -136,11 +146,11 @@ test('parts: shells, voids, cells, merge, classify', async () => {
 
 test('parts: sheet intersections, fillet previews, shells with walls, offsets, imprints, slices', async () => {
   const part = PLATE()
-  const sheet = new Rectangle(100, 100).extrude(1).faces().top().one().toShell()
-  sheet.position.y = -0.5 // (the sheet's top face at y = 0.5)
+  const sheet = new Rectangle(100, 100).extrude(1).faces().front().one().toShell() // (a square at z = 1)
+  sheet.position.z = -0.5 // (at z = 0.5: across the plate, 40 wide and 10 high there)
   const inside = part.intersect(sheet)
   assert.ok(inside instanceof Shell)
-  close(inside.area, 40 * 30, 1e-6)
+  close(inside.area, 40 * 10, 1e-6)
   const previews = part.filletPreview(part.edges().parallelTo(Y), 2)
   assert.equal(previews.length, 4)
   for (const p of previews) assert.ok(p instanceof Shell)
@@ -149,15 +159,16 @@ test('parts: sheet intersections, fillet previews, shells with walls, offsets, i
   const cup = part.shell(1, top, { walls })
   close(cup.volume, 12000 - 38 * (30 - 1 - 3) * 9, 1e-6)
   close(part.offset(1).volume, 42 * 32 * 12 - (12 * 4 * 10 * (1 - Math.PI / 4) * 0) - 0, 4 * (12 + 32 + 42) + 1) // (rounded edges and corners: within their volume)
-  const disk = new Circle(5)
-  disk.position.y = 20 // (above the plate: its outline goes down onto the top face)
-  const imprinted = part.imprint(disk, new THREE.Vector3(0, -1, 0))
-  assert.equal(imprinted.faces().length, part.faces().length + 1) // (the disk: the top face around it keeps its place)
-  const slices = new Sphere(10).slices(5)
+  const disk = new Circle(3)
+  disk.position.z = 20 // (in front of the plate: its outline goes back onto the front face)
+  const imprinted = part.imprint(disk, new THREE.Vector3(0, 0, -1))
+  assert.equal(imprinted.faces().length, part.faces().length + 1) // (the disk: the front face around it keeps its place)
+  // (along +z by default, so that they lie as sketches do, parallel to XY)
+  const slices = new Ball(10).slices(5)
   assert.ok(slices.length >= 3)
   for (const s of slices) {
     assert.ok(s instanceof Sketch)
-    closeVector({ x: 0, y: Math.abs(s.plane.normal.y), z: 0 }, Y, 1e-9)
+    closeVector({ x: 0, y: 0, z: Math.abs(s.plane.normal.z) }, Z, 1e-9)
   }
   await noKernel([inside, previews, cup, imprinted, slices])
 })
@@ -166,7 +177,7 @@ test('parts: removing fillets and faces gives the part back', () => {
   const part = PLATE()
   const rounded = part.fillet(part.edges().parallelTo(Y), 4)
   close(rounded.removeFillets().volume, 12000, 1e-6)
-  const drilled = part.cut(new Cylinder(3, 20))
+  const drilled = part.cut(new Cylinder(3, 3, 20))
   const hole = drilled.faces().cylinders()
   close(drilled.removeFaces(hole).volume, 12000, 1e-6)
 })
@@ -201,9 +212,13 @@ test('parts: drafts, parting lines and moved faces', async () => {
 
 test('parts placed, mirrored, made NURBS, healed, with colored and named faces', () => {
   const part = PLATE()
-  const target = new Box(100, 100, 2, { align: { y: 'max' } }) // its top face at y = 0
-  const placed = new Cylinder(2, 10, { align: { y: 'min' } }).on(target.faces().top().one())
+  const target = new Box(100, 2, 100, { align: { y: 'max' } }) // its top face at y = 0
+  // (a peg drawn as a sketch on XY and extruded along +z: on() turns its +z to the face's normal, as
+  // a sketch on the face lies, so it stands on the face)
+  const peg = new Circle(2).extrude(10)
+  const placed = peg.on(target.faces().top().one())
   close(placed.bbox().min.y, 0, 1e-9)
+  close(placed.bbox().max.y, 10, 1e-9)
   closeBox(part.mirror(new THREE.Plane(new THREE.Vector3(1, 0, 0), -30)).bbox(), box([40, -5, -15], [80, 5, 15]))
   assert.ok(part.toNurbs().faces().every((f) => f.geomType === 'bspline'))
   close(part.heal().volume, 12000, 1e-6)
@@ -215,25 +230,28 @@ test('parts placed, mirrored, made NURBS, healed, with colored and named faces',
 })
 
 test('sheets: offset, flip, trim, extend, merge faces, Booleans with parts', async () => {
-  const sheet = new Rectangle(20, 20).extrude(1).faces().top().one().toShell() // a square at y = 1
+  const sheet = new Rectangle(20, 20).extrude(1).faces().front().one().toShell() // a square at z = 1
   assert.ok(sheet instanceof Shell)
   // (along the face's surface normal, whichever way that points)
   const n = sheet.faces()[0].normalAt()
-  close(sheet.offset(2).bbox().min.y, 1 + 2 * n.y, 1e-9)
+  close(sheet.offset(2).bbox().min.z, 1 + 2 * n.z, 1e-9)
   closeVector(sheet.flipped().faces()[0].normalAt(), n.clone().negate(), 1e-9)
   const grown = sheet.extend(5)
   close(grown.area, 30 * 30, 1e-6)
-  const cut = new Line(new THREE.Vector3(0, 1, -20), new THREE.Vector3(0, 1, 20))
-  const half = sheet.trim([cut], new THREE.Vector3(5, 1, 0))
+  const cut = new Segment(new THREE.Vector3(0, -20, 1), new THREE.Vector3(0, 20, 1))
+  const half = sheet.trim([cut], new THREE.Vector3(5, 0, 1))
   close(half.area, 200, 1e-6)
   const both = sheet.trim(cut, 'split')
   assert.equal(both.faces().length, 2)
   const merged = both.mergeFaces(both.faces()[0], both.faces()[1])
   assert.equal(merged.faces().length, 1)
-  const pierced = sheet.cut(new Cylinder(3, 10))
+  // (a pin through the sheet: a cylinder, along y, turned to z)
+  const pin = new Cylinder(3, 3, 10)
+  pin.rotation.x = Math.PI / 2
+  const pierced = sheet.cut(pin)
   close(pierced.area, 400 - Math.PI * 9, 1e-6)
-  close(sheet.intersect(new Cylinder(3, 10)).area, Math.PI * 9, 1e-6)
-  const other = new Rectangle(20, 20).extrude(1).faces().top().one().toShell()
+  close(sheet.intersect(pin).area, Math.PI * 9, 1e-6)
+  const other = new Rectangle(20, 20).extrude(1).faces().front().one().toShell()
   other.position.x = 20
   assert.ok(sheet.fuse(other).area > 799)
   await noKernel([grown, half, merged, pierced])
@@ -243,20 +261,23 @@ test('sketches: xor, flip, chamfer, section properties, swing, sweep options', a
   const a = new Rectangle(20, 10)
   const b = new Rectangle(10, 20)
   close(a.xor(b).area, 200 + 200 - 2 * 100, 1e-6)
-  closeVector(a.flipped().plane.normal, { x: 0, y: -1, z: 0 }, 1e-12)
+  // (a sketch faces +z, as ShapeGeometry does; flipped, -z)
+  closeVector(a.plane.normal, Z, 1e-12)
+  closeVector(a.flipped().plane.normal, { x: 0, y: 0, z: -1 }, 1e-12)
   close(a.chamfer(2).area, 200 - 4 * 2, 1e-6)
   const props = a.sectionProperties()
   assert.ok(props instanceof SectionProperties)
   close(props.area, 200)
   closeVector(props.centroid, { x: 0, y: 0, z: 0 }, 1e-9)
-  // ixx about the in-plane x axis: b h³ / 12 with b = 20 along x, h = 10 across
+  // ixx about the in-plane x axis: b h³ / 12 with b = 20 along x, h = 10 along y
   close(props.ixx, (20 * 10 ** 3) / 12, 1e-6)
   close(props.iyy, (10 * 20 ** 3) / 12, 1e-6)
   closeVector(props.xAxis, X, 1e-12)
-  const standing = new THREE.Matrix4().makeRotationX(Math.PI / 2) // (the profile upright, in the XY plane)
+  const standing = new THREE.Matrix4().makeRotationX(Math.PI / 2) // (the profile upright, in the XZ plane: its y turned to +z)
   const ring = new Rectangle(2, 2, { align: { x: 'min' } }).on(standing).swing(new Circle(10))
   assert.ok(ring instanceof Part && ring.volume > 0)
-  const path = new Line(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 50, 0))
+  // (a straight path along the sketch's normal, +z)
+  const path = new Segment(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 50))
   const twisted = new Rectangle(10, 2).sweep(path, { twist: Math.PI / 2 })
   close(twisted.volume, 10 * 2 * 50, 1)
   const horn = new Circle(2).sweep(path, { scale: [1, 2] })
@@ -265,7 +286,7 @@ test('sketches: xor, flip, chamfer, section properties, swing, sweep options', a
 })
 
 test('faces: colors, curvature, parameters, NURBS data, exact hits, curves on them', async () => {
-  const ball = new Sphere(10)
+  const ball = new Ball(10)
   const s = ball.faces().first
   const k = s.curvatureAt(new THREE.Vector3(0, 10, 0))
   close(Math.abs(k.k1), 0.1, 1e-6)
@@ -282,7 +303,7 @@ test('faces: colors, curvature, parameters, NURBS data, exact hits, curves on th
   const hits = top.intersectRay(new THREE.Ray(new THREE.Vector3(0, 9, 0), new THREE.Vector3(0, -1, 0)))
   assert.equal(hits.length, 1)
   close(hits[0].distance, 4, 1e-9)
-  const can = new Cylinder(10, 40)
+  const can = new Cylinder(10, 10, 40)
   const side = can.faces().cylinders().one()
   const label = side.wrap(new Rectangle(10, 4), new THREE.Vector3(10, 0, 0))
   assert.ok(label.length >= 4)
@@ -290,15 +311,15 @@ test('faces: colors, curvature, parameters, NURBS data, exact hits, curves on th
   const iso = side.iso({ u: 0.5 })
   assert.equal(iso.length, 1)
   close(iso[0].length, 40, 1e-6)
-  const projected = top.project(new Line(new THREE.Vector3(-5, 20, 0), new THREE.Vector3(5, 20, 0)))
+  const projected = top.project(new Segment(new THREE.Vector3(-5, 20, 0), new THREE.Vector3(5, 20, 0)))
   close(projected[0].start.y, 5, 1e-9)
-  const halves = top.split(new Line(new THREE.Vector3(0, 5, -20), new THREE.Vector3(0, 5, 20)))
+  const halves = top.split(new Segment(new THREE.Vector3(0, 5, -20), new THREE.Vector3(0, 5, 20)))
   assert.equal(halves.length, 2)
   assert.equal(halves[0].owner, halves[1].owner)
   close(halves[0].area + halves[1].area, 1200, 1e-6)
   close(top.toSketch().area, 1200, 1e-6)
   close(top.offset(2).bbox().min.y, 7, 1e-9)
-  close(new Cone(5, 0, 10).faces().ofType('cone').one().coneAngle, Math.atan(5 / 10), 1e-9)
+  close(new Cone(5, 10).faces().ofType('cone').one().coneAngle, Math.atan(5 / 10), 1e-9)
   close(new Torus(10, 2).faces().first.majorRadius, 10, 1e-9)
   assert.ok(top.interiorPoint() instanceof THREE.Vector3)
   assert.deepEqual(top.cells, [0])
@@ -314,12 +335,12 @@ test('edges: angles, trims, intersections, offsets, NURBS round trips, tangent c
   assert.ok(edge.isConvex())
   assert.ok(!edge.isSeam)
   closeVector({ x: 0, y: Math.abs(edge.direction.y), z: 0 }, Y, 1e-12)
-  const line = new Line(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0))
+  const line = new Segment(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0))
   close(line.trim(0.2, 0.7).length, 5, 1e-9)
   const [l1, l2] = line.split(0.3)
   close(l1.length + l2.length, 10, 1e-9)
   close(line.extend(5).length, 15, 1e-9)
-  const crossing = new Line(new THREE.Vector3(5, 0, -5), new THREE.Vector3(5, 0, 5))
+  const crossing = new Segment(new THREE.Vector3(5, 0, -5), new THREE.Vector3(5, 0, 5))
   const xs = line.intersections(crossing)
   assert.equal(xs.length, 1)
   closeVector(xs[0], { x: 5, y: 0, z: 0 }, 1e-9)
@@ -329,9 +350,9 @@ test('edges: angles, trims, intersections, offsets, NURBS round trips, tangent c
   assert.ok(bent.distanceTo(new THREE.Vector3(5, 3, 0)) < 1e-6)
   const matched = line.match({ end: new THREE.Vector3(10, 4, 0) })
   closeVector(matched.end, { x: 10, y: 4, z: 0 }, 1e-9)
-  const spline = new Line(new THREE.Vector3(), new THREE.Vector3(10, 5, 2)).match({ endTangent: new THREE.Vector3(0, 1, 0) })
+  const spline = new Segment(new THREE.Vector3(), new THREE.Vector3(10, 5, 2)).match({ endTangent: new THREE.Vector3(0, 1, 0) })
   const data = spline.nurbs()
-  const back = Edge.fromNurbs(data)
+  const back = BrepEdge.fromNurbs(data)
   for (const t of [0, 0.3, 0.7, 1]) closeVector(back.pointAt(t), spline.pointAt(t), 1e-9)
   closeVector(spline.mirror(new THREE.Plane(new THREE.Vector3(1, 0, 0), 0)).end, { x: -10, y: 5, z: 2 }, 1e-9)
   const rounded = part.fillet(part.edges().parallelTo(Y), 3)
@@ -340,7 +361,7 @@ test('edges: angles, trims, intersections, offsets, NURBS round trips, tangent c
   for (const e of chain) assert.equal(e.owner, rounded)
   const blend = rounded.edges().filter((e) => e.convexity === 'smooth').first
   assert.equal(blend.continuity().level, 'G1')
-  close(new Line(new THREE.Vector3(), new THREE.Vector3(1, 0, 0)).curvatureAt(0.5), 0, 1e-12)
+  close(new Segment(new THREE.Vector3(), new THREE.Vector3(1, 0, 0)).curvatureAt(0.5), 0, 1e-12)
   await noKernel([xs, data, back, chain])
 })
 
@@ -356,9 +377,9 @@ test('wires and vertices', async () => {
   close(a.length + b.length, 20, 1e-9)
   assert.equal(w.vertices().length, 3)
   closeVector({ x: 0, y: Math.abs(w.plane().normal.y), z: 0 }, Y, 1e-12)
-  assert.ok(w.toEdge() instanceof Edge)
+  assert.ok(w.toEdge() instanceof BrepEdge)
   assert.ok(w.offset(1) instanceof Wire)
-  const v = new Vertex(new THREE.Vector3(1, 2, 3))
+  const v = new BrepVertex(new THREE.Vector3(1, 2, 3))
   closeVector(v.point, { x: 1, y: 2, z: 3 }, 1e-12)
   close(v.y, 2)
   const corner = PLATE().vertices().first
@@ -400,19 +421,20 @@ test('selections: groups, maxima, hits, points, history, sets, the faces of edge
 })
 
 test('free functions: profiles of every kind, fillets of edges and corners, offsets, mirrors', async () => {
-  const strip = extrude(new Line(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0)), 5)
+  const strip = extrude(new Segment(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0)), 5)
   assert.ok(strip instanceof Shell)
   close(strip.area, 50, 1e-9)
-  closeBox(strip.bbox(), box([0, 0, 0], [10, 5, 0]))
-  const cone = revolve(new Line(new THREE.Vector3(0, 10, 0), new THREE.Vector3(5, 0, 0)), new THREE.Ray(new THREE.Vector3(), Y))
+  // (along +z, as sketches extrude)
+  closeBox(strip.bbox(), box([0, 0, 0], [10, 0, 5]))
+  const cone = revolve(new Segment(new THREE.Vector3(0, 10, 0), new THREE.Vector3(5, 0, 0)), new THREE.Ray(new THREE.Vector3(), Y))
   assert.ok(cone instanceof Shell)
-  const tube = sweep(new Circle(1), new Line(new THREE.Vector3(), new THREE.Vector3(0, 0, -30)))
+  const tube = sweep(new Circle(1), new Segment(new THREE.Vector3(), new THREE.Vector3(0, 0, -30)))
   close(tube.volume, Math.PI * 30, 1e-6)
   const lower = new Rectangle(20, 20)
   const upper = new Circle(5)
-  upper.position.y = 20
+  upper.position.z = 20
   const lofted = loft([lower, upper])
-  closeBox(lofted.bbox(), box([-10, 0, -10], [10, 20, 10]))
+  closeBox(lofted.bbox(), box([-10, -10, 0], [10, 10, 20]))
   const r = swing(new Rectangle(2, 2, { align: { x: 'min' } }).on(new THREE.Matrix4().makeRotationX(Math.PI / 2)), new Circle(10))
   assert.ok(r.volume > 0)
   const part = PLATE()
@@ -429,25 +451,59 @@ test('free functions: profiles of every kind, fillets of edges and corners, offs
 })
 
 test('holes drilled into a face with Locations, and the other primitives', () => {
-  const block = new Box(40, 40, 20)
+  const block = new Box(40, 20, 40)
   const side = block.faces().right().one() // x = 20, its normal +x
   const holes = new Hole(2, 10).at(Locations(side))
   const drilled = block.cut(holes)
   close(drilled.volume, 40 * 40 * 20 - Math.PI * 4 * 10, 1e-6)
   const hole = drilled.faces().cylinders().one()
   closeVector({ x: Math.abs(hole.axis.direction.x), y: 0, z: 0 }, X, 1e-9)
-  closeBox(new Hole(2, 10).bbox(), box([-2, -10, -2], [2, 0, 2]))
-  close(new Pyramid(10, 10, 9).volume, 300, 1e-6)
-  close(new AnnularSector(5, 10, 4, Math.PI / 2).volume, (Math.PI * (100 - 25) * 4) / 4, 1e-6)
+  // (a hole drills from the origin along -z, into a face its frame lies on)
+  closeBox(new Hole(2, 10).bbox(), box([-2, -2, -10], [2, 2, 0]))
+  closeBox(new CounterBoreHole(2, 4, 3, 10).bbox(), box([-4, -4, -10], [4, 4, 0]))
+  closeBox(new CounterSinkHole(2, 4, 10).bbox(), box([-4, -4, -10], [4, 4, 0]))
+  close(new Pyramid(10, 9, 10).volume, 300, 1e-6)
+  close(new AnnularSector(5, 10, 4, { thetaLength: Math.PI / 2 }).volume, (Math.PI * (100 - 25) * 4) / 4, 1e-6)
   close(new CounterBoreHole(2, 4, 3, 10).volume, Math.PI * 4 * 10 + Math.PI * (16 - 4) * 3, 1e-6)
   assert.ok(new CounterSinkHole(2, 4, 10).volume > Math.PI * 4 * 10)
-  const cap = new Sphere(10, { arcSize1: 0, align: { y: 'min' } }) // (the upper half, on the ground)
+  const cap = new Ball(10, { thetaLength: Math.PI / 2, align: { y: 'min' } }) // (the upper half, standing on the XZ plane)
   closeBox(cap.bbox(), box([-10, 0, -10], [10, 10, 10]), 1e-6)
-  close(new Torus(10, 2, { majorAngle: Math.PI }).volume, (2 * Math.PI ** 2 * 10 * 4) / 2, 1e-6)
+  close(cap.volume, ((4 / 3) * Math.PI * 1000) / 2, 1e-6)
+  close(new Torus(10, 2, { arc: Math.PI }).volume, (2 * Math.PI ** 2 * 10 * 4) / 2, 1e-6)
   const mp = drilled.massProperties()
   assert.ok(mp instanceof MassProperties)
   assert.equal(mp.principalAxes.length, 3)
   close(mp.momentAbout(new THREE.Ray(mp.center, Y)), mp.inertia.elements[4], 1e-6)
+})
+
+test("three's segment counts are not taken: a number where the options go is a TypeError", () => {
+  // (the solids are exact: `tolerance` and `angle` set how finely they are drawn)
+  const options = { name: 'TypeError', message: /is the options object, not a number/ }
+  assert.throws(() => new Box(1, 1, 1, 2 as never), { name: 'TypeError', message: /Box: argument 4 .*widthSegments/ })
+  assert.throws(() => new Cylinder(1, 1, 2, 32 as never), { name: 'TypeError', message: /Cylinder: argument 4 .*radialSegments/ })
+  assert.throws(() => new Cone(1, 2, 32 as never), options)
+  assert.throws(() => new Ball(1, 32 as never), options)
+  assert.throws(() => new Torus(1, 0.4, 12 as never), options)
+  assert.throws(() => new AnnularSector(0.5, 1, 1, 32 as never), options)
+  assert.throws(() => new Pyramid(1, 1, 1, 4 as never), options)
+  // (an options object, also an empty one, is taken)
+  assert.ok(new Box(1, 1, 1, {}).volume > 0)
+  close(new Cylinder(1, 1, 2, { thetaLength: Math.PI }).volume, Math.PI, 1e-9)
+  // smlibpy's arguments where three's go: a TypeError that says three's order
+  assert.throws(() => new Cylinder(5, 40, { align: { y: 'min' } } as never), { name: 'TypeError', message: /Cylinder: its dimensions are numbers, as THREE\.CylinderGeometry\(radiusTop, radiusBottom, height\) takes them, not an Object/ })
+})
+
+test('align moves a solid by its box along the axes it names, and leaves the others', () => {
+  // (a quarter of a cylinder, from +z towards +x as three's: its axis stays on y)
+  const quarter = new Cylinder(2, 2, 10, { thetaLength: Math.PI / 2, align: { y: 'min' } })
+  closeBox(quarter.bbox(), box([0, 0, 0], [2, 10, 2]), 1e-9)
+  closeBox(new Cylinder(2, 2, 10, { thetaLength: Math.PI / 2 }).bbox(), box([0, -5, 0], [2, 5, 2]), 1e-9)
+  // one value for all axes, and each axis its own
+  closeBox(new Box(2, 4, 6, { align: 'min' }).bbox(), box([0, 0, 0], [2, 4, 6]), 1e-9)
+  closeBox(new Box(2, 4, 6, { align: { x: 'max', z: 'min' } }).bbox(), box([-2, -2, 0], [0, 2, 6]), 1e-9)
+  // a sketch's too: a polygon's points stay where they are along the axis not named
+  const triangle = new Polygon([new THREE.Vector2(1, 1), new THREE.Vector2(5, 1), new THREE.Vector2(1, 4)], { align: { x: 'min' } })
+  closeBox(triangle.bbox(), box([0, 1, 0], [4, 4, 0]), 1e-9)
 })
 
 test('constants', () => {

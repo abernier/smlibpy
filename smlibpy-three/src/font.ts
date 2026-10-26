@@ -39,14 +39,15 @@ export const DEFAULT_FONT: Uint8Array = sm.DEFAULT_FONT
 
 // (the kernel's font for a font made by loadFont, which takes it from the kernel's cache)
 let incoming: sm.Font | null = null
-const fonts = new WeakMap<sm.Font, Font>()
-let kernelOf: (font: Font) => sm.Font
+const fonts = new WeakMap<sm.Font, OpenTypeFont>()
+let kernelOf: (font: OpenTypeFont) => sm.Font
 
 /**
  * One font: its characters, metrics, kerning and glyph outlines (font units, y up). Read once with
- * `loadFont(bytes)`, or made with `new Font(bytes)`; give it to Text as `font`.
+ * `loadFont(bytes)`, or made with `new OpenTypeFont(bytes)`; give it to Text as `font`. (smlibpy's
+ * Font; three's FontLoader gives a Font of its own, of typeface JSON.)
  */
-export class Font {
+export class OpenTypeFont {
   readonly #font: sm.Font
   /** The font file's path, for a font read from a file (Node); null for one read from bytes. */
   readonly path: string | null
@@ -66,7 +67,7 @@ export class Font {
   /** Reads the font of a file's bytes (or, in Node, of a file's path; default the built-in font's
    * bytes); a FontError if they are no font it can use. */
   constructor(source: FontSource = DEFAULT_FONT) {
-    const font = incoming ?? call(() => new sm.Font(kernelSource(source, 'Font')))
+    const font = incoming ?? call(() => new sm.Font(kernelSource(source, 'OpenTypeFont')))
     this.#font = font
     this.path = font.path
     this.name = font.name
@@ -113,21 +114,21 @@ export class Font {
   }
 
   toString(): string {
-    return `Font(${JSON.stringify(this.name)}, ${this.numGlyphs} glyphs, ${this.unitsPerEm} units per em)`
+    return `OpenTypeFont(${JSON.stringify(this.name)}, ${this.numGlyphs} glyphs, ${this.unitsPerEm} units per em)`
   }
 }
 
 /**
  * The font of a file's bytes (or, in Node, of a file's path), read once and kept: the same bytes
- * give the same Font. Without a source, the built-in default (`DEFAULT_FONT`).
+ * give the same OpenTypeFont. Without a source, the built-in default (`DEFAULT_FONT`).
  */
-export function loadFont(source: FontSource | null = null): Font {
+export function loadFont(source: FontSource | null = null): OpenTypeFont {
   const k = call(() => sm.loadFont(source === null ? null : kernelSource(source, 'loadFont')))
   let font = fonts.get(k)
   if (font === undefined) {
     incoming = k
     try {
-      font = new Font()
+      font = new OpenTypeFont()
     } finally {
       incoming = null
     }
@@ -137,8 +138,8 @@ export function loadFont(source: FontSource | null = null): Font {
 }
 
 /** @internal
- * The kernel's font of a Font. */
-export function kernelFont(font: Font): sm.Font {
+ * The kernel's font of an OpenTypeFont. */
+export function kernelFont(font: OpenTypeFont): sm.Font {
   return kernelOf(font)
 }
 

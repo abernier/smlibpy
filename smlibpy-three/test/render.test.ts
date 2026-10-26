@@ -1,11 +1,11 @@
 // Pictures without a GPU: render draws objects where the scene shows them, in their materials'
-// colors, and takes its options in three's terms (Y up: 'top' looks down -Y; radians; THREE.Plane
-// sections that keep what three's clipping keeps; three's colors).
+// colors, and takes its options in three's terms (Y up: 'top' looks down -Y, 'front' from +Z, 'right'
+// from +X; radians; THREE.Plane sections that keep what three's clipping keeps; three's colors).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
-import { Box, Cylinder, Line, Part, Rectangle } from '../src/index.ts'
+import { Box, Cylinder, Segment, Part, Rectangle } from '../src/index.ts'
 import { TriangleMesh } from '../src/mesh.ts'
 import { ImageDiff, Picture, VIEWS, diffImages, render } from '../src/render.ts'
 import { close, closeVector } from './_util.ts'
@@ -55,7 +55,7 @@ const red = (r: number, g: number, b: number) => r > g + 60 && r > b + 60
 const blue = (r: number, g: number, b: number) => b > r + 60 && b > g + 30
 
 test('render draws a part to a PNG, where the scene shows it', () => {
-  const part = new Box(60, 20, 10) // 60 along x, 20 along z, 10 high
+  const part = new Box(60, 20, 10) // (as THREE.BoxGeometry: 60 wide along x, 20 high along y, 10 deep along z)
   const picture = render(part, { size: [320, 200] })
   assert.ok(picture instanceof Picture)
   assert.deepEqual(pngSize(picture.data), [320, 200])
@@ -89,14 +89,14 @@ test('render draws a part to a PNG, where the scene shows it', () => {
 })
 
 test("'top' looks down -Y, 'front' from +Z, 'right' from +X: the footprints show it", () => {
-  const part = new Box(60, 20, 10) // 60 along x, 20 along z, 10 high
+  const part = new Box(60, 20, 10) // (60 wide along x, 20 high along y, 10 deep along z)
   const aspect = (view: 'top' | 'front' | 'right') => {
     const [x0, y0, x1, y1] = pixels(render(part, { view, size: [400, 400] })).box
     return (x1 - x0 + 1) / (y1 - y0 + 1)
   }
-  close(aspect('top'), 3, 0.1)
-  close(aspect('front'), 6, 0.3)
-  close(aspect('right'), 2, 0.1)
+  close(aspect('top'), 6, 0.3) // (x across, z up the picture: 60 by 10)
+  close(aspect('front'), 3, 0.1) // (x across, y up: 60 by 20)
+  close(aspect('right'), 0.5, 0.025) // (z across, y up: 10 by 20)
   // the camera above, looking down three's -Y, is the top view; so is +Y towards the camera
   const top = render(part, { view: 'top', size: [200, 150] })
   assert.equal(diffImages(top, render(part, { view: { direction: new THREE.Vector3(0, -1, 0) }, size: [200, 150] })).changed, 0)
@@ -115,9 +115,20 @@ test("'top' looks down -Y, 'front' from +Z, 'right' from +X: the footprints show
   assert.ok(r.count > 100 && b.count > 100)
   assert.ok(b.row > r.row + 50, `blue at row ${b.row}, red at ${r.row}`)
   assert.ok(b.box[0] > (r.box[0] + r.box[2]) / 2)
-  // and from the front, both stand on one line
+  // (as a camera above sees them, looking down -y and turned to have -z up the picture)
+  assert.equal(diffImages(both, render([part, near], { view: { direction: new THREE.Vector3(0, -1, 0), up: new THREE.Vector3(0, 0, -1) }, size: [300, 300] })).changed, 0)
+  // and from the front, both stand on one line, as three's default camera sees them (at +z, looking
+  // down -z, +y up)
   const fromFront = render([part, near], { view: 'front', size: [300, 300] })
   close(pixels(fromFront, blue).box[3], pixels(fromFront, red).box[3], 1.5)
+  const camera = new THREE.PerspectiveCamera()
+  assert.equal(diffImages(fromFront, render([part, near], { view: { direction: camera.getWorldDirection(new THREE.Vector3()), up: camera.up }, size: [300, 300] })).changed, 0)
+  // from the right (+x), the front (+z) is to the left of the picture
+  const fromRight = render([part, near], { view: 'right', size: [300, 300] })
+  const [rr, rb] = [pixels(fromRight, red), pixels(fromRight, blue)]
+  assert.ok(rr.count > 100 && rb.count > 100)
+  assert.ok(rb.box[2] < rr.box[0], `blue up to column ${rb.box[2]}, red from ${rr.box[0]}`)
+  close(rb.box[3], rr.box[3], 1.5)
 })
 
 test("objects are drawn in their materials' colors: bodies, TriangleMeshes and curves", () => {
@@ -131,7 +142,7 @@ test("objects are drawn in their materials' colors: bodies, TriangleMeshes and c
   // a mesh and a curve of its own, each in its color
   const ball = new TriangleMesh(new THREE.SphereGeometry(10, 32, 16), new THREE.MeshBasicMaterial({ color: 'blue' }))
   ball.position.x = 30
-  const line = new Line(new THREE.Vector3(-10, 30, 0), new THREE.Vector3(40, 30, 0))
+  const line = new Segment(new THREE.Vector3(-10, 30, 0), new THREE.Vector3(40, 30, 0))
   line.material = new THREE.LineBasicMaterial({ color: '#00ff00' })
   const picture = render([part, ball, line], { view: 'front', size: [300, 200] })
   assert.ok(pixels(picture, red).count > 100)
@@ -162,7 +173,7 @@ test('a section keeps the side three clipping with its plane keeps', () => {
 })
 
 test('highlights: faces added to their body, and the highlight option; markers on top', () => {
-  const part = new Box(30, 20, 10).cut(new Cylinder(4, 20))
+  const part = new Box(30, 20, 10).cut(new Cylinder(4, 4, 30)) // (a hole along y, through its height)
   part.position.set(5, 0, 0)
   const orange = (r: number, g: number, b: number) => r > 200 && g > 70 && g < 170 && b < 60
   const plain = render(part, { view: 'top', size: [200, 200] })
@@ -176,10 +187,10 @@ test('highlights: faces added to their body, and the highlight option; markers o
   // edges in red, a list of them
   const edges = render(part, { view: 'top', size: [200, 200], frame: plain, highlight: part.edges().circles() })
   assert.ok(pixels(edges, red).count > 50)
-  // the face nearest to a point in the world
-  assert.ok(pixels(render(part, { view: 'top', size: [200, 200], frame: plain, highlightAt: new THREE.Vector3(5, 5, 0) }), orange).count > 1000)
+  // the face nearest to a point in the world (on the top face, beside the hole)
+  assert.ok(pixels(render(part, { view: 'top', size: [200, 200], frame: plain, highlightAt: new THREE.Vector3(-5, 10, 0) }), orange).count > 1000)
   // markers at points in the world, or at objects
-  const marked = render(part, { view: 'top', size: [200, 200], frame: plain, markers: [{ position: new THREE.Vector3(5, 5, 0), label: 'A', color: 'blue' }, part] })
+  const marked = render(part, { view: 'top', size: [200, 200], frame: plain, markers: [{ position: new THREE.Vector3(-5, 10, 0), label: 'A', color: 'blue' }, part] })
   assert.ok(pixels(marked, blue).count > 10)
   assert.ok(pixels(marked, red).count > 10)
 })
@@ -207,7 +218,7 @@ test("lookAt, frames, drawings and sheets, in three's axes", () => {
   assert.throws(() => render(part, { frame: sheet }), /no frame/)
   // the other options pass through
   for (const options of [{ lines: true }, { xray: true, xrayAlpha: 0.3 }, { zebra: { direction: new THREE.Vector3(0, 1, 0) } }, { curvature: 'mean' as const }, { supersample: 1, edges: false }]) {
-    assert.deepEqual(pngSize(render(new Cylinder(5, 10), { ...options, size: [120, 90] }).data), [120, 90])
+    assert.deepEqual(pngSize(render(new Cylinder(5, 5, 10), { ...options, size: [120, 90] }).data), [120, 90])
   }
 })
 
@@ -222,7 +233,7 @@ test("VIEWS are the named views' directions towards the camera, in three's axes"
   assert.ok(VIEWS.iso instanceof THREE.Vector3)
   assert.ok(Object.isFrozen(VIEWS) && Object.isFrozen(VIEWS.iso))
   // each draws its named view
-  const part = new Box(30, 20, 10).cut(new Cylinder(4, 20))
+  const part = new Box(30, 20, 10).cut(new Cylinder(4, 4, 30))
   for (const name of ['iso', 'front', 'right', 'top'] as const) {
     assert.equal(diffImages(render(part, { view: name, size: [160, 120] }), render(part, { view: VIEWS[name], size: [160, 120] })).changed, 0, name)
   }
@@ -268,11 +279,12 @@ test("what is drawn: the package's objects where they are, visible ones; options
   scene.add(new Part(), gone)
   assert.equal(diffImages(render(scene, { size: [120, 90] }), render(part, { size: [120, 90] })).changed, 0)
   // a sketch alone is filled in its material's color; with solids, its outline is drawn on top in blue
+  // (here in front of the box, facing the front view's camera, +z)
   const sketch = new Rectangle(30, 30)
   sketch.material = new THREE.MeshBasicMaterial({ color: 'red', side: THREE.DoubleSide })
-  sketch.position.y = 15
-  assert.ok(pixels(render(sketch, { view: 'top', size: [100, 100] }), red).count > 1000)
-  const over = render([part, sketch], { view: 'top', size: [100, 100] })
+  sketch.position.z = 15
+  assert.ok(pixels(render(sketch, { view: 'front', size: [100, 100] }), red).count > 1000)
+  const over = render([part, sketch], { view: 'front', size: [100, 100] })
   assert.equal(pixels(over, red).count, 0)
   assert.ok(pixels(over, blue).count > 50)
   assert.throws(() => render(part, { annotate: true } as never), /unexpected option 'annotate'/)

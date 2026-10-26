@@ -1,10 +1,11 @@
-// Drawings: the views of parts on the ground (a sheet's (u, v) is three's (u, 0, -v)), seen from
-// three's sides (front from +Z, top from +Y), and written as DXF and SVG where the scene shows them.
+// Drawings: the views of parts in the XY plane (a sheet's (u, v) is three's (u, v, 0), the front view
+// where the parts' front is), seen from three's sides (front from +Z, top from +Y), and written as
+// DXF and SVG where the scene shows them, as three's default camera sees them.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
-import { Box, Cylinder, Edge, Rectangle, type Part } from '../src/index.ts'
+import { Box, Cylinder, BrepEdge, Rectangle, type Part } from '../src/index.ts'
 import { DrawingView, drawingViews, type ViewName } from '../src/drawing.ts'
 import { DXFExporter, DXFLoader, SVGExporter } from '../src/files.ts'
 import { box, close, closeBox, closeVector } from './_util.ts'
@@ -21,11 +22,19 @@ function noKernel(value: unknown, path = 'value', seen = new Set<unknown>()): vo
   for (const [key, v] of Object.entries(value)) noKernel(v, `${path}.${key}`, seen)
 }
 
-/** A box with a hole through its height: hidden lines in the views from the sides. */
-const holed = (): Part => new Box(40, 20, 10).cut(new Cylinder(4, 30))
+/** The box around the lines of a view `length` long, where they are. */
+function lines(view: DrawingView, length: number): THREE.Box3 {
+  const b = new THREE.Box3()
+  for (const e of view.visible) if (Math.abs(e.length - length) < 1e-9) b.union(e.bbox())
+  return b
+}
 
-test('the views of a box lie on the ground, laid out as a sheet, seen from three\'s sides', () => {
-  const views = drawingViews(new Box(40, 20, 10)) // (40 along x, 20 along z, 10 high)
+/** A box with a hole through its height (along y): hidden lines in the views from the sides. */
+const holed = (): Part => new Box(40, 20, 10).cut(new Cylinder(4, 4, 30))
+
+test('the views of a box lie in the XY plane, laid out as a sheet, seen from three\'s sides', () => {
+  const part = new Box(40, 20, 10) // (as THREE.BoxGeometry: 40 wide along x, 20 high along y, 10 deep along z)
+  const views = drawingViews(part)
   assert.deepEqual(views.map((v) => v.name), ['front', 'top', 'left'])
   const [front, top, left] = views
   assert.ok(front instanceof DrawingView)
@@ -37,21 +46,24 @@ test('the views of a box lie on the ground, laid out as a sheet, seen from three
     assert.equal(v.visible.length, 4)
     assert.equal(v.hidden.length, 0)
     for (const e of v.visible) {
-      assert.ok(e instanceof Edge && e instanceof THREE.Line && e.owner === null)
+      assert.ok(e instanceof BrepEdge && e instanceof THREE.Line && e.owner === null)
       const b = e.bbox()
-      close(b.min.y, 0, 1e-12) // (on the ground)
-      close(b.max.y, 0, 1e-12)
+      close(b.min.z, 0, 1e-12) // (in the XY plane)
+      close(b.max.z, 0, 1e-12)
     }
   }
-  // the front view where the box is (its width x, its height up the sheet: -z), the view from above
-  // below it (first-angle: towards +z), the view from the left to its right; a fifth of 40 between
+  // the front view where the box's front is (its width along x, its height along y), the view from
+  // above below it (first-angle: towards -y), the view from the left to its right (its depth wide); a
+  // fifth of 40 between
   assert.ok(front.bbox() instanceof THREE.Box3)
-  closeBox(front.bbox(), box([-20, 0, -5], [20, 0, 5]), 1e-9)
-  closeBox(top.bbox(), box([-20, 0, 13], [20, 0, 33]), 1e-9)
-  closeBox(left.bbox(), box([28, 0, -5], [48, 0, 5]), 1e-9)
+  const bounds = part.bbox()
+  closeBox(front.bbox(), box([bounds.min.x, bounds.min.y, 0], [bounds.max.x, bounds.max.y, 0]), 1e-9)
+  closeBox(front.bbox(), box([-20, -10, 0], [20, 10, 0]), 1e-9)
+  closeBox(top.bbox(), box([-20, -28, 0], [20, -18, 0]), 1e-9)
+  closeBox(left.bbox(), box([28, -10, 0], [38, 10, 0]), 1e-9)
   // third-angle: the view from above above it
   const [, above] = drawingViews(new Box(40, 20, 10), ['front', 'top'], { projection: 'third-angle', gap: 5 })
-  closeBox(above.bbox(), box([-20, 0, -30], [20, 0, -10]), 1e-9)
+  closeBox(above.bbox(), box([-20, 15, 0], [20, 25, 0]), 1e-9)
   noKernel(views, 'views')
 })
 
@@ -75,13 +87,24 @@ test('every view looks from its side of three\'s axes; hidden lines, tangent edg
 })
 
 test('parts are drawn where the scene shows them, together, each hiding the others', () => {
-  // turned a quarter about y, the box shows its 20 wide side in front
+  // turned a quarter about y, the box shows its 10 deep side in front
   const part = new Box(40, 20, 10)
   part.rotation.y = Math.PI / 2
   part.position.set(100, 3, 0)
   const [front, top] = drawingViews(part, ['front', 'top'])
-  closeBox(front.bbox(), box([90, 0, -8], [110, 0, 2]), 1e-9) // (x from 90 to 110; y from -2 to 8 up the sheet: -z)
-  closeVector(top.bbox().getSize(new THREE.Vector3()), { x: 20, y: 0, z: 40 }, 1e-9)
+  closeBox(front.bbox(), box([95, -7, 0], [105, 13, 0]), 1e-9) // (x from 95 to 105, y from -7 to 13: where the scene shows it)
+  closeVector(top.bbox().getSize(new THREE.Vector3()), { x: 10, y: 40, z: 0 }, 1e-9)
+  // the top view has x to the right and -z up the sheet, the right view -z to the right and y up: a
+  // cube behind (-z) and right of (+x) a smaller one is drawn up and to the right of it from the top,
+  // to its right from the right
+  const small = new Box(10, 10, 10)
+  const big = new Box(20, 20, 20)
+  big.position.set(30, 0, -40)
+  const [fromTop, fromRight] = drawingViews([small, big], ['top', 'right'])
+  for (const [view, offset] of [[fromTop, { x: 25, y: 35, z: 0 }], [fromRight, { x: 35, y: -5, z: 0 }]] as const) {
+    assert.equal(view.visible.length, 8)
+    closeVector(lines(view, 20).min.clone().sub(lines(view, 10).min), offset, 1e-9, view.name)
+  }
   // a group: its visible bodies, together
   const group = new THREE.Group()
   const a = new Box(10, 10, 10)
@@ -92,28 +115,28 @@ test('parts are drawn where the scene shows them, together, each hiding the othe
   gone.visible = false
   group.add(a, b, gone)
   const [both] = drawingViews(group, 'front')
-  closeBox(both.bbox(), box([-5, 0, -5], [25, 0, 5]), 1e-9)
+  closeBox(both.bbox(), box([-5, -5, 0], [25, 5, 0]), 1e-9)
   assert.equal(both.visible.length, 8)
-  closeBox(drawingViews([a, b, gone], 'front')[0].bbox(), box([-5, 0, -5], [205, 0, 5]), 1e-9) // (given: drawn)
+  closeBox(drawingViews([a, b, gone], 'front')[0].bbox(), box([-5, -5, 0], [205, 5, 0]), 1e-9) // (given: drawn)
   assert.throws(() => drawingViews(new THREE.Group()), /drawingViews: nothing to draw/)
   assert.throws(() => drawingViews([new THREE.Vector3() as never]), /drawingViews draws parts and shells, not a Vector3/)
 })
 
-test('SVG: views (hidden lines dashed), sketches, faces and curves, seen from above', () => {
+test('SVG: views (hidden lines dashed), sketches, faces and curves, seen from the front (+z)', () => {
   const svg = new SVGExporter().parse(drawingViews(holed()))
   assert.match(svg, /^<\?xml/)
   assert.match(svg, /class="hidden"[^>]*stroke-dasharray/)
   assert.match(svg, /class="visible"/)
-  // a sketch towards the back (-z) is up the sheet (the SVG's y runs down); millimeters, true size
+  // a sketch moved up (+y) is up the sheet (the SVG's y runs down); millimeters, true size
   const sketch = new Rectangle(20, 10)
-  sketch.position.z = -10
+  sketch.position.y = 10
   const drawn = new SVGExporter().parse(sketch, { margin: 0, stroke: 0.5 })
   assert.match(drawn, /width="20mm" height="10mm" viewBox="-10 -15 20 10"/)
   assert.match(drawn, /stroke-width="0.5"/)
   // a face of a part, where its part is; the part itself is passed over
   const part = new Box(40, 20, 10)
   part.position.x = 50
-  assert.match(new SVGExporter().parse(part.faces().top(), { margin: 0 }), /viewBox="30 -10 40 20"/)
+  assert.match(new SVGExporter().parse(part.faces().front(), { margin: 0 }), /viewBox="30 -10 40 20"/)
   assert.match(new SVGExporter().parse([part, sketch], { margin: 0 }), /viewBox="-10 -15 20 10"/)
   assert.throws(() => new SVGExporter().parse(part), /SVGExporter: nothing to draw.*drawingViews/)
   assert.throws(() => new SVGExporter().parse([], { margin: -1 }), /nothing to draw/)
@@ -132,10 +155,10 @@ test('DXF of views: the layers VISIBLE and HIDDEN, the lines where the scene sho
   // a view whose lines were moved (in the scene) is written where they are
   const [front] = drawingViews(new Box(40, 20, 10), 'front')
   for (const e of front.visible) e.position.x = 100
-  closeBox(front.bbox(), box([80, 0, -5], [120, 0, 5]), 1e-9)
+  closeBox(front.bbox(), box([80, -10, 0], [120, 10, 0]), 1e-9)
   const k = sm.fromDxfWires(new DXFExporter().parse(front)).bbox()
-  closeVector(k.min, { x: 80, y: -5, z: 0 }, 1e-9)
-  closeVector(k.max, { x: 120, y: 5, z: 0 }, 1e-9)
+  closeVector(k.min, { x: 80, y: -10, z: 0 }, 1e-9)
+  closeVector(k.max, { x: 120, y: 10, z: 0 }, 1e-9)
   // an empty view has an empty box
   assert.ok(new DrawingView('front', new THREE.Vector3(0, 0, 1), [], []).bbox().isEmpty())
 })

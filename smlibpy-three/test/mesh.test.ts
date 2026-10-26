@@ -1,11 +1,12 @@
-// Triangle meshes: a TriangleMesh is a THREE.Mesh whose geometry is its triangles (Y up), placed by
-// its transform as a body is; its operations take other meshes where they are and give results
-// where it is, with its transform, name and material.
+// Triangle meshes: a TriangleMesh is a THREE.Mesh whose geometry is its triangles (in three's
+// coordinates, which are the kernel's), placed by its transform as a body is; its operations take
+// other meshes where they are and give results where it is, with its transform, name and material.
+// A geometry assigned to it is the mesh from then on, as a THREE.Mesh's geometry is its shape.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
-import { Box, Cylinder, MassProperties, ModelingError, Part, Sphere, Wire } from '../src/index.ts'
+import { Box, Cylinder, MassProperties, ModelingError, Part, Ball, Wire } from '../src/index.ts'
 import { TriangleMesh, tessellate } from '../src/mesh.ts'
 import { box, close, closeBox, closeVector, ray, Y } from './_util.ts'
 
@@ -28,6 +29,8 @@ function disposals(target: unknown): { count: number } {
   return seen
 }
 
+const Z = new THREE.Vector3(0, 0, 1)
+
 /** A box's moment of inertia about its center, about the axis across sides `a` and `b`. */
 const ixxOf = (mass: number, a: number, b: number) => (mass * (a ** 2 + b ** 2)) / 12
 
@@ -42,7 +45,7 @@ function volumeOf(geometry: THREE.BufferGeometry): number {
 }
 
 test("a box's TriangleMesh: a THREE.Mesh of its triangles in three's axes, closed, measured", () => {
-  const part = new Box(10, 20, 30) // 10 along x, 20 along z, 30 high
+  const part = new Box(10, 20, 30) // (as THREE.BoxGeometry(10, 20, 30): 10 along x, 20 along y, 30 along z)
   const mesh = new TriangleMesh(part)
   assert.ok(mesh instanceof THREE.Mesh && mesh instanceof TriangleMesh)
   assert.equal(mesh.isMesh, true)
@@ -51,7 +54,10 @@ test("a box's TriangleMesh: a THREE.Mesh of its triangles in three's axes, close
   assert.equal(mesh.triangleCount, 12)
   close(mesh.volume, 6000, 1e-9)
   close(mesh.area, 2 * (10 * 20 + 10 * 30 + 20 * 30), 1e-9)
-  closeBox(mesh.bbox(), box([-5, -15, -10], [5, 15, 10]), 1e-12)
+  closeBox(mesh.bbox(), box([-5, -10, -15], [5, 10, 15]), 1e-12)
+  const three = new THREE.BoxGeometry(10, 20, 30)
+  three.computeBoundingBox()
+  closeBox(mesh.bbox(), three.boundingBox!, 1e-12) // (three's own box agrees)
   assert.ok(mesh.isClosed())
   closeVector(mesh.center(), { x: 0, y: 0, z: 0 }, 1e-12)
   closeVector(mesh.centroid, { x: 0, y: 0, z: 0 }, 1e-9)
@@ -76,22 +82,22 @@ test("a box's TriangleMesh: a THREE.Mesh of its triangles in three's axes, close
     }
     assert.ok(mid.dot(own) > 0, `triangle ${t} faces in`)
   }
-  // mass properties: the inertia in three's axes (the box is 30 along y, 20 along z)
+  // mass properties: the inertia in three's axes (the box is 20 along y, 30 along z)
   const mp = mesh.massProperties(2)
   assert.ok(mp instanceof MassProperties)
   close(mp.mass, 12000, 1e-6)
   close(mp.volume, 6000, 1e-9)
   assert.ok(mp.center instanceof THREE.Vector3 && mp.inertia instanceof THREE.Matrix3)
   // (principal moments as the kernel gives them)
-  assert.deepEqual([...mp.principalMoments].map((m) => Math.round(m)), [ixxOf(12000, 10, 20), ixxOf(12000, 10, 30), ixxOf(12000, 30, 20)].map(Math.round).sort((a, b) => a - b))
+  assert.deepEqual([...mp.principalMoments].map((m) => Math.round(m)), [ixxOf(12000, 20, 30), ixxOf(12000, 10, 30), ixxOf(12000, 10, 20)].map(Math.round).sort((a, b) => a - b))
   const [ixx, , , , iyy, , , , izz] = mp.inertia.elements
-  close(ixx, (12000 * (30 ** 2 + 20 ** 2)) / 12, 1e-3)
-  close(iyy, (12000 * (10 ** 2 + 20 ** 2)) / 12, 1e-3)
-  close(izz, (12000 * (10 ** 2 + 30 ** 2)) / 12, 1e-3)
+  close(ixx, (12000 * (20 ** 2 + 30 ** 2)) / 12, 1e-3)
+  close(iyy, (12000 * (10 ** 2 + 30 ** 2)) / 12, 1e-3)
+  close(izz, (12000 * (10 ** 2 + 20 ** 2)) / 12, 1e-3)
   // bodies are taken where they are in the world
   const moved = new Box(10, 20, 30)
   moved.position.set(100, 0, 0)
-  closeBox(new TriangleMesh(moved).bbox(), box([95, -15, -10], [105, 15, 10]), 1e-9)
+  closeBox(new TriangleMesh(moved).bbox(), box([95, -10, -15], [105, 10, 15]), 1e-9)
 })
 
 test('tessellate: bodies where they are, in the frame of the first, with its transform and material', () => {
@@ -100,7 +106,7 @@ test('tessellate: bodies where they are, in the frame of the first, with its tra
   a.name = 'a'
   const material = new THREE.MeshStandardMaterial({ color: 'tomato' })
   a.material = material
-  const b = new Sphere(5)
+  const b = new Ball(5)
   b.position.set(50, 20, 0)
   const mesh = tessellate([a, b], 0.01)
   assert.ok(mesh instanceof TriangleMesh)
@@ -117,8 +123,8 @@ test('tessellate: bodies where they are, in the frame of the first, with its tra
   closeVector(world.position, { x: 0, y: 0, z: 0 }, 0)
   closeBox(world.bbox(), box([45, -5, -5], [55, 25, 5]), 0.02)
   // the angle in radians, maxEdge
-  const coarse = tessellate(new Cylinder(10, 10), 100, Math.PI / 4)
-  const fine = tessellate(new Cylinder(10, 10), 100, Math.PI / 36)
+  const coarse = tessellate(new Cylinder(10, 10, 10), 100, Math.PI / 4)
+  const fine = tessellate(new Cylinder(10, 10, 10), 100, Math.PI / 36)
   assert.ok(fine.triangleCount > 3 * coarse.triangleCount, `${fine.triangleCount} and ${coarse.triangleCount} triangles`)
   const plate = tessellate(new Box(100, 100, 10), null, undefined, { maxEdge: 10 })
   assert.ok(plate.triangleCount > 100, `${plate.triangleCount} triangles`)
@@ -135,7 +141,7 @@ test('tessellate: bodies where they are, in the frame of the first, with its tra
 // (Body.toMesh is proposed for shapes.ts: this runs once it is there)
 type ToMesh = { toMesh(options?: { tolerance?: number | null; angle?: number; maxEdge?: number | null }): TriangleMesh }
 test('Body.toMesh: in its frame, with its transform and material, as finely as its geometry', { skip: !('toMesh' in Part.prototype) }, () => {
-  const part = new Box(10, 20, 30).cut(new Cylinder(3, 40))
+  const part = new Box(10, 20, 30).cut(new Cylinder(3, 3, 40))
   part.position.set(5, 6, 7)
   part.tolerance = 0.01
   const mesh = (part as unknown as ToMesh).toMesh()
@@ -227,44 +233,47 @@ test('mesh Booleans take the other meshes where they are, and give results where
   close(left.volume, 1000, 1e-9)
 })
 
-test('section and slices cut a Y-up mesh: horizontal loops, layers from the bottom up', () => {
-  const mesh = new TriangleMesh(new Cylinder(10, 40), null, { tolerance: 0.001 }) // y from -20 to 20
+test("section and slices: a plane's loops, and layers along +z by default, as a part's", () => {
+  const standing = new Cylinder(10, 10, 40)
+  standing.rotation.x = Math.PI / 2 // (turned to stand along z)
+  const mesh = new TriangleMesh(standing, null, { tolerance: 0.001 }) // z from -20 to 20
   mesh.position.set(0, 100, 0)
-  const loops = mesh.section(new THREE.Plane(Y, -5)) // y = 5, in the mesh's frame
+  const loops = mesh.section(new THREE.Plane(Z, -5)) // z = 5, in the mesh's frame
   assert.equal(loops.length, 1)
   const [loop] = loops
   assert.ok(loop instanceof Wire && loop.isClosed)
-  // at y = 5 in the mesh's frame, placed where the mesh is
+  // at z = 5 in the mesh's frame, placed where the mesh is
   const b = loop.bbox()
-  close(b.min.y, 5, 1e-9)
-  close(b.max.y, 5, 1e-9)
+  close(b.min.z, 5, 1e-9)
+  close(b.max.z, 5, 1e-9)
   close(b.max.x, 10, 1e-3)
-  close(b.min.z, -10, 1e-3)
+  close(b.min.y, -10, 1e-3)
   closeVector(loop.position, mesh.position, 0)
-  // counterclockwise seen from the plane's normal (+y), as smlibpy's sections run
+  // counterclockwise seen from the plane's normal (+z), as a part's sections run
   const turn = new THREE.Vector3()
   for (const e of loop.edges()) turn.add(e.start.cross(e.end))
-  assert.ok(turn.y > 0 && Math.abs(turn.x) < 1e-6 * turn.y && Math.abs(turn.z) < 1e-6 * turn.y)
+  assert.ok(turn.z > 0 && Math.abs(turn.x) < 1e-6 * turn.z && Math.abs(turn.y) < 1e-6 * turn.z)
   // a region of it: the circle's
   close(loop.toSketch().area, Math.PI * 100, 0.5)
-  // layers 10 thick from the bottom up, each cut in its middle: y = -15, -5, 5, 15
+  // layers 10 thick along +z (the default, as a part's slices) from its lowest point, each cut in
+  // its middle: z = -15, -5, 5, 15
   const layers = mesh.slices(10)
   assert.equal(layers.length, 4)
   layers.forEach((wires, i) => {
     assert.equal(wires.length, 1)
-    close(wires[0].bbox().min.y, -15 + 10 * i, 1e-9)
-    close(wires[0].bbox().max.y, -15 + 10 * i, 1e-9)
+    close(wires[0].bbox().min.z, -15 + 10 * i, 1e-9)
+    close(wires[0].bbox().max.z, -15 + 10 * i, 1e-9)
   })
   // across x
   const across = mesh.slices(5, new THREE.Vector3(1, 0, 0))
   assert.equal(across.length, 4)
   for (const [w] of across) close(w.bbox().min.x, w.bbox().max.x, 1e-9)
   // a plane that misses it
-  assert.equal(mesh.section(new THREE.Plane(Y, -50)).length, 0)
+  assert.equal(mesh.section(new THREE.Plane(Z, -50)).length, 0)
 })
 
 test('decimate thins a mesh out; fillHoles and repaired close one', () => {
-  const sphere = new TriangleMesh(new Sphere(10), null, { tolerance: 0.02 })
+  const sphere = new TriangleMesh(new Ball(10), null, { tolerance: 0.02 })
   sphere.position.x = 7
   const n = sphere.triangleCount
   const half = sphere.decimate(0.5)
@@ -311,12 +320,12 @@ test('toPart: a faceted part of a closed mesh, where the mesh is', () => {
   mesh.material = mine
   assert.equal(mesh.toPart().material, mine)
   // too many faces for fast Booleans: decimate first
-  const ball = new TriangleMesh(new Sphere(10), null, { tolerance: 0.05 })
+  const ball = new TriangleMesh(new Ball(10), null, { tolerance: 0.05 })
   assert.throws(() => ball.toPart(100), ModelingError)
 })
 
 test('clone and copy share the kernel mesh and the geometry; dispose frees them with the last one', () => {
-  const mesh = new TriangleMesh(new Sphere(5))
+  const mesh = new TriangleMesh(new Ball(5))
   mesh.position.set(1, 2, 3)
   const clone = mesh.clone()
   assert.ok(clone instanceof TriangleMesh)
@@ -339,23 +348,70 @@ test('clone and copy share the kernel mesh and the geometry; dispose frees them 
   clone.dispose()
   clone.dispose()
   assert.equal(geometry.count, 1)
-  // an assigned material is the app's; an assigned geometry changes what is drawn, not the mesh
+  // an assigned material is the app's, and so is an assigned geometry: dispose leaves them
   const mine = new THREE.MeshBasicMaterial()
   const cube = new TriangleMesh(new THREE.BoxGeometry(1, 1, 1), mine)
-  const drawn = cube.geometry
-  const other = new THREE.SphereGeometry(1)
+  const other = new THREE.BoxGeometry(2, 2, 2)
   cube.geometry = other
-  assert.equal(cube.geometry, other)
-  close(cube.volume, 1, 1e-12)
-  cube.geometry = null as never
-  assert.equal(cube.geometry, drawn)
-  const assigned = disposals(mine)
+  close(cube.volume, 8, 1e-12)
+  const assigned = [disposals(mine), disposals(other)]
   cube.dispose()
-  assert.equal(assigned.count, 0)
+  assert.deepEqual(assigned.map((d) => d.count), [0, 0])
   // copy into an empty mesh
   const empty = new TriangleMesh()
   empty.copy(new TriangleMesh(new THREE.BoxGeometry(2, 2, 2)))
   close(empty.volume, 8, 1e-12)
+})
+
+test('an assigned geometry is the mesh: its measures and Booleans take it, welded; null draws the own geometry again', () => {
+  const mesh = new TriangleMesh(new THREE.BoxGeometry(1, 1, 1))
+  const drawn = mesh.geometry
+  const before = mesh.clone() // (made before the assignment: it keeps the old mesh)
+  const geometry = new THREE.BoxGeometry(2, 4, 6) // (three's, split per face)
+  mesh.geometry = geometry
+  assert.equal(mesh.geometry, geometry) // (three draws it as it is)
+  // the kernel takes it, its corners welded by position: closed, its 12 triangles
+  assert.equal(mesh.triangleCount, 12)
+  assert.ok(mesh.isClosed())
+  close(mesh.volume, 48, 1e-12)
+  close(mesh.area, 2 * (2 * 4 + 2 * 6 + 4 * 6), 1e-12)
+  closeBox(mesh.bbox(), box([-1, -2, -3], [1, 2, 3]), 1e-12)
+  // a Boolean with it, on either side: a 2 by 2 by 2 box, half of it in the mesh
+  const half = new TriangleMesh(new THREE.BoxGeometry(2, 2, 2))
+  half.position.x = 1
+  const cut = mesh.cut(half)
+  assert.ok(cut.isClosed())
+  close(cut.volume, 48 - 4, 1e-9)
+  closeBox(cut.bbox(), box([-1, -2, -3], [1, 2, 3]), 1e-12)
+  close(half.fuse(mesh).volume, 48 + 8 - 4, 1e-9)
+  // the clone made before keeps the old mesh and what it drew; one made now shares the assigned one
+  close(before.volume, 1, 1e-12)
+  assert.equal(before.geometry, drawn)
+  const after = mesh.clone()
+  assert.equal(after.geometry, geometry)
+  close(after.volume, 48, 1e-12)
+  // null: the mesh's own geometry again, made of its triangles (24 points with the faces' normals,
+  // as the package draws a box), not the assigned one
+  mesh.geometry = null as never
+  const own = mesh.geometry
+  assert.ok(own !== geometry && own !== drawn)
+  assert.equal(own.getAttribute('position').count, 24)
+  closeBox(own.boundingBox!, box([-1, -2, -3], [1, 2, 3]), 1e-6)
+  close(mesh.volume, 48, 1e-12)
+  assert.equal(after.geometry, geometry) // (the clone draws what it was given)
+  // the old mesh goes with the last one that holds it
+  const old = disposals(drawn)
+  before.dispose()
+  assert.equal(old.count, 1)
+  close(mesh.volume, 48, 1e-12)
+  // welded when an operation first needs it: a geometry three can draw but the kernel cannot take
+  // fails there, not when it is assigned; what is not a geometry fails at once
+  const bare = new TriangleMesh()
+  bare.geometry = new THREE.BufferGeometry()
+  assert.throws(() => bare.volume, /no positions/)
+  assert.throws(() => {
+    bare.geometry = new THREE.Box3() as never
+  }, /^TypeError: TriangleMesh: a geometry is a THREE\.BufferGeometry/)
 })
 
 test("intersectRay: the kernel's cast on the triangles, in the mesh's frame; three's Raycaster agrees", () => {
@@ -391,7 +447,7 @@ test("intersectRay: the kernel's cast on the triangles, in the mesh's frame; thr
 })
 
 test('a mesh for three: Box3, toJSON, exporters', async () => {
-  const mesh = new TriangleMesh(new Cylinder(5, 10))
+  const mesh = new TriangleMesh(new Cylinder(5, 5, 10)) // (along y, as THREE.CylinderGeometry(5, 5, 10))
   mesh.position.y = 20
   mesh.updateMatrixWorld()
   closeBox(new THREE.Box3().setFromObject(mesh), box([-5, 15, -5], [5, 25, 5]), 1e-5)
@@ -404,7 +460,7 @@ test('a mesh for three: Box3, toJSON, exporters', async () => {
 })
 
 test('nothing of smlibwasm comes out', () => {
-  const mesh = new TriangleMesh(new Box(20, 20, 20).cut(new Cylinder(4, 30)), null, { tolerance: 0.05 })
+  const mesh = new TriangleMesh(new Box(20, 20, 20).cut(new Cylinder(4, 4, 30)), null, { tolerance: 0.05 })
   const other = new TriangleMesh(new THREE.BoxGeometry(10, 10, 10))
   other.position.set(10, 10, 10)
   const results: unknown[] = [
@@ -426,7 +482,7 @@ test('nothing of smlibwasm comes out', () => {
     mesh.fuse(other),
     mesh.mirror(new THREE.Plane(Y, 0)),
     mesh.clone(),
-    tessellate(new Sphere(3)),
+    tessellate(new Ball(3)),
   ]
   for (const [i, r] of results.entries()) noKernel(r, `result ${i}`)
   // and its errors are the package's

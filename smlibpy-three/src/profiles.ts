@@ -1,9 +1,8 @@
 // The pen: an outline drawn segment by segment (smlibpy's Profile), in a sketch's own 2D
-// coordinates: points are THREE.Vector2s (or { x, y }), x along three's x and y along -z on the
-// ground, as a sketch's are (a THREE.Vector3 is a point of three's, on the ground); headings and
-// turns are radians, counterclockwise seen from above. Every call returns a new Profile, so one
-// drawing branches into variants; close() makes the region (a Sketch), wire() the open path (a
-// Wire).
+// coordinates, which are three's x and y (a sketch lies in the XY plane): points are THREE.Vector2s
+// (or { x, y }), or THREE.Vector3s in the XY plane; headings and turns are radians, counterclockwise
+// seen from +z, as a THREE.Path's arcs turn. Every call returns a new Profile, so one drawing
+// branches into variants; close() makes the region (a Sketch), wire() the open path (a Wire).
 import * as THREE from 'three'
 import { align2, call, degrees, describe, radians, sm } from './kernel.ts'
 import type { Align2 } from './types.ts'
@@ -20,7 +19,7 @@ export interface Coordinates {
 let incoming: sm.Profile | null = null
 
 /**
- * A pen that draws one outline on the ground, segment by segment: lines and tangent arcs, each from
+ * A pen that draws one outline in the XY plane, segment by segment: lines and tangent arcs, each from
  * where the last one ended, with the corners it passes rounded or beveled.
  *
  *     const section = new Profile()
@@ -35,10 +34,9 @@ let incoming: sm.Profile | null = null
  * heading without drawing. `fillet` and `chamfer` round or bevel the corner at the pen, between the
  * segment before and the one after. `mirror` adds the mirror image of the path drawn so far.
  *
- * Points are THREE.Vector2s of the sketch's 2D coordinates (x along three's x, y along -z), or
- * THREE.Vector3s of three's on the ground; headings are radians counterclockwise from +x, seen from
- * above (π/2 is the sketch's +y, three's -z). Errors name the segment by the call that drew it,
- * with its angles in degrees.
+ * Points are THREE.Vector2s of the sketch's 2D coordinates (three's x and y), or THREE.Vector3s in
+ * the XY plane; headings are radians counterclockwise from +x, seen from +z (π/2 is +y). Errors name
+ * the segment by the call that drew it.
  */
 export class Profile {
   readonly #pen: sm.Profile
@@ -113,7 +111,7 @@ export class Profile {
     return this.#draw((pen) => pen.forward(c))
   }
 
-  /** Turns the heading by `angle` radians (positive: left, counterclockwise seen from above) without
+  /** Turns the heading by `angle` radians (positive: left, counterclockwise seen from +z) without
    * drawing: the next segment starts at a corner. */
   turn(angle: number): Profile {
     return this.#draw((pen) => pen.turn(degrees(angle)))
@@ -126,7 +124,7 @@ export class Profile {
 
   // -- arcs -----------------------------------------------------------------------------------
   /** A tangent arc of `radius` that turns the heading by `angle` radians: positive turns left
-   * (counterclockwise seen from above), negative right; `arc(5, Math.PI)` is a U-turn. */
+   * (counterclockwise seen from +z), negative right; `arc(5, Math.PI)` is a U-turn. */
   arc(radius: number, angle: number): Profile {
     return this.#draw((pen) => pen.arc(radius, degrees(angle)))
   }
@@ -174,7 +172,7 @@ export class Profile {
 
   // -- results --------------------------------------------------------------------------------
   /**
-   * The region inside the outline, a Sketch on the ground (a straight line goes back to the start if
+   * The region inside the outline, a Sketch in the XY plane (a straight line goes back to the start if
    * the pen is not there). `align` moves it ('min', 'center', 'max', per axis of the sketch); null,
    * the default, leaves the outline where it was drawn.
    */
@@ -184,7 +182,7 @@ export class Profile {
     return wrap(call(() => pen.close({ align }))) as Sketch
   }
 
-  /** The path as drawn, an open Wire of exact lines and arcs on the ground (a sweep path, or the
+  /** The path as drawn, an open Wire of exact lines and arcs in the XY plane (a sweep path, or the
    * centerline of a Stroke). */
   wire(): Wire {
     const pen = this.#pen
@@ -216,15 +214,15 @@ function isPoint(v: unknown): v is THREE.Vector2Like {
 }
 
 /** A point (or offset) of the pen as the kernel's [x, y]: a THREE.Vector2 of the sketch's
- * coordinates, or a THREE.Vector3 of three's on the ground, whose -z is the sketch's y. */
+ * coordinates, or a THREE.Vector3 of three's in the XY plane. */
 function penPoint(p: unknown, what: string): number[] {
   if (!isPoint(p)) throw new TypeError(`${what}: a point of the pen is a THREE.Vector2 (or { x, y }), not ${describe(p)}`)
   const z = (p as { z?: unknown }).z
   if (typeof z !== 'number') return [p.x, p.y]
-  if (Math.abs(p.y) > 1e-9 * Math.max(1, Math.abs(p.x), Math.abs(z))) {
-    throw new RangeError(`${what}: the pen draws on the ground (y = 0), and (${p.x}, ${p.y}, ${z}) is off it; give the sketch's 2D coordinates (a THREE.Vector2)`)
+  if (Math.abs(z) > 1e-9 * Math.max(1, Math.abs(p.x), Math.abs(p.y))) {
+    throw new RangeError(`${what}: the pen draws in the XY plane (z = 0), and (${p.x}, ${p.y}, ${z}) is off it; give the sketch's 2D coordinates (a THREE.Vector2)`)
   }
-  return [p.x, 0 - z]
+  return [p.x, p.y]
 }
 
 function point2(x: unknown, y: unknown, what: string): number[] {

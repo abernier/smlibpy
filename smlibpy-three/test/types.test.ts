@@ -1,17 +1,19 @@
 // three's types in, three's types out: points, directions, boxes, planes, rays, matrices, 2D
-// shapes and curves are three's; nothing of smlibwasm's comes out, not even in an error.
+// shapes and curves are three's; nothing of smlibwasm's comes out, not even in an error; and no
+// name the package exports is one of three's.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
 import {
   Box,
   Circle,
   Cylinder,
-  Edge,
-  Face,
+  BrepEdge,
+  BrepFace,
   GridLocations,
-  Line,
+  Segment,
   ModelingError,
   Part,
   PolarLocations,
@@ -19,7 +21,7 @@ import {
   ShapeList,
   Sketch,
   Spline,
-  Vertex,
+  BrepVertex,
   Wire,
 } from '../src/index.ts'
 import { box, close, closeBox, closeVector, Y } from './_util.ts'
@@ -37,7 +39,7 @@ function noKernel(value: unknown, path = 'value', seen = new Set<unknown>()): vo
 }
 
 test('points and directions go in as Vector3s (or { x, y, z }) and come out as new Vector3s', () => {
-  const line = new Line(new THREE.Vector3(1, 2, 3), { x: 4, y: 6, z: 3 })
+  const line = new Segment(new THREE.Vector3(1, 2, 3), { x: 4, y: 6, z: 3 })
   assert.ok(line.start instanceof THREE.Vector3)
   closeVector(line.start, { x: 1, y: 2, z: 3 }, 1e-12)
   closeVector(line.end, { x: 4, y: 6, z: 3 }, 1e-12)
@@ -47,11 +49,11 @@ test('points and directions go in as Vector3s (or { x, y, z }) and come out as n
   const target = new THREE.Vector3()
   assert.equal(line.pointAt(0.5, target), target)
   closeVector(target, { x: 2.5, y: 4, z: 3 }, 1e-12)
-  assert.throws(() => new Line([0, 0, 0] as never, new THREE.Vector3()), /THREE\.Vector3/)
+  assert.throws(() => new Segment([0, 0, 0] as never, new THREE.Vector3()), /THREE\.Vector3/)
 })
 
 test('boxes, centers, normals and mass properties are three types', () => {
-  const part = new Box(40, 20, 10)
+  const part = new Box(40, 10, 20)
   assert.ok(part.bbox() instanceof THREE.Box3)
   closeBox(part.bbox(), box([-20, -5, -10], [20, 5, 10]))
   assert.ok(part.center() instanceof THREE.Vector3)
@@ -70,7 +72,7 @@ test('boxes, centers, normals and mass properties are three types', () => {
   close(ixx, (16000 * (10 ** 2 + 20 ** 2)) / 12, 1e-3)
   close(iyy, (16000 * (40 ** 2 + 20 ** 2)) / 12, 1e-3)
   close(izz, (16000 * (40 ** 2 + 10 ** 2)) / 12, 1e-3)
-  const cylinder = new Cylinder(5, 30)
+  const cylinder = new Cylinder(5, 5, 30)
   const side = cylinder.faces().cylinders().one()
   assert.ok(side.axis instanceof THREE.Ray)
   closeVector(side.axis.direction.clone().set(0, Math.abs(side.axis.direction.y), 0), Y)
@@ -104,9 +106,10 @@ test('THREE.Shapes become exact sketches: lines, arcs, Béziers, splines and hol
   shape.holes.push(new THREE.Path().absarc(12, 10, 4, 0, Math.PI * 2, false))
   shape.holes.push(new THREE.Path().absellipse(28, 10, 5, 2, 0, Math.PI * 2, false, Math.PI / 6))
   const sketch = new Sketch(shape)
-  // the outline runs through every point three draws of it, to the kernel's tolerance
+  // the outline runs through every point three draws of it, to the kernel's tolerance (a shape's
+  // (x, y) is three's (x, y): the sketch lies in the XY plane, as ShapeGeometry does)
   const edges = sketch.edges()
-  const onOutline = (p: THREE.Vector2) => Math.min(...edges.map((e) => e.distanceTo(new THREE.Vector3(p.x, 0, -p.y))))
+  const onOutline = (p: THREE.Vector2) => Math.min(...edges.map((e) => e.distanceTo(new THREE.Vector3(p.x, p.y, 0))))
   for (const p of shape.getPoints(24)) assert.ok(onOutline(p) < 1e-7, `(${p.x}, ${p.y}) is ${onOutline(p)} off the outline`)
   for (const hole of shape.holes) for (const p of hole.getPoints(24)) assert.ok(onOutline(p) < 1e-7, `(${p.x}, ${p.y}) is ${onOutline(p)} off a hole`)
   // its area is three's (ShapeUtils.area of a fine outline), less the holes
@@ -130,7 +133,7 @@ test("three's 3D curves become exact edges, with three's parameter", () => {
     new THREE.LineCurve3(points[0], points[3]),
   ]
   for (const curve of curves) {
-    const edge = new Edge(curve)
+    const edge = new BrepEdge(curve)
     assert.ok(edge instanceof THREE.Line)
     for (let i = 0; i <= 20; i++) {
       const p = curve.getPoint(i / 20)
@@ -154,8 +157,9 @@ test("three's 3D curves become exact edges, with three's parameter", () => {
 })
 
 test('rays are axes, matrices are placements and locations', () => {
-  // a profile beside y, revolved about three's y axis: a ring
-  const profile = new Rectangle(4, 10).on(new THREE.Matrix4().makeRotationX(Math.PI / 2).setPosition(12, 0, 0))
+  // a profile beside y (in the XY plane, where sketches lie), placed by a matrix and revolved about
+  // three's y axis: a ring, as LatheGeometry turns its points about y
+  const profile = new Rectangle(4, 10).on(new THREE.Matrix4().makeTranslation(12, 0, 0))
   closeBox(profile.bbox(), box([10, -5, 0], [14, 5, 0]))
   const ring = profile.revolve(new THREE.Ray(new THREE.Vector3(), Y))
   close(ring.volume, Math.PI * (14 ** 2 - 10 ** 2) * 10, 1e-6)
@@ -163,15 +167,18 @@ test('rays are axes, matrices are placements and locations', () => {
   const grid = GridLocations(10, 20, 2, 2)
   assert.equal(grid.length, 4)
   for (const m of grid) assert.ok(m instanceof THREE.Matrix4)
-  const at = grid.map((m) => new THREE.Vector3().setFromMatrixPosition(m)).sort((a, b) => a.x - b.x || a.z - b.z)
-  closeVector(at[0], { x: -5, y: 0, z: -10 })
-  closeVector(at[3], { x: 5, y: 0, z: 10 })
+  // (in the XY plane, where sketches lie)
+  const at = grid.map((m) => new THREE.Vector3().setFromMatrixPosition(m)).sort((a, b) => a.x - b.x || a.y - b.y)
+  closeVector(at[0], { x: -5, y: -10, z: 0 })
+  closeVector(at[3], { x: 5, y: 10, z: 0 })
   for (const m of PolarLocations(10, 6)) close(new THREE.Vector3().setFromMatrixPosition(m).length(), 10)
 })
 
 test('nothing of smlibwasm comes out of the package', () => {
-  const plate = new Box(60, 40, 8).cut(new Cylinder(5, 20).at(GridLocations(40, 20, 2, 2)))
-  const part = plate.fillet(plate.edges().parallelTo(Y), 3)
+  const hole = new Cylinder(5, 5, 20)
+  hole.rotation.x = Math.PI / 2 // (along z, through the plate lying in XY)
+  const plate = new Box(60, 40, 8).cut(hole.at(GridLocations(40, 20, 2, 2)))
+  const part = plate.fillet(plate.edges().parallelTo(new THREE.Vector3(0, 0, 1)), 3)
   const face = part.faces().largest()
   const edge = part.edges().first
   const results: unknown[] = [
@@ -199,9 +206,9 @@ test('nothing of smlibwasm comes out of the package', () => {
   ]
   for (const [i, r] of results.entries()) noKernel(r, `result ${i}`)
   assert.ok(part.faces() instanceof ShapeList)
-  assert.ok(part.faces().first instanceof Face)
-  assert.ok(part.edges().first instanceof Edge)
-  assert.ok(part.vertices().first instanceof Vertex)
+  assert.ok(part.faces().first instanceof BrepFace)
+  assert.ok(part.edges().first instanceof BrepEdge)
+  assert.ok(part.vertices().first instanceof BrepVertex)
   assert.ok(part.section(new THREE.Plane(Y, 0)) instanceof Sketch)
   assert.ok(part instanceof Part)
 })
@@ -218,4 +225,34 @@ test("the kernel's errors are the package's own", () => {
   assert.ok(!(error instanceof sm.ModelingError))
   noKernel(error, 'error')
   assert.equal((error as Error).cause, undefined)
+})
+
+test("no name the package exports is one of three's, nor of the addons it is used beside", async () => {
+  // (three's core, and the addons whose names the package's would have taken: FontLoader's Font,
+  // USDLoader, ConvexHull's Face; imported here only, as an app imports them)
+  const theirs = new Map<string, string>()
+  for (const from of ['three', 'three/addons/loaders/FontLoader.js', 'three/addons/loaders/USDLoader.js', 'three/addons/math/ConvexHull.js']) {
+    const loaded = (await import(from)) as Record<string, unknown>
+    for (const name of Object.keys(loaded)) if (name !== 'default') theirs.set(name, from)
+  }
+  for (const name of ['Line', 'Sphere', 'Triangle', 'Font', 'Face', 'USDLoader']) assert.ok(theirs.has(name), name)
+  // the values of every entry point of the package ('.', './init', './worker')
+  const entries: Record<string, Record<string, unknown>> = {
+    '.': await import('../src/index.ts'),
+    './init': await import('../src/init.ts'),
+    './worker': await import('../src/worker.ts'),
+  }
+  let count = 0
+  for (const [entry, loaded] of Object.entries(entries)) {
+    for (const name of Object.keys(loaded)) {
+      count++
+      assert.ok(!theirs.has(name), `${entry} exports ${name}, as ${theirs.get(name)} does`)
+    }
+  }
+  assert.ok(count > 100, `${count} exports`)
+  // and its types, which have no value to look for: the names index.ts exports as types
+  const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  const types = [...source.matchAll(/\btype\s+(?:\{([^}]*)\}|(\w+))/g)].flatMap(([, list, one]) => (one ? [one] : list.split(',').map((n) => n.trim())).filter((n) => n !== ''))
+  assert.ok(types.includes('BallOptions') && types.includes('USDBrepLoaderOptions'), types.join(' '))
+  for (const name of types) assert.ok(!theirs.has(name), `the package exports the type ${name}, a name of ${theirs.get(name)}'s`)
 })

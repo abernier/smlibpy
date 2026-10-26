@@ -13,14 +13,14 @@
 import type * as THREE from 'three'
 import type { NURBSSurface } from 'three/addons/curves/NURBSSurface.js'
 import { call, describe, sm, vec, type SmBody } from './kernel.ts'
-import { Edge, isObject3D, kernelOf, kernelOfShape, operand, pathOf, toThree, type Body, type Face, type Part, type Shell, type Wire } from './shapes.ts'
+import { BrepEdge, isObject3D, kernelOf, kernelOfShape, operand, pathOf, toThree, type Body, type BrepFace, type Part, type Shell, type Wire } from './shapes.ts'
 
 // (this module and shapes.ts import each other: what it takes from shapes.ts is used in calls only,
 // never while the module loads)
 
-/** A curve given to a surface: an Edge or Wire (where it is), or one of three's 3D curves (in the
+/** A curve given to a surface: a BrepEdge or Wire (where it is), or one of three's 3D curves (in the
  * frame of the first curve). */
-export type CurveLike = Edge | Wire | THREE.Curve<THREE.Vector3>
+export type CurveLike = BrepEdge | Wire | THREE.Curve<THREE.Vector3>
 
 // ----------------------------------------------------------------------------------- from points
 /**
@@ -63,8 +63,9 @@ export interface SurfaceOptions {
  * and at least 4 x 4 (the surface is bicubic); its normal is (points[i + 1][j] - points[i][j]) ×
  * (points[i][j + 1] - points[i][j]), so rows that follow one another along +z, each running along +x,
  * face up (+y). A cloud is points in any order (at least 4), such as a scan, which the surface
- * approaches; it spans the smallest rectangle around them in their best-fit plane and faces up (+y),
- * a cloud standing upright -z, one facing along x +x. A cloud must be a height field over its
+ * approaches; it spans the smallest rectangle around them in their best-fit plane and faces +z where
+ * that plane's normal has a z part (a cloud over the XY plane faces +z), else +y, else +x. A cloud
+ * must be a height field over its
  * best-fit plane (no overhangs); one that is not gets a surface that misses it, without an error:
  * check the report's `maxDistance`.
  */
@@ -106,7 +107,7 @@ interface ThreeNurbs {
  * ends at the corners of the net), the degrees `[u, v]` or one for both (default: from the knots,
  * else 3, less where there are fewer points), and a positive weight per control point in the same
  * rows (null: not rational). Or the data in one object (NurbsSurfaceData: the inverse of
- * `Face.nurbs()`, in the frame of the face's body), or three's NURBSSurface
+ * `BrepFace.nurbs()`, in the frame of the face's body), or three's NURBSSurface
  * (three/addons/curves/NURBSSurface.js) read as three evaluates it: `degree1` and `knots1` along u
  * (the first index of its control points), and the `w` of each control point its weight (for
  * clamped knots, which three's getPoint assumes, the same surface). The face's normal is along
@@ -177,7 +178,7 @@ export function fill(boundary: CurveLike | Iterable<CurveLike>, options: FillOpt
   if (!items.length) throw new RangeError('fill: no curves')
   const into = isObject3D(items[0]) ? items[0] : null
   const moved = new Map<Body, Moved>()
-  const kernel = items.map((c) => (c instanceof Edge && c.owner !== null ? bodyEdge(c, into, moved, 'fill') : pathOf(c, into)))
+  const kernel = items.map((c) => (c instanceof BrepEdge && c.owner !== null ? bodyEdge(c, into, moved, 'fill') : pathOf(c, into)))
   return toThree(call(() => sm.fill(kernel, options)), into) as Shell
 }
 
@@ -222,7 +223,7 @@ interface Moved {
  * `moved`), and the edge taken from it at its place among the body's edges (a moved copy keeps their
  * order).
  */
-function bodyEdge(edge: Edge, into: THREE.Object3D | null, moved: Map<Body, Moved>, what: string): sm.Edge {
+function bodyEdge(edge: BrepEdge, into: THREE.Object3D | null, moved: Map<Body, Moved>, what: string): sm.Edge {
   const owner = edge.owner!
   let m = moved.get(owner)
   if (m === undefined) {
@@ -257,7 +258,7 @@ export interface SurfaceFilletOptions {
  * on them. `b` is taken where it is; the blend is in the frame of `a` (its body's, for a face), with
  * its transform.
  */
-export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options: SurfaceFilletOptions = {}): Shell {
+export function surfaceFillet(a: BrepFace | Shell, b: BrepFace | Shell, radius: number, options: SurfaceFilletOptions = {}): Shell {
   const ka = operand(a, a, 'surfaceFillet') as sm.Face | sm.Shell
   const kb = operand(b, a, 'surfaceFillet') as sm.Face | sm.Shell
   return toThree(call(() => sm.surfaceFillet(ka, kb, radius, options)), a) as Shell
@@ -283,9 +284,9 @@ export interface BlendOptions {
  * are bridged all round. The sheets are taken where they are; the blend is in the frame of `edgeA`'s
  * sheet, with its transform.
  */
-export function blend(edgeA: Edge, edgeB: Edge, options: BlendOptions = {}): Shell {
+export function blend(edgeA: BrepEdge, edgeB: BrepEdge, options: BlendOptions = {}): Shell {
   for (const [e, name] of [[edgeA, 'edgeA'], [edgeB, 'edgeB']] as const) {
-    if (!(e instanceof Edge)) throw new TypeError(`blend: ${name} is an edge of a sheet, not ${describe(e)}`)
+    if (!(e instanceof BrepEdge)) throw new TypeError(`blend: ${name} is an edge of a sheet, not ${describe(e)}`)
   }
   const into = edgeA.owner ?? edgeA
   const moved = new Map<Body, Moved>()
@@ -331,7 +332,7 @@ export interface StitchOptions {
 }
 
 /** What `stitch` sews: faces, sheets (sketches too) and parts, and lists of them. */
-export type StitchPiece = Part | Shell | Face | Iterable<StitchPiece>
+export type StitchPiece = Part | Shell | BrepFace | Iterable<StitchPiece>
 
 /**
  * Faces and sheets sewn along their common edges: `stitch(a, b, c, { tolerance: 0.01 })`, or
