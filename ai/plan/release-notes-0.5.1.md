@@ -155,6 +155,11 @@ methods and classes.
 
 ## Known issues
 
+Carried over from 0.5.0: on macOS x86_64 (Intel Macs, and x86_64 builds under Rosetta), a body
+is now and then freed twice during garbage collection, which crashes the process. That was 3 of
+10 runs of the test suite with x86_64 builds, on GitHub's Intel runner and under Rosetta. macOS
+arm64, Linux and Windows are not affected.
+
 These were found during this release's review and are not fixed in it:
 
 - A sweep whose profile reaches past the path's tightest bend returns a body that passes through
