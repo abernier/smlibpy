@@ -16,7 +16,7 @@
 
 export const version = '0.1.0'
 
-export { KernelError, ModelingError } from './errors.ts'
+export { FontError, KernelError, ModelingError } from './errors.ts'
 export type { Align2, Align3, AlignValue } from './types.ts'
 export {
   Body,
@@ -68,8 +68,55 @@ export {
   type SphereOptions,
   type TorusOptions,
 } from './primitives.ts'
-export { Circle, Ellipse, Polygon, Rectangle, RegularPolygon, Slot, Text, type CornerOptions, type SketchPlacement, type TextOptions } from './sketches.ts'
-export { Bezier, CenterArc, Helix, Line, Polyline, Spline, ThreePointArc } from './curves.ts'
+export {
+  ArcSlot,
+  Circle,
+  Ellipse,
+  Hull,
+  Polygon,
+  Rectangle,
+  RegularPolygon,
+  RoundedRectangle,
+  Slot,
+  Stroke,
+  Text,
+  Trapezoid,
+  Triangle,
+  makeFace,
+  type CornerOptions,
+  type HullItem,
+  type SketchPlacement,
+  type SketchPoint,
+  type StrokeOptions,
+  type TextOptions,
+  type TrapezoidOptions,
+} from './sketches.ts'
+export { Profile, type Coordinates } from './profiles.ts'
+export { DEFAULT_FONT, Font, loadFont, type Contour, type FontSource, type PairAdjustment } from './font.ts'
+export {
+  Bezier,
+  CenterArc,
+  ConicArc,
+  EllipticalArc,
+  FilletPolyline,
+  Helix,
+  HyperbolicArc,
+  Line,
+  ParabolicArc,
+  PolarLine,
+  Polyline,
+  RadiusArc,
+  SagittaArc,
+  Spiral,
+  Spline,
+  TangentArc,
+  ThreePointArc,
+  fitCurve,
+  makeCompatible,
+  type ArcSideOptions,
+  type FitCurveOptions,
+  type HelixOptions,
+} from './curves.ts'
 export {
   ACCURACY,
   GridLocations,

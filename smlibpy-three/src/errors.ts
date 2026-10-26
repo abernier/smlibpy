@@ -23,3 +23,11 @@ export class KernelError extends ModelingError {
     this.trace = details.trace
   }
 }
+
+/** The data is not a font the reader can use (smlibpy's FontError): a RangeError. */
+export class FontError extends RangeError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FontError'
+  }
+}

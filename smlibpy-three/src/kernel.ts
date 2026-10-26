@@ -9,7 +9,7 @@
 // The kernel works in degrees, three in radians: angles are converted here too.
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
-import { KernelError, ModelingError } from './errors.ts'
+import { FontError, KernelError, ModelingError } from './errors.ts'
 import type { Align2, Align3, AlignValue } from './types.ts'
 
 export { sm }
@@ -143,6 +143,7 @@ export function translate(e: unknown): unknown {
   // (the kernel's errors are not passed on as causes: nothing of smlibwasm's leaves the package)
   if (e instanceof sm.KernelError) return new KernelError(e.message, { operation: e.operation, status: e.status, hint: e.hint, trace: e.trace })
   if (e instanceof sm.ModelingError) return new ModelingError(e.message)
+  if (e instanceof sm.FontError) return new FontError(e.message)
   return e
 }
 
