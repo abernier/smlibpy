@@ -1,12 +1,19 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmBSplineSurfaceNLib.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-23. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-23, last on 2026-10-26. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmBSplineSurface::CreateCornerBlend released the copies of the boundaries' UV curves before an
 //   N-sided patch (sCleanUV.Clear()), as if the tangent fields made from them owned them; they do
 //   not (SmCrvOnSurf's owner flag 0), and CreateNSidedPatch does not take them: every corner patch
 //   of five or more sides lost them (LeakSanitizer: the copies and drops of
 //   sm_CreateNonRationalCurve, 20.7 kB in 288 objects over the set-back corners of
 //   tests/test_closeout_F.py, whose patches have six sides). They are freed with the rest.
+//   SmBSplineSurface::CreateCornerBlend puts the bottom and top boundaries of a four-sided patch on
+//   [0, 1], as it puts the left and right ones. It left them to MakeCurvesCompatible, which
+//   rescales only curves whose intervals differ, so a bottom and a top of one interval kept it;
+//   the Coons patch blends across them over [0, 1] all the same, and the cross tangents along the
+//   left and right sides (the bottom's and top's derivatives) were off by a factor of that
+//   interval's length: the patch tilted away from its sheets along those sides. The round hole of
+//   a sphere, one edge cut into four equal arcs of [0, 3 pi] each, was filled 19.5 degrees off.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -3179,6 +3186,10 @@ SmBoolean bDebugMe = FALSE ;
       sCurves.ReSet();
       sCurves.Add(sBoundaries[lBot]);
       sCurves.Add(sBoundaries[lTop]);
+      // smlibpy patch: on the unit interval, as the left/right pair (MakeCurvesCompatible leaves
+      // curves that share their interval where they are)
+      sCurves[0]->EditParameterization( sUnitIvl );
+      sCurves[1]->EditParameterization( sUnitIvl );
       SER(SmBSplineCurve::MakeCurvesCompatible( sCurves, dKnotTol ));
 
       // when working with crossTangents (making g1 patches)
