@@ -26,3 +26,17 @@ export function ray(origin: [number, number, number], direction: [number, number
 }
 
 export const Y = new THREE.Vector3(0, 1, 0)
+
+/** Fails if `value`, or anything reachable through its enumerable properties, is one of smlibwasm's. */
+export async function noKernel(value: unknown, path = 'value', seen = new Set<unknown>()): Promise<void> {
+  const sm = await import('@classcad/smlibwasm')
+  const classes = (Object.values(sm) as unknown[]).filter((v): v is new () => object => typeof v === 'function' && /^[A-Z]/.test(v.name))
+  const walk = (v: unknown, at: string) => {
+    if (v === null || typeof v !== 'object' || seen.has(v)) return
+    seen.add(v)
+    for (const cls of classes) assert.ok(!(v instanceof cls), `${at} is smlibwasm's ${cls.name}`)
+    if (ArrayBuffer.isView(v)) return
+    for (const [key, x] of Object.entries(v)) walk(x, `${at}.${key}`)
+  }
+  walk(value, path)
+}

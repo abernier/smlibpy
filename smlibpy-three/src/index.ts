@@ -35,10 +35,66 @@ export {
   type FacesLike,
   type FilletOptions,
   type FilletRadius,
+  type PushOptions,
+  type RegionLike,
+  type SortKey,
   type SweepOptions,
 } from './shapes.ts'
-export { Box, Cone, Cylinder, Sphere, Torus, Wedge, type PlacementOptions } from './primitives.ts'
+export {
+  DraftAnalysis,
+  MassProperties,
+  SectionProperties,
+  type BodyInfo,
+  type ClosestPoints,
+  type Continuity,
+  type Curvature,
+  type FaceDraft,
+  type Problem,
+  type RayHit,
+} from './properties.ts'
+export {
+  AnnularSector,
+  Box,
+  Cone,
+  CounterBoreHole,
+  CounterSinkHole,
+  Cylinder,
+  Hole,
+  Pyramid,
+  Sphere,
+  Torus,
+  Wedge,
+  type PlacementOptions,
+  type SphereOptions,
+  type TorusOptions,
+} from './primitives.ts'
 export { Circle, Ellipse, Polygon, Rectangle, RegularPolygon, Slot, Text, type CornerOptions, type SketchPlacement, type TextOptions } from './sketches.ts'
 export { Bezier, CenterArc, Helix, Line, Polyline, Spline, ThreePointArc } from './curves.ts'
-export { GridLocations, HexLocations, PolarLocations, extrude, loft, revolve, sweep, type LoftOptions } from './operations.ts'
+export {
+  ACCURACY,
+  GridLocations,
+  HexLocations,
+  Locations,
+  PolarLocations,
+  TOLERANCE,
+  X,
+  Y,
+  Z,
+  chamfer,
+  extrude,
+  fillet,
+  loft,
+  merge,
+  mirror,
+  offset,
+  revolve,
+  section,
+  shell,
+  split,
+  sweep,
+  swing,
+  thicken,
+  type LoftOptions,
+  type ProfileLike,
+} from './operations.ts'
 export { STEPExporter, STEPLoader, type STEPExporterOptions } from './files.ts'

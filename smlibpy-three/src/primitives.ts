@@ -52,27 +52,117 @@ export class Cone extends Part {
   }
 }
 
-/** A sphere around the origin. */
-export class Sphere extends Part {
-  declare readonly parameters: { readonly radius: number; readonly align?: Align3 }
+/** Options of Sphere: a zone between two latitudes (radians from the equator, the XZ plane,
+ * towards +y; from -π/2 to π/2) and a sector of `arcSize3` radians about y. */
+export interface SphereOptions extends PlacementOptions {
+  arcSize1?: number
+  arcSize2?: number
+  arcSize3?: number
+}
 
-  constructor(radius = 1, options: PlacementOptions = {}) {
+/** A sphere around the origin (or a zone or sector of one). */
+export class Sphere extends Part {
+  declare readonly parameters: { readonly radius: number } & SphereOptions
+
+  constructor(radius = 1, options: SphereOptions = {}) {
     super()
     if (internal(this)) return
-    this.parameters = { radius, align: options.align }
-    setKernel(this, call(() => sm.Sphere(radius, { align: align3(options.align) })))
+    this.parameters = { radius, ...options }
+    const angle = (a: number | undefined) => (a === undefined ? undefined : degrees(a))
+    setKernel(this, call(() => sm.Sphere(radius, { arcSize1: angle(options.arcSize1), arcSize2: angle(options.arcSize2), arcSize3: angle(options.arcSize3), align: align3(options.align) })))
   }
+}
+
+/** Options of Torus: a part of the tube's section (from `minorStartAngle` to `minorEndAngle`) and of
+ * the ring (`majorAngle`), in radians. */
+export interface TorusOptions extends PlacementOptions {
+  minorStartAngle?: number
+  minorEndAngle?: number
+  majorAngle?: number
 }
 
 /** A torus around y (lying on the XZ plane). */
 export class Torus extends Part {
-  declare readonly parameters: { readonly majorRadius: number; readonly minorRadius: number; readonly align?: Align3 }
+  declare readonly parameters: { readonly majorRadius: number; readonly minorRadius: number } & TorusOptions
 
-  constructor(majorRadius = 1, minorRadius = 0.25, options: PlacementOptions = {}) {
+  constructor(majorRadius = 1, minorRadius = 0.25, options: TorusOptions = {}) {
     super()
     if (internal(this)) return
-    this.parameters = { majorRadius, minorRadius, align: options.align }
-    setKernel(this, call(() => sm.Torus(majorRadius, minorRadius, { align: align3(options.align) })))
+    this.parameters = { majorRadius, minorRadius, ...options }
+    const angle = (a: number | undefined) => (a === undefined ? undefined : degrees(a))
+    setKernel(
+      this,
+      call(() =>
+        sm.Torus(majorRadius, minorRadius, {
+          minorStartAngle: angle(options.minorStartAngle),
+          minorEndAngle: angle(options.minorEndAngle),
+          majorAngle: angle(options.majorAngle),
+          align: align3(options.align),
+        }),
+      ),
+    )
+  }
+}
+
+/** A pyramid: a `length` (x) by `width` (z) base, its apex `height` above (+y). */
+export class Pyramid extends Part {
+  declare readonly parameters: { readonly length: number; readonly width: number; readonly height: number; readonly align?: Align3 }
+
+  constructor(length = 1, width = 1, height = 1, options: PlacementOptions = {}) {
+    super()
+    if (internal(this)) return
+    this.parameters = { length, width, height, align: options.align }
+    setKernel(this, call(() => sm.Pyramid(length, width, height, { align: align3(options.align) })))
+  }
+}
+
+/** A sector of a thick ring around y: from `innerRadius` to `outerRadius`, `height` high, over
+ * `arcSize` radians. */
+export class AnnularSector extends Part {
+  declare readonly parameters: { readonly innerRadius: number; readonly outerRadius: number; readonly height: number; readonly arcSize: number; readonly align?: Align3 }
+
+  constructor(innerRadius = 0.5, outerRadius = 1, height = 1, arcSize = Math.PI / 2, options: PlacementOptions = {}) {
+    super()
+    if (internal(this)) return
+    this.parameters = { innerRadius, outerRadius, height, arcSize, align: options.align }
+    setKernel(this, call(() => sm.AnnularSector(innerRadius, outerRadius, height, degrees(arcSize), { align: align3(options.align) })))
+  }
+}
+
+/** A drilling tool: a cylinder from the origin down to -`depth` (along -y), to cut into a face
+ * placed with `at(Locations(face))`. */
+export class Hole extends Part {
+  declare readonly parameters: { readonly radius: number; readonly depth: number }
+
+  constructor(radius = 1, depth = 1) {
+    super()
+    if (internal(this)) return
+    this.parameters = { radius, depth }
+    setKernel(this, call(() => sm.Hole(radius, depth)))
+  }
+}
+
+/** A drilling tool with a counterbore at the top. */
+export class CounterBoreHole extends Part {
+  declare readonly parameters: { readonly radius: number; readonly counterBoreRadius: number; readonly counterBoreDepth: number; readonly depth: number }
+
+  constructor(radius = 1, counterBoreRadius = 2, counterBoreDepth = 1, depth = 3) {
+    super()
+    if (internal(this)) return
+    this.parameters = { radius, counterBoreRadius, counterBoreDepth, depth }
+    setKernel(this, call(() => sm.CounterBoreHole(radius, counterBoreRadius, counterBoreDepth, depth)))
+  }
+}
+
+/** A drilling tool with a conical countersink of included `angle` (radians; default 82 degrees) at the top. */
+export class CounterSinkHole extends Part {
+  declare readonly parameters: { readonly radius: number; readonly counterSinkRadius: number; readonly depth: number; readonly angle: number }
+
+  constructor(radius = 1, counterSinkRadius = 2, depth = 3, angle = (82 * Math.PI) / 180) {
+    super()
+    if (internal(this)) return
+    this.parameters = { radius, counterSinkRadius, depth, angle }
+    setKernel(this, call(() => sm.CounterSinkHole(radius, counterSinkRadius, depth, degrees(angle))))
   }
 }
 

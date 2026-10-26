@@ -32,6 +32,7 @@ import {
   location,
   matrix4,
   plane as toPlane,
+  radians,
   ray,
   sm,
   threePlane,
@@ -40,6 +41,23 @@ import {
   type SmBody,
 } from './kernel.ts'
 import { edgeAt, faceAt, faceOf, lineGeometry, polyline, tessellate, type Tessellation } from './tessellation.ts'
+import {
+  DraftAnalysis,
+  MassProperties,
+  SectionProperties,
+  closestPointsOf,
+  continuityOf,
+  curvatureOf,
+  infoOf,
+  problemOf,
+  rayHitOf,
+  type BodyInfo,
+  type ClosestPoints,
+  type Continuity,
+  type Curvature,
+  type Problem,
+  type RayHit,
+} from './properties.ts'
 
 // --------------------------------------------------------------------------------------- state
 const STATE = Symbol('smlibpy-three')
@@ -230,13 +248,6 @@ export function wrap(value: SmBody): Part | Shell | Sketch {
   }
 }
 
-function wrapAny(value: unknown): unknown {
-  if (value instanceof sm.Part || value instanceof sm.Shell) return wrap(value)
-  if (value instanceof sm.Edge || value instanceof sm.Wire) return curveOf(value)
-  if (Array.isArray(value)) return value.map(wrapAny)
-  return value
-}
-
 /** @internal
  * An Edge or Wire for a kernel curve: of `owner` (a body's, where the body is) or of its own. */
 export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Edge | Wire {
@@ -343,18 +354,22 @@ export function toKernel(value: unknown, into: THREE.Object3D | null): unknown {
  * its objects (a face of another body with that body wrapped first); other curves as curves of
  * their own where `like` is; vectors, boxes, planes, axes and locations as three's; lists item by
  * item. `like` null: as they are, at the world's origin. */
-export function toThree(value: unknown, like: THREE.Object3D | null): unknown {
+export function toThree(value: unknown, like: THREE.Object3D | null, made: Map<unknown, Body> = new Map()): unknown {
   const frame = like === null ? null : frameOf(like)
   const body = frame instanceof Body ? frame : null
   if (value instanceof sm.Part || value instanceof sm.Shell) {
+    const known = made.get(value)
+    if (known !== undefined) return known
     const b = wrap(value)
-    if (body !== null) return adopt(b, body)
-    if (frame !== null) THREE.Object3D.prototype.copy.call(b, frame, false)
+    if (body !== null) adopt(b, body)
+    else if (frame !== null) THREE.Object3D.prototype.copy.call(b, frame, false)
+    made.set(value, b)
     return b
   }
   if (value instanceof sm.Face) {
     if (body !== null && value.owner === state(body).held?.value) return shapeFor(body, value) ?? value
-    return value.owner === null ? value : (shapeFor(toThree(value.owner, like) as Body, value) ?? value)
+    // (a face of a new body: the body wrapped, once for all its faces)
+    return value.owner === null ? value : (shapeFor(toThree(value.owner, like, made) as Body, value) ?? value)
   }
   if (value instanceof sm.Edge || value instanceof sm.Vertex) {
     const own = body === null ? undefined : shapeFor(body, value)
@@ -372,8 +387,8 @@ export function toThree(value: unknown, like: THREE.Object3D | null): unknown {
   if (value instanceof sm.Plane) return threePlane(value)
   if (value instanceof sm.Axis) return ray(value)
   if (value instanceof sm.Location) return matrix4(value)
-  if (value instanceof sm.ShapeList) return ShapeList.from([...value].map((x) => toThree(x, like)))
-  if (Array.isArray(value)) return value.map((x) => toThree(x, like))
+  if (value instanceof sm.ShapeList) return ShapeList.from([...value].map((x) => toThree(x, like, made)))
+  if (Array.isArray(value)) return value.map((x) => toThree(x, like, made))
   return value
 }
 
@@ -534,6 +549,87 @@ export abstract class Body extends THREE.Mesh {
     return ShapeList.from([...call(() => value.intersectionCurves(o))].map((e) => curveOf(e, this) as Edge)) as ShapeList<Edge>
   }
 
+  /** True if `other` holds the same kernel body (as a clone does). */
+  equals(other: unknown): boolean {
+    return other instanceof Body && state(this).held !== null && state(other).held === state(this).held
+  }
+
+  /** The body's summary: its type, how many faces, edges and vertices, its box (in its frame). */
+  info(): BodyInfo {
+    const value = kernelOf(this)
+    return infoOf(call(() => value.info()))
+  }
+
+  /** The kernel's check of the body: what it finds wrong (nothing for a sound body). `level` 0 to 3, more thorough. */
+  check(level?: number): Problem[] {
+    const value = kernelOf(this)
+    return call(() => value.check(level)).map((p) => problemOf(p, this))
+  }
+
+  /** The nearest points of this body and another shape (taken where it is), and the faces they lie on. */
+  closestPoints(other: Body | Face | Edge | Wire): ClosestPoints {
+    const value = kernelOf(this)
+    const o = operand(other, this, 'closestPoints') as sm.Part | sm.Shell | sm.Face | sm.Edge | sm.Wire
+    // (the other's face: by its place among the faces of the kernel's copy, moved into this frame)
+    const otherFace = (k: sm.Face): Face | null => {
+      if (other instanceof Face) return other
+      if (!(other instanceof Body) || !(o instanceof sm.Part || o instanceof sm.Shell)) return null
+      const i = [...o.faces()].findIndex((f) => f.equals(k))
+      return i < 0 ? null : other.faces()[i]
+    }
+    return closestPointsOf(call(() => value.closestPoints(o)), this, otherFace)
+  }
+
+  /** The exact hits of a ray (in the body's frame) on its faces, nearest first: the kernel's ray
+   * cast on the exact surfaces (three's raycast works on the tessellation). */
+  intersectRay(ray: THREE.Ray): RayHit[] {
+    const value = kernelOf(this)
+    return call(() => value.raycast(vec(ray.origin), vec(ray.direction))).map((h) => rayHitOf(h, this))
+  }
+
+  /** The first exact hit of each ray (null where it misses), for many rays at once. */
+  intersectRays(rays: Iterable<THREE.Ray>): (RayHit | null)[] {
+    const value = kernelOf(this)
+    const list = [...rays]
+    const hits = call(() => value.raycastMany(list.map((r) => vec(r.origin)), list.map((r) => vec(r.direction))))
+    return hits.map((h) => (h === null ? null : rayHitOf(h, this)))
+  }
+
+  /** Frees what the kernel keeps for queries of the body (its meshes and bounds); the body stays as
+   * it is, and the next query builds what it needs again. */
+  compact(): void {
+    const value = kernelOf(this)
+    call(() => value.compact())
+  }
+
+  /** The body's contour seen along `direction` (in its frame, from the body towards the viewer;
+   * default +y): the curves where its faces turn away, as curves of their own where the body is. */
+  silhouette(direction?: THREE.Vector3Like): ShapeList<Edge> {
+    const value = kernelOf(this)
+    return toThree(call(() => value.silhouette(direction === undefined ? undefined : vec(direction))), this) as ShapeList<Edge>
+  }
+
+  /** A curve (taken where it is) projected onto the body along `direction` (in its frame): the
+   * curves on its faces. `nearest` keeps what the projection reaches first. */
+  project(curve: Edge | Wire, direction?: THREE.Vector3Like, options: { nearest?: boolean } = {}): ShapeList<Edge> {
+    const value = kernelOf(this)
+    const c = operand(curve, this, 'project') as sm.Edge | sm.Wire
+    return toThree(call(() => value.project(c, direction === undefined ? undefined : vec(direction), options)), this) as ShapeList<Edge>
+  }
+
+  /**
+   * The body's edges and contours projected onto a plane (in its frame; default the ground, y = 0,
+   * seen from above): a drawing view's visible lines, in the plane. `hidden: true` gives
+   * [visible, hidden]; `tangentEdges` draws the edges between tangent faces too.
+   */
+  outline(plane?: THREE.Plane, options?: { hidden?: false; tangentEdges?: boolean }): ShapeList<Edge>
+  outline(plane: THREE.Plane | undefined, options: { hidden: true; tangentEdges?: boolean }): [ShapeList<Edge>, ShapeList<Edge>]
+  outline(plane?: THREE.Plane, options: { hidden?: boolean; tangentEdges?: boolean } = {}): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] {
+    const value = kernelOf(this)
+    const out = call(() => value.outline(plane === undefined ? undefined : toPlane(plane), options))
+    return toThree(out, this) as ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>]
+  }
+
   // -- placing ----------------------------------------------------------------------------------
   /**
    * Clones of this body, one at each of `locations` (moved by it, as `clone().applyMatrix4(m)`):
@@ -619,6 +715,78 @@ export abstract class Body extends THREE.Mesh {
 }
 
 Object.defineProperty(Body.prototype, 'isBody', { value: true })
+
+/** The result of `op` on a body's kernel value: a body of the same kind, where the body is. */
+function same<T extends Body>(body: Body, op: (value: never) => SmBody): T {
+  const value = kernelOf(body)
+  return adopt(wrap(call(() => op(value as never))) as unknown as T, body)
+}
+
+/** The faces of `body` given to a method (as kernel faces), which must be the body's (or a clone's). */
+function ownFaces(body: Body, faces: FacesLike, what: string): sm.Face[] {
+  const value = kernelOf(body)
+  return (isObject3D(faces) ? [faces] : [...(faces as Iterable<Face>)]).map((f) => {
+    if (!(f instanceof Face)) throw new TypeError(`${what}: give faces of this body, not ${describe(f)}`)
+    const owner = state(f).owner
+    if (owner === null || state(owner).held?.value !== value) throw new RangeError(`${what}: the face is not one of this body's`)
+    return subOf(f) as sm.Face
+  })
+}
+
+/** The edges of `body` given to a method (as kernel edges), which must be the body's (or a clone's). */
+function ownEdges(body: Body, edges: Edge | Iterable<Edge>, what: string): sm.Edge[] {
+  const value = kernelOf(body)
+  return (isObject3D(edges) ? [edges] : [...(edges as Iterable<Edge>)]).map((e) => {
+    if (!(e instanceof Edge)) throw new TypeError(`${what}: give edges of this body, not ${describe(e)}`)
+    const owner = state(e).owner
+    if (owner === null || state(owner).held?.value !== value) throw new RangeError(`${what}: the edge is not one of this body's`)
+    return subOf(e) as sm.Edge
+  })
+}
+
+/** A color as the kernel's (sRGB, 0 to 1). */
+function srgb(color: THREE.ColorRepresentation): [number, number, number] {
+  const out = { r: 0, g: 0, b: 0 }
+  new THREE.Color(color).getRGB(out, THREE.SRGBColorSpace)
+  return [out.r, out.g, out.b]
+}
+
+/** A placement target of `on()`: a face (where it is), a THREE.Plane or a THREE.Matrix4 (in `into`'s frame). */
+function placement(target: Face | THREE.Plane | THREE.Matrix4, into: THREE.Object3D): sm.Plane | sm.Face | sm.Location {
+  if ((target as THREE.Plane).isPlane) return toPlane(target as THREE.Plane)
+  if (isMatrix4(target)) return location(target)
+  return operand(target, into, 'on') as sm.Face
+}
+
+/** What push, warp and flatten take as a region: a sketch, face or curve (where it is) or points (in the body's frame). */
+export type RegionLike = Sketch | Face | Wire | Edge | Iterable<THREE.Vector3Like>
+
+function regionOf(region: RegionLike, into: Body, what: string): sm.Sketch | sm.Face | sm.Wire | sm.Edge | sm.Vector[] {
+  if (isObject3D(region)) return operand(region, into, what) as sm.Sketch | sm.Face | sm.Wire | sm.Edge
+  return [...(region as Iterable<THREE.Vector3Like>)].map((p) => vec(p))
+}
+
+/** Options of push (smlibpy's): how far and which way the region of a face moves. */
+export interface PushOptions {
+  /** A distance along the face's normal there, or a Vector3 (in the body's frame). */
+  by?: number | THREE.Vector3Like | null
+  /** The point to move to instead. */
+  to?: THREE.Vector3Like | null
+  /** The direction to move along instead of the face's normal. */
+  normal?: THREE.Vector3Like | null
+  /** How far around `at` the face follows. */
+  radius?: number | null
+  continuity?: string
+}
+
+function pushOptions(o: PushOptions): Record<string, unknown> {
+  return {
+    ...o,
+    by: o.by == null || typeof o.by === 'number' ? o.by : vec(o.by),
+    to: o.to == null ? o.to : vec(o.to),
+    normal: o.normal == null ? o.normal : vec(o.normal),
+  }
+}
 
 /** The tessellation three draws of a body: none for an empty body (or one disposed before it was
  * drawn), and none, with one console message, where the kernel cannot tessellate it (a render
@@ -815,14 +983,11 @@ export class Part extends Body {
     return call(() => value.volume)
   }
 
-  /** Mass, volume, area, center and inertia (in three's axes, about the center) for a density. */
-  massProperties(density = 1): { mass: number; volume: number; area: number; center: THREE.Vector3; inertia: THREE.Matrix3 } {
+  /** Mass, volume, area, center and inertia (in three's axes, about the center) for a density;
+   * `accuracy` the relative accuracy of the integration. */
+  massProperties(density = 1, accuracy: number | null = null): MassProperties {
     const value = kernelOf(this) as sm.Part
-    const p = call(() => value.massProperties(density))
-    const r = new THREE.Matrix3().setFromMatrix4(C)
-    const i = new THREE.Matrix3().set(...(p.inertia.flat() as [number, number, number, number, number, number, number, number, number]))
-    const inertia = r.clone().multiply(i).multiply(r.clone().transpose())
-    return { mass: p.mass, volume: p.volume, area: p.area, center: vector3(p.center), inertia }
+    return new MassProperties(call(() => value.massProperties(density, accuracy)))
   }
 
   /** True where `point` (in this part's frame) is inside the part or on it. */
@@ -848,9 +1013,18 @@ export class Part extends Body {
     return this.boolean('cut', others)
   }
 
-  /** What this part and the others share (smlibpy's `a & b`). */
-  intersect(...others: (Part | Iterable<Part>)[]): Part {
-    return this.boolean('intersect', others)
+  /** What this part and the others share (smlibpy's `a & b`); with a sheet or a face, the piece of
+   * it inside the part (a Shell). */
+  intersect(sheet: Shell | Face): Shell
+  intersect(...others: (Part | Iterable<Part>)[]): Part
+  intersect(...others: (Part | Shell | Face | Iterable<Part>)[]): Part | Shell {
+    const [first] = others
+    if (others.length === 1 && ((first instanceof Shell && !(first instanceof Sketch)) || first instanceof Face || first instanceof Sketch)) {
+      const value = kernelOf(this) as sm.Part
+      const sheet = operand(first, this, 'intersect') as sm.Shell | sm.Face
+      return adopt(wrap(call(() => value.intersect(sheet))) as Shell, this)
+    }
+    return this.boolean('intersect', others as (Part | Iterable<Part>)[])
   }
 
   private boolean(op: 'fuse' | 'cut' | 'intersect', others: readonly (Part | Iterable<Part>)[]): Part {
@@ -879,17 +1053,23 @@ export class Part extends Body {
     return adopt(wrap(call(() => value.chamfer(e, length, o))) as Part, this)
   }
 
-  /** A hollow part with walls `thickness` thick, open at `openings` (faces of this part). */
-  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean } = {}): Part {
+  /**
+   * A hollow part with walls `thickness` thick, open at `openings` (faces of this part); `outward`
+   * grows the walls outward, `corners` 'round' or 'sharp', `walls` other thicknesses for some faces
+   * (a Map of faces to thicknesses, or [faces, thickness] pairs).
+   */
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: ReadonlyMap<Face, number> | Iterable<readonly [FacesLike, number]> | null } = {}): Part {
     const value = kernelOf(this) as sm.Part
-    const o = openings === null ? null : (this.own(openings, 'shell') as sm.Face[])
-    return adopt(wrap(call(() => value.shell(thickness, o, options))) as Part, this)
+    const o = openings === null ? null : ownFaces(this, openings, 'shell')
+    const walls = options.walls == null ? options.walls : [...options.walls].map(([faces, t]) => [ownFaces(this, faces, 'shell'), t] as const)
+    return adopt(wrap(call(() => value.shell(thickness, o, { ...options, walls }))) as Part, this)
   }
 
-  /** The part grown (or shrunk, for a negative distance) by `distance` all round. */
-  offset(distance: number): Part {
+  /** The part grown (or shrunk, for a negative distance) by `distance` all round; `corners` 'round'
+   * or 'sharp'. */
+  offset(distance: number, options: { corners?: string } = {}): Part {
     const value = kernelOf(this) as sm.Part
-    return adopt(wrap(call(() => value.offset(distance))) as Part, this)
+    return adopt(wrap(call(() => value.offset(distance, options))) as Part, this)
   }
 
   /** The part on the side of `plane` (in its frame) the plane's normal points to, as three's
@@ -911,8 +1091,184 @@ export class Part extends Body {
 
   /** The part mirrored in `plane` (in its frame). */
   mirror(plane: THREE.Plane): Part {
+    return same<Part>(this, (v: sm.Part) => v.mirror(toPlane(plane)))
+  }
+
+  // -- cells --------------------------------------------------------------------------------------
+  /** The shells of the part: its outer skin and the walls of its voids. */
+  shells(): ShapeList<Shell> {
     const value = kernelOf(this) as sm.Part
-    return adopt(wrap(call(() => value.mirror(toPlane(plane)))) as Part, this)
+    return toThree(call(() => value.shells()), this) as ShapeList<Shell>
+  }
+
+  /** Its voids (closed cavities), as solids. */
+  voids(): ShapeList<Part> {
+    const value = kernelOf(this) as sm.Part
+    return toThree(call(() => value.voids()), this) as ShapeList<Part>
+  }
+
+  /** A part of several cells (regions that keep the faces they share: several materials), of this
+   * part and the others (taken where they are). */
+  merge(...others: (Part | Iterable<Part>)[]): Part {
+    const value = kernelOf(this) as sm.Part
+    const parts = flatten(others).map((o) => operand(o, this, 'merge') as sm.Part)
+    return adopt(wrap(call(() => value.merge(...parts))) as Part, this)
+  }
+
+  /** The cells of a merged part, as parts. */
+  cells(): ShapeList<Part> {
+    const value = kernelOf(this) as sm.Part
+    return toThree(call(() => value.cells()), this) as ShapeList<Part>
+  }
+
+  /** The parts a merged part was made of. */
+  get sources(): Part[] {
+    const value = kernelOf(this) as sm.Part
+    return toThree(call(() => value.sources), this) as Part[]
+  }
+
+  /** The cell of a merged part a point (in the part's frame) lies in; null outside. */
+  cellAt(point: THREE.Vector3Like, tol: number | null = null): Part | null {
+    const value = kernelOf(this) as sm.Part
+    const cell = call(() => value.cellAt(vec(point), tol))
+    return cell === null ? null : (toThree(cell, this) as Part)
+  }
+
+  /** Where a point (in the part's frame) lies: 'inside', 'outside', or 'on' with the face, edge or
+   * vertex it lies on (within `tol`). */
+  classify(point: THREE.Vector3Like, tol: number | null = null): ['inside' | 'outside' | 'on', Face | Edge | Vertex | null] {
+    const value = kernelOf(this) as sm.Part
+    const [where, shape] = call(() => value.classify(vec(point), tol))
+    return [where as 'inside' | 'outside' | 'on', shape === null ? null : (toThree(shape, this) as Face | Edge | Vertex)]
+  }
+
+  // -- features -----------------------------------------------------------------------------------
+  /** The sheets a fillet of these edges would add, without making it (to show it before). */
+  filletPreview(edges: EdgesLike, radius: number, options: { propagate?: boolean } = {}): ShapeList<Shell> {
+    const value = kernelOf(this) as sm.Part
+    const e = this.own(edges, 'filletPreview')
+    return toThree(call(() => value.filletPreview(e, radius, options)), this) as ShapeList<Shell>
+  }
+
+  /** The part with a tool's outline (a body, face, or curves, taken where they are) imprinted on its
+   * faces (projected along `direction`, in the part's frame), splitting them; `nearest` imprints on
+   * the faces the projection reaches first. */
+  imprint(tool: Body | Face | Edge | Wire | Iterable<Face | Edge | Wire>, direction: THREE.Vector3Like | null = null, options: { nearest?: boolean } = {}): Part {
+    const value = kernelOf(this) as sm.Part
+    const t = isObject3D(tool) ? operand(tool, this, 'imprint') : [...(tool as Iterable<Face | Edge | Wire>)].map((x) => operand(x, this, 'imprint'))
+    return adopt(wrap(call(() => value.imprint(t as never, direction === null ? null : vec(direction), options))) as Part, this)
+  }
+
+  /** Sections `step` apart along `axis` (in the part's frame; default +y), as sketches. */
+  slices(step: number, axis?: THREE.Vector3Like): Sketch[] {
+    const value = kernelOf(this) as sm.Part
+    return toThree(call(() => value.slices(step, axis === undefined ? undefined : vec(axis))), this) as Sketch[]
+  }
+
+  /** The part without its fillets (or those faces of them given, or those up to `maxRadius`); with
+   * `partial`, the ones the kernel cannot remove stay. */
+  removeFillets(faces: FacesLike | null = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
+    const value = kernelOf(this) as sm.Part
+    const f = faces === null ? null : ownFaces(this, faces, 'removeFillets')
+    return adopt(wrap(call(() => value.removeFillets(f, options))) as Part, this)
+  }
+
+  /** The part without these faces (holes, bosses, pockets), the faces around closed over them. */
+  removeFaces(faces: FacesLike, options: { partial?: boolean } = {}): Part {
+    const value = kernelOf(this) as sm.Part
+    return adopt(wrap(call(() => value.removeFaces(ownFaces(this, faces, 'removeFaces'), options))) as Part, this)
+  }
+
+  // -- molds --------------------------------------------------------------------------------------
+  /** How every face drafts for a mold pulled along `direction` (in the part's frame); `minAngle`
+   * (radians) the draft a face needs. */
+  draftAnalysis(direction: THREE.Vector3Like, options: { minAngle?: number } = {}): DraftAnalysis {
+    const value = kernelOf(this) as sm.Part
+    const k = call(() => value.draftAnalysis(vec(direction), { minAngle: options.minAngle === undefined ? undefined : degrees(options.minAngle) }))
+    return new DraftAnalysis(k, this, (faces) => ShapeList.from(faces) as ShapeList<Face>)
+  }
+
+  /** The parting lines for a mold pulled along `direction` (in the part's frame): where the faces
+   * turn from facing it to facing away. */
+  partingLine(direction: THREE.Vector3Like): ShapeList<Wire> {
+    const value = kernelOf(this) as sm.Part
+    return toThree(call(() => value.partingLine(vec(direction))), this) as ShapeList<Wire>
+  }
+
+  /** The faces given tilted by `angle` (radians) about where they meet `neutralPlane` (a THREE.Plane
+   * in the part's frame, or a face), for a mold pulled along that plane's normal. */
+  draft(faces: FacesLike, angle: number, neutralPlane: THREE.Plane | Face): Part {
+    const value = kernelOf(this) as sm.Part
+    const plane = (neutralPlane as THREE.Plane).isPlane ? toPlane(neutralPlane as THREE.Plane) : (operand(neutralPlane, this, 'draft') as sm.Face)
+    return adopt(wrap(call(() => value.draft(ownFaces(this, faces, 'draft'), degrees(angle), plane))) as Part, this)
+  }
+
+  // -- editing faces ------------------------------------------------------------------------------
+  /** The faces given moved by a matrix or a vector (in the part's frame), the faces around them
+   * following. */
+  moveFaces(faces: FacesLike, by: THREE.Matrix4 | THREE.Vector3Like): Part {
+    const value = kernelOf(this) as sm.Part
+    const b = isMatrix4(by) ? location(by) : vec(by)
+    return adopt(wrap(call(() => value.moveFaces(ownFaces(this, faces, 'moveFaces'), b))) as Part, this)
+  }
+
+  /** The faces given moved along their normals by `distance`. */
+  offsetFaces(faces: FacesLike, distance: number): Part {
+    const value = kernelOf(this) as sm.Part
+    return adopt(wrap(call(() => value.offsetFaces(ownFaces(this, faces, 'offsetFaces'), distance))) as Part, this)
+  }
+
+  /** A face pushed (or pulled) at a point of it (in the part's frame): a smooth bump or dent. */
+  push(face: Face, at: THREE.Vector3Like, options: PushOptions = {}): Part {
+    const value = kernelOf(this) as sm.Part
+    const [f] = ownFaces(this, face, 'push')
+    return adopt(wrap(call(() => value.push(f, vec(at), pushOptions(options)))) as Part, this)
+  }
+
+  /** A region of a face moved by `by` (a distance along its normal or a Vector3), the face bending
+   * smoothly around it. */
+  warp(face: Face, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Part {
+    const value = kernelOf(this) as sm.Part
+    const [f] = ownFaces(this, face, 'warp')
+    return adopt(wrap(call(() => value.warp(f, regionOf(region, this, 'warp') as never, typeof by === 'number' ? by : vec(by), options))) as Part, this)
+  }
+
+  /** A region of a face pressed flat onto a plane (a THREE.Plane in the part's frame, or a face). */
+  flatten(face: Face, region: RegionLike, plane: THREE.Plane | Face, options: { continuity?: string } = {}): Part {
+    const value = kernelOf(this) as sm.Part
+    const [f] = ownFaces(this, face, 'flatten')
+    const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'flatten') as sm.Face)
+    return adopt(wrap(call(() => value.flatten(f, regionOf(region, this, 'flatten') as never, p, options))) as Part, this)
+  }
+
+  // -- the same kind of body ----------------------------------------------------------------------
+  /** The part placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame):
+   * its origin to the face's center, its y axis along the face's normal. */
+  on(target: Face | THREE.Plane | THREE.Matrix4): Part {
+    return same<Part>(this, (v: sm.Part) => v.on(placement(target, this)))
+  }
+
+  /** A copy whose faces and edges are all NURBS. */
+  toNurbs(): Part {
+    return same<Part>(this, (v: sm.Part) => v.toNurbs())
+  }
+
+  /** The part with gaps, tolerances and topology repaired (mostly for imported parts). */
+  heal(): Part {
+    return same<Part>(this, (v: sm.Part) => v.heal() as sm.Part)
+  }
+
+  /** The part with these faces colored (the color stays with them through later operations, and
+   * files keep it); null takes it off. */
+  colorFaces(faces: FacesLike, color: THREE.ColorRepresentation | null): Part {
+    const f = ownFaces(this, faces, 'colorFaces')
+    return same<Part>(this, (v: sm.Part) => v.colored(color === null ? null : srgb(color), { faces: f }))
+  }
+
+  /** The part with these faces named (the name stays with them through later operations). */
+  nameFaces(faces: FacesLike, name: string | null): Part {
+    const f = ownFaces(this, faces, 'nameFaces')
+    return same<Part>(this, (v: sm.Part) => v.named(name, { faces: f }))
   }
 
   /** The kernel edges for `edges`, which must be this part's (or a clone's). */
@@ -939,6 +1295,115 @@ export class Shell extends Body {
     const value = kernelOf(this) as sm.Shell
     return adopt(wrap(call(() => value.thicken(thickness, options))) as Part, this)
   }
+
+  /** The sheet moved `distance` along its normals (a parallel surface). */
+  offset(distance: number): Shell {
+    return same<Shell>(this, (v: sm.Shell) => v.offset(distance))
+  }
+
+  /** The sheet cut along curves on it (taken where they are), keeping the side of `keep` (a point in
+   * the sheet's frame on or near the side to keep), or both sides as faces of their own ('split'). */
+  trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: THREE.Vector3Like | 'split'): Shell {
+    const c = isObject3D(curves) ? operand(curves, this, 'trim') : [...(curves as Iterable<Edge | Wire>)].map((x) => operand(x, this, 'trim'))
+    return same<Shell>(this, (v: sm.Shell) => v.trim(c as never, typeof keep === 'string' ? keep : vec(keep)))
+  }
+
+  /** The sheet with its normals turned the other way. */
+  flipped(): Shell {
+    return same<Shell>(this, (v: sm.Shell) => v.flipped())
+  }
+
+  /** The sheet extended past its free edges (or those given of them) by `distance`; `continuity`
+   * 'G1' or 'G2' with the surface. */
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+    const sides = options.sides == null ? options.sides : ownEdges(this, options.sides, 'extend')
+    return same<Shell>(this, (v: sm.Shell) => v.extend(distance, { ...options, sides }))
+  }
+
+  /** The sheet with one of its free edges moved onto a curve (taken where it is), the surface
+   * following over `extent` of its width. */
+  matchEdge(edge: Edge, target: Edge | Wire, options: { extent?: number } = {}): Shell {
+    const [e] = ownEdges(this, edge, 'matchEdge')
+    const t = operand(target, this, 'matchEdge') as sm.Edge | sm.Wire
+    return same<Shell>(this, (v: sm.Shell) => v.matchEdge(e, t, options))
+  }
+
+  /** Two neighbouring faces of the sheet as one. */
+  mergeFaces(a: Face, b: Face): Shell {
+    const [fa, fb] = ownFaces(this, [a, b], 'mergeFaces')
+    return same<Shell>(this, (v: sm.Shell) => v.mergeFaces(fa, fb))
+  }
+
+  /** A face of the sheet pushed at a point (in the sheet's frame): a smooth bump or dent. */
+  push(face: Face, at: THREE.Vector3Like, options: PushOptions = {}): Shell {
+    const [f] = ownFaces(this, face, 'push')
+    return same<Shell>(this, (v: sm.Shell) => v.push(f, vec(at), pushOptions(options)))
+  }
+
+  /** A region of a face of the sheet moved by `by` (a distance along its normal or a Vector3). */
+  warp(face: Face, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Shell {
+    const [f] = ownFaces(this, face, 'warp')
+    const r = regionOf(region, this, 'warp')
+    return same<Shell>(this, (v: sm.Shell) => v.warp(f, r as never, typeof by === 'number' ? by : vec(by), options))
+  }
+
+  /** A region of a face of the sheet pressed flat onto a plane (a THREE.Plane in its frame, or a face). */
+  flatten(face: Face, region: RegionLike, plane: THREE.Plane | Face, options: { continuity?: string } = {}): Shell {
+    const [f] = ownFaces(this, face, 'flatten')
+    const r = regionOf(region, this, 'flatten')
+    const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'flatten') as sm.Face)
+    return same<Shell>(this, (v: sm.Shell) => v.flatten(f, r as never, p, options))
+  }
+
+  /** This sheet and other sheets, parts or faces (taken where they are), sewn into one where they meet. */
+  fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell {
+    const tools = flatten(others).map((o) => operand(o, this, 'fuse') as sm.Shell)
+    return same<Shell>(this, (v: sm.Shell) => v.fuse(...tools))
+  }
+
+  /** The sheet with what lies inside the parts (taken where they are) cut away. */
+  cut(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell {
+    const tools = flatten(others).map((o) => operand(o, this, 'cut') as sm.Part)
+    return same<Shell>(this, (v: sm.Shell) => v.cut(...tools))
+  }
+
+  /** The piece of the sheet inside the parts (taken where they are). */
+  intersect(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell {
+    const tools = flatten(others).map((o) => operand(o, this, 'intersect') as sm.Part)
+    return same<Shell>(this, (v: sm.Shell) => v.intersect(...tools))
+  }
+
+  /** The sheet mirrored in `plane` (in its frame). */
+  mirror(plane: THREE.Plane): Shell {
+    return same<Shell>(this, (v: sm.Shell) => v.mirror(toPlane(plane)))
+  }
+
+  /** The sheet placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame). */
+  on(target: Face | THREE.Plane | THREE.Matrix4): Shell {
+    return same<Shell>(this, (v: sm.Shell) => v.on(placement(target, this)))
+  }
+
+  /** A copy whose faces and edges are all NURBS. */
+  toNurbs(): Shell {
+    return same<Shell>(this, (v: sm.Shell) => v.toNurbs())
+  }
+
+  /** The sheet with gaps, tolerances and topology repaired; a Part where it closes around a volume. */
+  heal(): Shell | Part {
+    return same<Shell | Part>(this, (v: sm.Shell) => v.heal())
+  }
+
+  /** The sheet with these faces colored (files keep it); null takes it off. */
+  colorFaces(faces: FacesLike, color: THREE.ColorRepresentation | null): Shell {
+    const f = ownFaces(this, faces, 'colorFaces')
+    return same<Shell>(this, (v: sm.Shell) => v.colored(color === null ? null : srgb(color), { faces: f }))
+  }
+
+  /** The sheet with these faces named. */
+  nameFaces(faces: FacesLike, name: string | null): Shell {
+    const f = ownFaces(this, faces, 'nameFaces')
+    return same<Shell>(this, (v: sm.Shell) => v.named(name, { faces: f }))
+  }
 }
 
 Object.defineProperty(Shell.prototype, 'isShell', { value: true })
@@ -954,15 +1419,33 @@ export interface ExtrudeOptions {
   corners?: 'sharp' | 'round'
 }
 
-/** Options of sweeps. */
+/** Options of sweeps (smlibpy's). */
 export interface SweepOptions {
+  /** Keep the corners of a path of several edges sharp (mitered), or round them. */
   sharpCorners?: boolean | null
-  /** Keep this direction (in the sketch's frame) up along the path, or 'frenet'. */
+  /** Keep the profile's angle to this direction (in the sketch's frame) along the path, or 'frenet'. */
   up?: THREE.Vector3Like | string | null
-  /** Turn the profile by this many radians along the path. */
-  twist?: number
-  /** Where the profile is attached to the path: its center (default) or its origin. */
-  anchor?: 'center' | 'origin'
+  /** Turn the profile along the path: radians in all, or a function of the fraction of the path. */
+  twist?: number | ((s: number) => number)
+  /** Grow the profile along the path: [start, end], [fraction, scale] pairs, or a function. */
+  scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null
+  /** The profile's point that goes along the path: its center (default), the sketch's origin, or a
+   * point (the sketch's own 2D coordinates) or vertex of it. */
+  anchor?: 'center' | 'origin' | THREE.Vector2Like | Vertex
+}
+
+/** A sweep's options as the kernel's. */
+function sweepOptions(o: SweepOptions & { rails?: unknown }, into: THREE.Object3D | null): Record<string, unknown> {
+  const twist = o.twist
+  const anchor = o.anchor
+  return {
+    ...o,
+    twist: twist === undefined ? undefined : typeof twist === 'function' ? (s: number) => degrees(twist(s)) : degrees(twist),
+    up: o.up == null || typeof o.up === 'string' ? o.up : vec(o.up),
+    anchor: anchor === undefined || typeof anchor === 'string' ? anchor : anchor instanceof Vertex ? kernelOfShape(anchor) : [anchor.x, anchor.y],
+    // (the kernel takes rails in the free function only: no key for them otherwise)
+    ...(o.rails === undefined ? {} : { rails: o.rails === null ? null : toKernel(o.rails, into) }),
+  }
 }
 
 /**
@@ -1033,12 +1516,7 @@ export class Sketch extends Shell {
   sweep(path: Edge | Wire | THREE.Curve<THREE.Vector3>, options: SweepOptions = {}): Part {
     const value = kernelOf(this) as sm.Sketch
     const p = pathOf(path, this)
-    const o = {
-      ...options,
-      twist: options.twist === undefined ? undefined : degrees(options.twist),
-      up: options.up == null || typeof options.up === 'string' ? options.up : vec(options.up),
-    }
-    return adopt(wrap(call(() => value.sweep(p, o))) as Part, this)
+    return adopt(wrap(call(() => value.sweep(p, sweepOptions(options, this) as never))) as Part, this)
   }
 
   /**
@@ -1046,27 +1524,22 @@ export class Sketch extends Shell {
    * the face's center, its normal along the face's), a THREE.Plane, or a THREE.Matrix4 (both in
    * the sketch's frame).
    */
-  on(target: Face | THREE.Plane | THREE.Matrix4): Sketch {
-    const value = kernelOf(this) as sm.Sketch
-    let t: sm.Plane | sm.Face | sm.Location
-    if ((target as THREE.Plane).isPlane) t = toPlane(target as THREE.Plane)
-    else if (isMatrix4(target)) t = location(target)
-    else t = operand(target, this, 'on') as sm.Face
-    return adopt(wrap(call(() => value.on(t))) as Sketch, this)
+  override on(target: Face | THREE.Plane | THREE.Matrix4): Sketch {
+    return same<Sketch>(this, (v: sm.Sketch) => v.on(placement(target, this)))
   }
 
   /** This region and the others (in the same plane, where they are), fused. */
-  fuse(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
+  override fuse(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this.boolean('fuse', others)
   }
 
   /** This region with the others cut away. */
-  cut(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
+  override cut(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this.boolean('cut', others)
   }
 
   /** What this region and the others share. */
-  intersect(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
+  override intersect(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this.boolean('intersect', others)
   }
 
@@ -1076,10 +1549,65 @@ export class Sketch extends Shell {
     return adopt(wrap(call(() => value[op](...tools))) as Sketch, this)
   }
 
-  /** The region grown (shrunk, negative) by `distance` all round. */
-  offset(distance: number, options: { corners?: 'round' | 'sharp' } = {}): Sketch {
+  /** The region grown (shrunk, negative) by `distance` all round; `corners` 'round' or 'sharp'
+   * (`round` rounds the outside corners of an inward offset too). */
+  override offset(distance: number, options: { corners?: string; round?: boolean | null } = {}): Sketch {
+    return same<Sketch>(this, (v: sm.Sketch) => v.offset(distance, options))
+  }
+
+  /** The regions this one or the others cover, but not both. */
+  xor(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
+    const tools = flatten(others).map((o) => operand(o, this, 'xor') as sm.Sketch)
+    return same<Sketch>(this, (v: sm.Sketch) => v.xor(...tools))
+  }
+
+  /** The region facing the other way. */
+  override flipped(): Sketch {
+    return same<Sketch>(this, (v: sm.Sketch) => v.flipped())
+  }
+
+  /** The region with its corners cut off (all, or those at `vertices`). */
+  chamfer(length: number, vertices: Iterable<Vertex | THREE.Vector3Like> | null = null): Sketch {
+    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof Vertex ? (subOf(x) as sm.Vertex) : vec(x)))
+    return same<Sketch>(this, (k: sm.Sketch) => k.chamfer(length, v))
+  }
+
+  /** Area, centroid and second moments of the region. */
+  sectionProperties(): SectionProperties {
     const value = kernelOf(this) as sm.Sketch
-    return adopt(wrap(call(() => value.offset(distance, options))) as Sketch, this)
+    return new SectionProperties(call(() => value.sectionProperties()))
+  }
+
+  /** A solid: the region swung around an outline (a sketch, face or curve on the ground, taken where
+   * it is), as a rim or a frame is (smlibpy's swing). The region stands in its frame's XY plane: draw
+   * it with x the distance from the y axis and y the height, and stand it up with
+   * `.on(new THREE.Matrix4().makeRotationX(Math.PI / 2))` (smlibpy's `.on(Plane.front)`). */
+  swing(outline: Sketch | Face | Wire | Edge): Part {
+    const value = kernelOf(this) as sm.Sketch
+    const o = operand(outline, this, 'swing') as sm.Sketch | sm.Face | sm.Wire | sm.Edge
+    return adopt(wrap(call(() => value.swing(o))) as Part, this)
+  }
+
+  /** The region mirrored in `plane` (in its frame). */
+  override mirror(plane: THREE.Plane): Sketch {
+    return same<Sketch>(this, (v: sm.Sketch) => v.mirror(toPlane(plane)))
+  }
+
+  /** A copy whose curves are all NURBS. */
+  override toNurbs(): Sketch {
+    return same<Sketch>(this, (v: sm.Sketch) => v.toNurbs())
+  }
+
+  /** The region with these faces colored. */
+  override colorFaces(faces: FacesLike, color: THREE.ColorRepresentation | null): Sketch {
+    const f = ownFaces(this, faces, 'colorFaces')
+    return same<Sketch>(this, (v: sm.Sketch) => v.colored(color === null ? null : srgb(color), { faces: f }))
+  }
+
+  /** The region with these faces named. */
+  override nameFaces(faces: FacesLike, name: string | null): Sketch {
+    const f = ownFaces(this, faces, 'nameFaces')
+    return same<Sketch>(this, (v: sm.Sketch) => v.named(name, { faces: f }))
   }
 
   /** The region with its corners rounded (all, or those at `vertices`). */
@@ -1156,6 +1684,8 @@ function takeSub(o: THREE.Object3D): void {
     const value = incomingSub.sub
     if (incomingSub.owner === null && (value instanceof sm.Edge || value instanceof sm.Wire)) s.curve = { value, refs: 1 }
     else s.sub = value
+    // (a face's name, given with nameFaces or read from a file, is the object's)
+    if (value instanceof sm.Face) o.name = value.name ?? ''
   }
 }
 
@@ -1279,9 +1809,9 @@ export class Face extends THREE.Mesh {
     return call(() => f.distanceTo(o))
   }
 
-  /** The face's edges: its body's. */
-  edges(): ShapeList<Edge> {
-    return ownList(this, 'edges', (f) => (f as sm.Face).edges())
+  /** The face's edges: its body's (with `seams`, also the seams where its surface meets itself). */
+  edges(seams = false): ShapeList<Edge> {
+    return ownList(this, 'edges', (f) => (f as sm.Face).edges(seams))
   }
 
   vertices(): ShapeList<Vertex> {
@@ -1297,6 +1827,173 @@ export class Face extends THREE.Mesh {
   outerWire(): Wire {
     const f = this.face
     return curveOf(call(() => f.outerWire()), state(this).owner) as Wire
+  }
+
+  /** The boundaries of its holes. */
+  innerWires(): ShapeList<Wire> {
+    const f = this.face
+    return toThree(call(() => f.innerWires()), this) as ShapeList<Wire>
+  }
+
+  /** All its boundaries, the outer one first. */
+  wires(): ShapeList<Wire> {
+    const f = this.face
+    return toThree(call(() => f.wires()), this) as ShapeList<Wire>
+  }
+
+  /** The face's own color (given with colorFaces, or read from a file); null for none. */
+  get color(): THREE.Color | null {
+    const f = this.face
+    const c = call(() => f.color)
+    return c === null ? null : new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace)
+  }
+
+  /** The cells of a merged part the face bounds (one outside, two between cells; none on a sheet). */
+  get cells(): number[] {
+    const f = this.face
+    return call(() => f.cells)
+  }
+
+  /** The major radius of a torus face. */
+  get majorRadius(): number {
+    const f = this.face
+    return call(() => f.majorRadius)
+  }
+
+  /** The half angle of a cone face, in radians. */
+  get coneAngle(): number {
+    const f = this.face
+    return radians(call(() => f.coneAngle))
+  }
+
+  /** A point inside the face (not on its border), in its body's frame. */
+  interiorPoint(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const f = this.face
+    return vector3(call(() => f.interiorPoint()), target)
+  }
+
+  /** The face's point nearest to `point` (both in its body's frame). */
+  closestPoint(point: THREE.Vector3Like, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const f = this.face
+    return vector3(call(() => f.closestPoint(vec(point))), target)
+  }
+
+  /** The parameters (u, v, from 0 to 1 over the face) of its point nearest to `point`. */
+  uvAt(point: THREE.Vector3Like, target: THREE.Vector2 = new THREE.Vector2()): THREE.Vector2 {
+    const f = this.face
+    const [u, v] = call(() => f.uvAt(vec(point)))
+    return target.set(u, v)
+  }
+
+  /** The face's point at parameters u, v (0 to 1 over the face). */
+  positionAt(u: number, v: number, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const f = this.face
+    return vector3(call(() => f.positionAt(u, v)), target)
+  }
+
+  /** The curvature at a point (default: the face's center). */
+  curvatureAt(point: THREE.Vector3Like | null = null): Curvature {
+    const f = this.face
+    return curvatureOf(call(() => f.curvatureAt(point === null ? null : vec(point))))
+  }
+
+  /** The smallest radius of curvature over the face. */
+  minRadius(): number {
+    const f = this.face
+    return call(() => f.minRadius())
+  }
+
+  /** The face's surface as NURBS data: degrees, knots, control points (Vector3s, in its body's
+   * frame) and weights (null for a non-rational surface). */
+  nurbs(): { degrees: [number, number]; knots: [number[], number[]]; points: THREE.Vector3[][]; weights: number[][] | null } {
+    const f = this.face
+    const n = call(() => f.nurbs())
+    return { degrees: [...n.degrees], knots: [[...n.knots[0]], [...n.knots[1]]], points: n.points.map((row) => row.map((p) => vector3(p))), weights: n.weights === null ? null : n.weights.map((row) => [...row]) }
+  }
+
+  /** The exact hits of a ray (in its body's frame) on this face, nearest first. */
+  intersectRay(ray: THREE.Ray): RayHit[] {
+    const f = this.face
+    return call(() => f.raycast(vec(ray.origin), vec(ray.direction))).map((h) => rayHitOf(h, this))
+  }
+
+  /** A curve (taken where it is) projected onto the face along its normals: the curves on it. */
+  project(curve: Edge | Wire): ShapeList<Edge> {
+    const f = this.face
+    const c = operand(curve, this, 'project') as sm.Edge | sm.Wire
+    return toThree(call(() => f.project(c)), this) as ShapeList<Edge>
+  }
+
+  /** The face's iso curves at parameter u or v (0 to 1). */
+  iso(options: { u?: number | null; v?: number | null } = {}): ShapeList<Edge> {
+    const f = this.face
+    return toThree(call(() => f.iso(options)), this) as ShapeList<Edge>
+  }
+
+  /**
+   * A drawing wrapped onto the face, as a label onto a can: a sketch or curves in their own
+   * coordinates (as drawn, on the ground, wherever they are placed), their origin at `at` (a point of
+   * the face, in its body's frame; default its middle), their x axis along `direction`. The curves on
+   * the face.
+   */
+  wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at: THREE.Vector3Like | Vertex | null = null, options: { direction?: THREE.Vector3Like | null } = {}): ShapeList<Edge> {
+    const f = this.face
+    const drawing = shape instanceof Body ? kernelOf(shape) : isObject3D(shape) ? kernelOfShape(shape as Edge | Wire) : [...(shape as Iterable<Edge>)].map((e) => kernelOfShape(e) as sm.Edge)
+    const where = at === null ? null : at instanceof Vertex ? (kernelOfShape(at) as sm.Vertex) : vec(at)
+    return toThree(call(() => f.wrap(drawing as never, where, { direction: options.direction == null ? options.direction : vec(options.direction) })), this) as ShapeList<Edge>
+  }
+
+  /** The face as a sketch (a planar face) where it is. */
+  toSketch(): Sketch {
+    const f = this.face
+    return toThree(call(() => f.toSketch()), this) as Sketch
+  }
+
+  /** The face as a sheet of its own where it is. */
+  toShell(): Shell {
+    const f = this.face
+    return toThree(call(() => f.toShell()), this) as Shell
+  }
+
+  /** The face moved `distance` along its normals, as a sheet. */
+  offset(distance: number): Shell {
+    const f = this.face
+    return toThree(call(() => f.offset(distance)), this) as Shell
+  }
+
+  /** The face split along curves on it (taken where they are): the faces of the split sheet. */
+  split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face> {
+    const f = this.face
+    const c = isObject3D(curves) ? operand(curves, this, 'split') : [...(curves as Iterable<Edge | Wire>)].map((x) => operand(x, this, 'split'))
+    return toThree(call(() => f.split(c as never)), this) as ShapeList<Face>
+  }
+
+  /** The face turned the other way, as a sheet. */
+  flipped(): Shell {
+    const f = this.face
+    return toThree(call(() => f.flipped()), this) as Shell
+  }
+
+  /** The face's whole surface, its trims taken off, as a sheet. */
+  untrimmed(): Shell {
+    const f = this.face
+    return toThree(call(() => f.untrimmed()), this) as Shell
+  }
+
+  /** The face extended past its edges (or those given of them) by `distance`, as a sheet. */
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+    const f = this.face
+    const owner = state(this).owner
+    const sides = options.sides == null || owner === null ? options.sides : ownEdges(owner, options.sides, 'extend')
+    return toThree(call(() => f.extend(distance, { ...options, sides: sides as never })), this) as Shell
+  }
+
+  /** True for the same face of the same body (of a clone too). */
+  equals(other: unknown): boolean {
+    if (!(other instanceof Face)) return false
+    const a = state(this).sub as sm.Face | null
+    const b = state(other).sub as sm.Face | null
+    return a !== null && b !== null && call(() => a.equals(b))
   }
 
   /** A solid: the face moved `amount` along its normal (in its body's frame and place). */
@@ -1479,6 +2176,213 @@ export class Edge extends THREE.Line {
     return placedCurve(call(() => e.reversed()), this) as Edge
   }
 
+  /** How far the edge's curve, its ends and its faces may lie apart (the kernel's tolerance of the
+   * edge; a RangeError for a curve of its own). */
+  get tolerance(): number {
+    const e = this.edge
+    return call(() => e.tolerance)
+  }
+
+  /** True for a seam, where a closed surface meets itself. */
+  get isSeam(): boolean {
+    const e = this.edge
+    return call(() => e.isSeam)
+  }
+
+  /** "convex", "concave" or "smooth": how the faces meet at the edge. */
+  get convexity(): string {
+    const e = this.edge
+    return call(() => e.convexity)
+  }
+
+  /** The angle between the edge's faces, through the body, in radians (π/2 at a box's edges). */
+  get dihedralAngle(): number {
+    const e = this.edge
+    return radians(call(() => e.dihedralAngle))
+  }
+
+  /** True where the faces meet convexly (an outside corner). */
+  isConvex(): boolean {
+    const e = this.edge
+    return call(() => e.isConvex())
+  }
+
+  /** The direction of a straight edge. */
+  get direction(): THREE.Vector3 {
+    const e = this.edge
+    return vector3(call(() => e.direction))
+  }
+
+  /** The normal of the plane of a planar curve (an arc's axis). */
+  get normal(): THREE.Vector3 {
+    const e = this.edge
+    return vector3(call(() => e.normal))
+  }
+
+  /** How smoothly the edge's faces meet along it; `angleTol` in radians. */
+  continuity(samples = 16, options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+    const e = this.edge
+    return continuityOf(call(() => e.continuity(samples, { ...options, angleTol: options.angleTol === undefined ? undefined : degrees(options.angleTol) })))
+  }
+
+  /** The edge's point nearest to `point` (both in its frame). */
+  closestPoint(point: THREE.Vector3Like | Vertex, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const e = this.edge
+    return vector3(call(() => e.closestPoint(at(point) as sm.Vector | sm.Vertex)), target)
+  }
+
+  /** The fraction of the length at which the edge comes nearest to `point`. */
+  paramAtPoint(point: THREE.Vector3Like | Vertex): number {
+    const e = this.edge
+    return call(() => e.paramAtPoint(at(point) as sm.Vector | sm.Vertex))
+  }
+
+  /** The part of the edge from `start` to `end`: fractions of the length or points on it. */
+  trim(start: number | THREE.Vector3Like | Vertex, end: number | THREE.Vector3Like | Vertex): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.trim(at(start), at(end))), this) as Edge
+  }
+
+  /** The edge in two at a fraction of its length or a point on it. */
+  split(where: number | THREE.Vector3Like | Vertex): [Edge, Edge] {
+    const e = this.edge
+    return call(() => e.split(at(where))).map((x) => placedCurve(x, this)) as [Edge, Edge]
+  }
+
+  /** The edge made longer by `distance` at its 'end' (default), 'start' or 'both'; `continuity`
+   * 'G1', 'G2' or 'natural' for curves that are not lines or arcs. */
+  extend(distance: number, options: { end?: string; continuity?: string } = {}): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.extend(distance, options)), this) as Edge
+  }
+
+  /** Where the edge crosses another shape (taken where it is), in its frame. */
+  intersections(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options: { tolerance?: number | null } = {}): THREE.Vector3[] {
+    const e = this.edge
+    const o = toKernel(isObject3D(other) ? other : [...(other as Iterable<Body>)], this)
+    return call(() => e.intersections(o as never, options)).map((p) => vector3(p))
+  }
+
+  /** The fractions of the length at which the edge crosses another shape. */
+  intersectionParams(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options: { tolerance?: number | null } = {}): number[] {
+    const e = this.edge
+    const o = toKernel(isObject3D(other) ? other : [...(other as Iterable<Body>)], this)
+    return call(() => e.intersectionParams(o as never, options))
+  }
+
+  /** Where the edge crosses itself. */
+  selfIntersections(options: { tolerance?: number | null } = {}): THREE.Vector3[] {
+    const e = this.edge
+    return call(() => e.selfIntersections(options)).map((p) => vector3(p))
+  }
+
+  /** The curvature (1 / radius) at a fraction of the length. */
+  curvatureAt(t = 0.5): number {
+    const e = this.edge
+    return call(() => e.curvatureAt(t))
+  }
+
+  /** The radius of curvature at a fraction of the length (Infinity where it is straight). */
+  radiusAt(t = 0.5): number {
+    const e = this.edge
+    return call(() => e.radiusAt(t))
+  }
+
+  /** The smallest radius of curvature along the edge. */
+  minRadius(): number {
+    const e = this.edge
+    return call(() => e.minRadius())
+  }
+
+  /** The fraction of the length where the radius of curvature is smallest. */
+  minRadiusAt(): number {
+    const e = this.edge
+    return call(() => e.minRadiusAt())
+  }
+
+  /** The fractions of the length where the curve turns the other way. */
+  inflections(): number[] {
+    const e = this.edge
+    return call(() => e.inflections())
+  }
+
+  /** A parallel curve `distance` away, in the curve's plane (or `plane`, in its frame). */
+  offset(distance: number, options: { plane?: THREE.Plane | null } = {}): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.offset(distance, { plane: options.plane == null ? options.plane : toPlane(options.plane) })), this) as Edge
+  }
+
+  /** The curve as lines and arcs within `tolerance`, as a wire. */
+  toArcs(tolerance?: number): Wire {
+    const e = this.edge
+    return placedCurve(call(() => e.toArcs(tolerance)), this) as Wire
+  }
+
+  /** The curve bent locally to pass through a point (in its frame), with a tangent there if given. */
+  through(point: THREE.Vector3Like | Vertex, options: { tangent?: THREE.Vector3Like | null; at?: number | null } = {}): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.through(at(point) as never, { ...options, tangent: options.tangent == null ? options.tangent : vec(options.tangent) })), this) as Edge
+  }
+
+  /** The curve with its ends moved onto points (and turned to tangents), in its frame. */
+  match(options: { start?: THREE.Vector3Like | Vertex | null; end?: THREE.Vector3Like | Vertex | null; startTangent?: THREE.Vector3Like | null; endTangent?: THREE.Vector3Like | null } = {}): Edge {
+    const e = this.edge
+    const o = {
+      start: options.start == null ? options.start : at(options.start),
+      end: options.end == null ? options.end : at(options.end),
+      startTangent: options.startTangent == null ? options.startTangent : vec(options.startTangent),
+      endTangent: options.endTangent == null ? options.endTangent : vec(options.endTangent),
+    }
+    return placedCurve(call(() => e.match(o as never)), this) as Edge
+  }
+
+  /** The edges of its body that run on from this one tangentially, this one included. */
+  tangentChain(): ShapeList<Edge> {
+    const e = this.edge
+    return toThree(call(() => e.tangentChain()), this) as ShapeList<Edge>
+  }
+
+  /** The curve as NURBS data: degree, knots, control points (Vector3s, in its frame) and weights
+   * (null for a non-rational curve). */
+  nurbs(): { degree: number; knots: number[]; points: THREE.Vector3[]; weights: number[] | null } {
+    const e = this.edge
+    const n = call(() => e.nurbs())
+    return { degree: n.degree, knots: [...n.knots], points: n.points.map((p) => vector3(p)), weights: n.weights === null ? null : [...n.weights] }
+  }
+
+  /** The curve mirrored in `plane` (in its frame), a curve of its own where this one is. */
+  mirror(plane: THREE.Plane): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.mirror(toPlane(plane))), this) as Edge
+  }
+
+  /** The curve placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame): its
+   * origin to the face's center, its y axis along the face's normal. */
+  on(target: Face | THREE.Plane | THREE.Matrix4): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.on(placement(target, this))), this) as Edge
+  }
+
+  /** The curve with the knots it does not need taken out. */
+  removeKnots(): Edge {
+    const e = this.edge
+    return placedCurve(call(() => e.removeKnots()), this) as Edge
+  }
+
+  /** True for the same edge of the same body (of a clone too), or the same curve. */
+  equals(other: unknown): boolean {
+    if (!(other instanceof Edge)) return false
+    const a = state(this).sub ?? state(this).curve?.value ?? null
+    const b = state(other).sub ?? state(other).curve?.value ?? null
+    return a !== null && b !== null && call(() => (a as sm.Edge).equals(b))
+  }
+
+  /** An edge of a NURBS curve's data (the inverse of nurbs()): degree, knots (every knot as often as
+   * its multiplicity), control points (Vector3s) and weights (null: non-rational). */
+  static fromNurbs(data: { degree: number; knots: readonly number[]; points: readonly THREE.Vector3Like[]; weights?: readonly number[] | null }): Edge {
+    return curveOf(call(() => sm.Edge.fromNurbs({ degree: data.degree, knots: data.knots, points: data.points.map((p) => vec(p)), weights: data.weights ?? null }))) as Edge
+  }
+
   /**
    * The exact curve as a THREE.Curve (getPoint(t) evaluates the kernel's curve at fraction t of
    * the length), for three's own uses of curves: `new THREE.TubeGeometry(edge.curve, 64, 1)`.
@@ -1527,6 +2431,13 @@ accessors(
   },
   (e: Edge) => new THREE.LineBasicMaterial({ color: state(e).owner === null ? 0x20242c : HIGHLIGHT }),
 )
+
+/** A point given to a curve's method: a fraction of its length, a point, or a vertex, as the kernel's. */
+function at(point: number | THREE.Vector3Like | Vertex): number | sm.Vector | sm.Vertex {
+  if (typeof point === 'number') return point
+  if (point instanceof Vertex) return kernelOfShape(point) as sm.Vertex
+  return vec(point)
+}
 
 /** @internal */
 export function setCurve(o: Edge | Wire, value: sm.Edge | sm.Wire): void {
@@ -1590,13 +2501,13 @@ export class Wire extends THREE.Line {
   declare readonly isWire: true
   /** A wire of edges (where they are, in this wire's frame) or of one of three's curve paths (a
    * THREE.CurvePath, in its own frame). Without either, an empty wire. */
-  constructor(edges?: Iterable<Edge> | THREE.CurvePath<THREE.Vector3> | null, material?: THREE.Material | null) {
+  constructor(edges?: Iterable<Edge | Wire> | THREE.CurvePath<THREE.Vector3> | null, material?: THREE.Material | null, options: { sort?: boolean } = {}) {
     super(PLACEHOLDER, PLACEHOLDER_MATERIAL)
     takeSub(this)
     if (material != null) this.material = material
     if (internal(this) || edges == null) return
     const kernel = typeof (edges as THREE.Curve<THREE.Vector3>).getPoint === 'function' ? edges3(edges as THREE.Curve<THREE.Vector3>) : [...(edges as Iterable<Edge>)].map((e) => operand(e, null, 'Wire') as sm.Edge)
-    setCurve(this, call(() => new sm.Wire(kernel)))
+    setCurve(this, call(() => new sm.Wire(kernel, options)))
   }
 
   get owner(): Body | null {
@@ -1628,9 +2539,143 @@ export class Wire extends THREE.Line {
     return vector3(call(() => w.pointAt(t)), target)
   }
 
+  /** The unit tangent at a fraction of the length. */
+  tangentAt(t = 0.5, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const w = this.wire
+    return vector3(call(() => w.tangentAt(t)), target)
+  }
+
+  get start(): THREE.Vector3 {
+    const w = this.wire
+    return vector3(call(() => w.start))
+  }
+
+  get end(): THREE.Vector3 {
+    const w = this.wire
+    return vector3(call(() => w.end))
+  }
+
+  /** The point halfway along it. */
+  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const w = this.wire
+    return vector3(call(() => w.center()), target)
+  }
+
   bbox(target: THREE.Box3 = new THREE.Box3()): THREE.Box3 {
     const w = this.wire
     return box3(call(() => w.bbox()), target)
+  }
+
+  /** Its vertices, in order. */
+  vertices(): ShapeList<Vertex> {
+    const w = this.wire
+    return toThree(call(() => w.vertices()), this) as ShapeList<Vertex>
+  }
+
+  /** The shortest distance to a point (in its frame) or another shape (where it is). */
+  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+    const w = this.wire
+    const o = isObject3D(other) ? operand(other, this, 'distanceTo') : vec(other)
+    return call(() => w.distanceTo(o))
+  }
+
+  /** The wire's point nearest to `point` (both in its frame). */
+  closestPoint(point: THREE.Vector3Like, target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    const w = this.wire
+    return vector3(call(() => w.closestPoint(vec(point))), target)
+  }
+
+  /** The wire in two at a fraction of its length or a point on it. */
+  split(where: number | THREE.Vector3Like | Vertex): [Wire, Wire] {
+    const w = this.wire
+    return call(() => w.split(at(where))).map((x) => placedCurve(x, this)) as [Wire, Wire]
+  }
+
+  /** The part of the wire from `start` to `end`: fractions of the length or points on it. */
+  trim(start: number | THREE.Vector3Like | Vertex, end: number | THREE.Vector3Like | Vertex): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.trim(at(start), at(end))), this) as Wire
+  }
+
+  /** Where the wire crosses another shape (taken where it is), in its frame. */
+  intersections(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options: { tolerance?: number | null } = {}): THREE.Vector3[] {
+    const w = this.wire
+    const o = toKernel(isObject3D(other) ? other : [...(other as Iterable<Body>)], this)
+    return call(() => w.intersections(o as never, options)).map((p) => vector3(p))
+  }
+
+  /** The wire as one edge (its edges joined into one curve). */
+  toEdge(): Edge {
+    const w = this.wire
+    return placedCurve(call(() => w.toEdge()), this) as Edge
+  }
+
+  /** A parallel wire `distance` away in its plane (or `plane`, in its frame); `corners` 'round',
+   * 'sharp' or 'chamfer'. */
+  offset(distance: number, options: { corners?: string; plane?: THREE.Plane | null } = {}): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.offset(distance, { ...options, plane: options.plane == null ? options.plane : toPlane(options.plane) })), this) as Wire
+  }
+
+  /** The wire as lines and arcs within `tolerance`. */
+  toArcs(tolerance?: number): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.toArcs(tolerance)), this) as Wire
+  }
+
+  /** The smallest radius of curvature along the wire. */
+  minRadius(): number {
+    const w = this.wire
+    return call(() => w.minRadius())
+  }
+
+  /** The fraction of the length where the radius of curvature is smallest. */
+  minRadiusAt(): number {
+    const w = this.wire
+    return call(() => w.minRadiusAt())
+  }
+
+  /** How smoothly the wire's edges meet (the worst joint); `angleTol` in radians. */
+  continuity(options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+    const w = this.wire
+    return continuityOf(call(() => w.continuity({ ...options, angleTol: options.angleTol === undefined ? undefined : degrees(options.angleTol) })))
+  }
+
+  /** The wire closed with a line from its end to its start. */
+  close(): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.close()), this) as Wire
+  }
+
+  /** The wire the other way round. */
+  reversed(): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.reversed()), this) as Wire
+  }
+
+  /** The plane of a planar wire, in its frame. */
+  plane(): THREE.Plane {
+    const w = this.wire
+    return threePlane(call(() => w.plane()))
+  }
+
+  /** The wire mirrored in `plane` (in its frame). */
+  mirror(plane: THREE.Plane): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.mirror(toPlane(plane))), this) as Wire
+  }
+
+  /** The wire placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame). */
+  on(target: Face | THREE.Plane | THREE.Matrix4): Wire {
+    const w = this.wire
+    return placedCurve(call(() => w.on(placement(target, this))), this) as Wire
+  }
+
+  /** The wire with its corners (all, or those at `vertices`) rounded. */
+  fillet(radius: number, vertices: Iterable<THREE.Vector3Like | Vertex> | null = null): Wire {
+    const w = this.wire
+    const v = vertices === null ? null : [...vertices].map((x) => at(x) as sm.Vector | sm.Vertex)
+    return placedCurve(call(() => w.fillet(radius, v)), this) as Wire
   }
 
   /** three's raycast for a wire of its own; a body's is drawn as a highlight, not hit. */
@@ -1680,9 +2725,72 @@ accessors(
 /** A vertex of a body: a THREE.Points of one point, in its body's frame. */
 export class Vertex extends THREE.Points {
   declare readonly isVertex: true
-  constructor() {
+  /** A vertex of a body (made by the package), or a point of its own: `new Vertex(point)`. */
+  constructor(point?: THREE.Vector3Like | null) {
     super(PLACEHOLDER, PLACEHOLDER_MATERIAL)
     takeSub(this)
+    if (internal(this) || point == null) return
+    state(this).sub = call(() => new sm.Vertex(vec(point)))
+  }
+
+  get x(): number {
+    return this.point.x
+  }
+
+  get y(): number {
+    return this.point.y
+  }
+
+  get z(): number {
+    return this.point.z
+  }
+
+  /** The kernel's tolerance of the vertex. */
+  get tolerance(): number {
+    const v = subOf(this) as sm.Vertex
+    return call(() => v.tolerance)
+  }
+
+  /** "convex", "concave" or "smooth": how the edges meet at a sketch's corner. */
+  get convexity(): string {
+    const v = subOf(this) as sm.Vertex
+    return call(() => v.convexity)
+  }
+
+  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    return target.copy(this.point)
+  }
+
+  bbox(target: THREE.Box3 = new THREE.Box3()): THREE.Box3 {
+    const p = this.point
+    return target.set(p, p.clone())
+  }
+
+  /** The edges of its body that meet at it. */
+  edges(): ShapeList<Edge> {
+    const v = subOf(this) as sm.Vertex
+    return toThree(call(() => v.edges()), this) as ShapeList<Edge>
+  }
+
+  /** The faces of its body that meet at it. */
+  faces(): ShapeList<Face> {
+    const v = subOf(this) as sm.Vertex
+    return toThree(call(() => v.faces()), this) as ShapeList<Face>
+  }
+
+  /** The shortest distance to a point (in its frame) or another shape (where it is). */
+  distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number {
+    const v = subOf(this) as sm.Vertex
+    const o = isObject3D(other) ? operand(other, this, 'distanceTo') : vec(other)
+    return call(() => v.distanceTo(o))
+  }
+
+  /** True for the same vertex of the same body (of a clone too), or the same point. */
+  equals(other: unknown): boolean {
+    if (!(other instanceof Vertex)) return false
+    const a = state(this).sub as sm.Vertex | null
+    const b = state(other).sub as sm.Vertex | null
+    return a !== null && b !== null && call(() => a.equals(b))
   }
 
   get owner(): Body | null {
@@ -1840,10 +2948,130 @@ export class ShapeList<T = Item> extends Array<T> {
     return select(this, 'facing', [direction, degrees(maxAngle)])
   }
 
-  /** Sorted by a direction (position along it), a property name ('area', 'length', 'radius') or a function. */
-  sortBy(key: THREE.Vector3Like | string | ((item: T) => number), reverse = false): ShapeList<T> {
-    const k = key !== null && typeof key === 'object' ? new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(key.x, key.y, key.z)) : key
-    return select(this, 'sortBy', [k, reverse])
+  /** Sorted by a direction (position along it), a property name ('area', 'length', 'radius') or a
+   * function; default along +y. */
+  sortBy(key: SortKey<T> = UP, reverse = false): ShapeList<T> {
+    return select(this, 'sortBy', [sortKey(key), reverse])
+  }
+
+  /** `parallelTo(direction)`, `ofType(name)` or `filter(predicate)`, by the criterion's kind. */
+  filterBy(criterion: THREE.Vector3Like | string | ((item: T) => boolean)): ShapeList<T> {
+    return select(this, 'filterBy', [sortKey(criterion as SortKey<T>)])
+  }
+
+  /** Sorted by distance from a point (in the body's frame), nearest first. */
+  sortByDistance(point: THREE.Vector3Like, reverse = false): ShapeList<T> {
+    return select(this, 'sortByDistance', [point, reverse])
+  }
+
+  /** Groups of items with equal keys (within `tol`), in ascending key order. */
+  groupBy(key: SortKey<T> = UP, tol = 1e-4): ShapeList<T>[] {
+    return select(this, 'groupBy', [sortKey(key), tol])
+  }
+
+  /** The items with the greatest key (all of them, within `tol`). */
+  maxBy(key: SortKey<T> = UP, tol = 1e-4): ShapeList<T> {
+    return select(this, 'maxBy', [sortKey(key), tol])
+  }
+
+  /** The items with the smallest key (all of them, within `tol`). */
+  minBy(key: SortKey<T> = UP, tol = 1e-4): ShapeList<T> {
+    return select(this, 'minBy', [sortKey(key), tol])
+  }
+
+  /** The edges where faces meet tangentially. */
+  smooth(): ShapeList<T> {
+    return select(this, 'smooth', [])
+  }
+
+  /** The edges that run on tangentially from these, these included. */
+  tangentChain(): ShapeList<Edge> {
+    return select(this, 'tangentChain', [])
+  }
+
+  /** The edges where faces meet with continuous tangents (G1). */
+  g1(): ShapeList<T> {
+    return select(this, 'g1', [])
+  }
+
+  /** The edges where faces meet with continuous curvature (G2). */
+  g2(): ShapeList<T> {
+    return select(this, 'g2', [])
+  }
+
+  /** The faces that are fillets (rounds), up to `maxRadius`. */
+  fillets(maxRadius: number | null = null): ShapeList<T> {
+    return select(this, 'fillets', [maxRadius])
+  }
+
+  /** The items a ray (in the body's frame) hits. */
+  hitBy(ray: THREE.Ray): ShapeList<T> {
+    return select(this, 'hitBy', [ray])
+  }
+
+  /** The items through a point (within `tol`). */
+  atPoint(point: THREE.Vector3Like, tol = 1e-4): ShapeList<T> {
+    return select(this, 'atPoint', [point, tol])
+  }
+
+  /** The items that came from these shapes' faces and edges (through the operations since). */
+  derivedFrom(...shapes: (Body | Face | Edge | Iterable<Body | Face | Edge>)[]): ShapeList<T> {
+    return select(this, 'derivedFrom', flatten(shapes as (Body | Face | Edge)[]))
+  }
+
+  /** The edges (or faces) where what came from `a` meets what came from `b`. */
+  joining(a: Body | Face | Edge | Iterable<Body | Face | Edge>, b: Body | Face | Edge | Iterable<Body | Face | Edge>): ShapeList<T> {
+    return select(this, 'joining', [a, b])
+  }
+
+  /** The faces shared by two cells of a merged part. */
+  shared(): ShapeList<T> {
+    return select(this, 'shared', [])
+  }
+
+  /** The items of this list and another. */
+  union(other: Iterable<T>): ShapeList<T> {
+    return select(this, 'union', [[...other]])
+  }
+
+  /** The items of this list that are not in another. */
+  difference(other: Iterable<T>): ShapeList<T> {
+    return select(this, 'difference', [[...other]])
+  }
+
+  /** The items in both lists. */
+  intersection(other: Iterable<T>): ShapeList<T> {
+    return select(this, 'intersection', [[...other]])
+  }
+
+  /** The vertices of the items. */
+  vertices(): ShapeList<Vertex> {
+    return select(this, 'vertices', [])
+  }
+
+  /** The edges of the items. */
+  edges(): ShapeList<Edge> {
+    return select(this, 'edges', [])
+  }
+
+  /** The faces of the items. */
+  faces(): ShapeList<Face> {
+    return select(this, 'faces', [])
+  }
+
+  /** The wires of the items. */
+  wires(): ShapeList<Wire> {
+    return select(this, 'wires', [])
+  }
+
+  /** The average of the items' centers (in the body's frame). */
+  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    return target.copy(select<T, THREE.Vector3>(this, 'center', []))
+  }
+
+  /** The box around the items (in the body's frame). */
+  bbox(target: THREE.Box3 = new THREE.Box3()): THREE.Box3 {
+    return target.copy(select<T, THREE.Box3>(this, 'bbox', []))
   }
 
   /** The edges where faces meet convexly (outside corners). */
@@ -1866,6 +3094,17 @@ export class ShapeList<T = Item> extends Array<T> {
   }
 }
 
+/** What sorts and groups go by: a direction (position along it), a property ('area', 'length',
+ * 'radius', ...) or a function of an item. */
+export type SortKey<T> = THREE.Vector3Like | string | ((item: T) => number)
+
+const UP = Object.freeze(new THREE.Vector3(0, 1, 0))
+
+/** A direction as the axis through the origin the kernel sorts along; anything else as it is. */
+function sortKey<T>(key: SortKey<T>): unknown {
+  return key !== null && typeof key === 'object' ? new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(key.x, key.y, key.z)) : key
+}
+
 /** A kernel argument for an argument of a selector. */
 function argument(a: unknown, items: Map<unknown, unknown>): unknown {
   if (a instanceof Body) return kernelOf(a)
@@ -1873,6 +3112,7 @@ function argument(a: unknown, items: Map<unknown, unknown>): unknown {
   if ((a as THREE.Box3 | null)?.isBox3) return boundBox(a as THREE.Box3)
   if (isRay(a)) return toAxis(a)
   if (typeof a === 'function') return (k: unknown) => (a as (x: unknown) => unknown)(items.get(k) ?? k)
+  if (Array.isArray(a)) return a.map((x) => argument(x, items))
   if (a !== null && typeof a === 'object' && typeof (a as THREE.Vector3Like).x === 'number' && typeof (a as THREE.Vector3Like).z === 'number') return vec(a as THREE.Vector3Like)
   return a
 }
@@ -1887,13 +3127,15 @@ function select<T, R>(list: ShapeList<T>, name: string, args: unknown[]): R {
   })
   const smList = sm.ShapeList.from(kernel) as unknown as Record<string, (...a: unknown[]) => unknown>
   const result = call(() => smList[name](...args.map((a) => argument(a, items))))
+  // (what the selector gives back: the list's own objects, else its body's (faces of these edges),
+  // else three's values)
+  const like = list.length ? frameOf(list[0] as THREE.Object3D) : null
   const back = (k: unknown): unknown => {
     if (items.has(k)) return items.get(k)
-    // (a shape the selector made anew: the same one of the list's body)
-    for (const [key, value] of items) if ((key as { equals(o: unknown): boolean }).equals(k)) return value
-    return wrapAny(k)
+    if (Array.isArray(k)) return k instanceof sm.ShapeList ? ShapeList.from([...k].map(back)) : k.map(back)
+    if (k instanceof sm.Part || k instanceof sm.Shell) for (const [key, value] of items) if (key === k) return value
+    return toThree(k, like)
   }
-  if (Array.isArray(result)) return ShapeList.from(result.map(back)) as R
   return back(result) as R
 }
 
