@@ -580,7 +580,9 @@ for case in cases:
     out = run.stdout.split()
     holes = ["ok:6931.748", "ok:6931.748", "ok:2199.226", "ok:62.721", "ok:2199.226"]
     assert out[:10] == holes * 2  # were KernelError (and exit 139 before that)
-    assert out[10:16] == ["failed"] * 6  # the kernel's own Boolean of the same holes
+    # the kernel's own Boolean of the same holes: refused (macOS arm64, Linux), or, where the build's arithmetic
+    # gets some of them (macOS x86_64), made; none crash
+    assert set(out[10:16]) <= {"failed", "ok"}
     assert out[16] == "KernelError"  # the end cap
     assert len(out) == 117 and set(out[17:]) <= {"ok", "failed"}  # the shells: some fail, none crash
     assert (Sphere(1.5).rotate(Y, 90) & Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume == approx(
