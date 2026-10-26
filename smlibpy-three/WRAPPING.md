@@ -18,7 +18,9 @@ practice.
 
 ## Conversions (`src/kernel.ts`)
 
-three is Y up, the kernel Z up: three's (x, y, z) is the kernel's (x, -z, y). Never convert by hand.
+The kernel works in three's coordinates: three's (x, y, z) is the kernel's (x, y, z), and nothing
+converts axes. The helpers convert types (and angles); use them rather than building kernel values by
+hand.
 
 | | in (three to kernel) | out (kernel to three) |
 |---|---|---|
@@ -31,14 +33,17 @@ three is Y up, the kernel Z up: three's (x, y, z) is the kernel's (x, -z, y). Ne
 | angle | `degrees(radians)` | `radians(degrees)` |
 | alignment | `align3({ x, y, z } or one)`, `align2({ x, y } or one)` | |
 
-The API is in radians, as three is; the kernel in degrees.
+The API is in radians, as three is; the kernel in degrees. The kernel's messages pass through
+`words()` (in `call`, and for warnings), which names the package's classes and gives angles in
+radians: a message a wrapper writes itself is in the package's words already (it never says "degrees"
+or names smlibwasm's API).
 
 ## Shapes (`src/shapes.ts`, exported `@internal`)
 
 | helper | what it does |
 |---|---|
 | `kernelOf(body)` | a body's kernel value (throws for an empty or disposed body) |
-| `kernelOfShape(x)` | a Face's, Edge's, Wire's or Vertex's kernel value |
+| `kernelOfShape(x)` | a BrepFace's, BrepEdge's, Wire's or BrepVertex's kernel value |
 | `setKernel(body, value)`, `setCurve(edgeOrWire, value)` | give a new object its kernel value (constructors) |
 | `internal(obj)` | true for an object the package constructs (a result, a clone): subclass constructors return at once |
 | `wrap(value)` | a Part, Shell or Sketch for a kernel body |
@@ -46,9 +51,10 @@ The API is in radians, as three is; the kernel in degrees.
 | `operand(shape, into, what)` | a shape given to an operation of `into`, where it is in the world, in `into`'s frame |
 | `toKernel(value, into)` | any argument: shapes as `operand`, three's math values converted, arrays and Maps item by item |
 | `toThree(value, like)` | any result of an operation of `like`: bodies wrapped and adopted, faces/edges/vertices of `like`'s body as its objects, other curves placed where `like` is, kernel math values as three's |
-| `shapeFor(body, k)` | the Face, Edge or Vertex object of `body` for a kernel face, edge or vertex |
-| `curveOf(value, owner?)`, `placedCurve(value, like)` | an Edge or Wire for a kernel curve: a body's, or one of its own |
-| `sub(cls, owner, index, k)` | a Face, Edge or Vertex object (owner null: a vertex of its own) |
+| `shapeFor(body, k)` | the BrepFace, BrepEdge or BrepVertex object of `body` for a kernel face, edge or vertex |
+| `curveOf(value, owner?)`, `placedCurve(value, like)` | a BrepEdge or Wire for a kernel curve: a body's, or one of its own |
+| `sub(cls, owner, index, k)` | a BrepFace, BrepEdge or BrepVertex object (owner null: a vertex of its own) |
+| `drawnData(body)`, `takeDrawn(body, data)` | a body's tessellation as plain arrays, for another thread, and back |
 | `frameOf(obj)` | the object whose frame a shape is in (a face's body, else itself) |
 | `flatten(items)` | `(T or Iterable<T>)[]` to `T[]` |
 | `isObject3D`, `isMatrix4`, `isRay` | three's types by their flags (two copies of three fail instanceof) |
@@ -62,7 +68,7 @@ The API is in radians, as three is; the kernel in degrees.
    frame, with its transform. A free function's first shape plays `x`.
 2. **Values.** Operations return new objects and leave their inputs as they were.
 3. **Names.** smlibpy's names (camelCase as smlibwasm's), with three's types. A name that three's
-   Object3D, Mesh, Line or Points already has (`add`, `scale`, `raycast`, `clone`, `copy`, `name`,
+   Object3D, Mesh, Segment or Points already has (`add`, `scale`, `raycast`, `clone`, `copy`, `name`,
    `dispose`, `translate…`, `rotate…`, `lookAt`, `position`, `visible`, ...) is never reused with
    another meaning: rename it (`raycast` to `intersectRay`) or leave it to three (placement is the
    object's transform, so smlibpy's `translate`, `rotate`, `moved` and `scale` are not wrapped).
@@ -70,17 +76,27 @@ The API is in radians, as three is; the kernel in degrees.
    `THREE.Points`. A subclass constructor: `super(); if (internal(this)) return; setKernel(this, ...)`.
    Primitives keep their arguments in `parameters`, as three's geometries do. Never declare class
    fields three's constructors assign (`geometry`, `material`); type flags with `declare readonly
-   isX: true` and define them on the prototype.
-5. **Records.** What smlibwasm returns as a record (mass properties, a draft analysis, a bend) is a
+   isX: true` and define them on the prototype. No export may share a name with one of three's (core
+   or addons): name it after smlibpy, else after what it is (`Segment`, `Ball`, `BrepFace`), and say
+   smlibpy's name in its doc comment.
+5. **three's conventions.** Where three has a geometry or a convention, follow it, not smlibpy's Z up:
+   a solid three has a geometry of takes its arguments, defaults and placement (cylinders along y,
+   theta from +z), 2D lies in the XY plane and turns counterclockwise seen from +z, a face's frame has
+   its z along the face's normal, `top()` is +y and `front()` +z, files are read and written as they
+   are (USD, which declares its up axis, as three's USDLoader takes it). Where the kernel assumes Z up
+   (its `top()`, its default axes, its renderer's named views), the wrapper says what three means: a
+   direction of its own (`maxBy(+y)`, the y axis), or the stage of `src/render.ts`.
+6. **Records.** What smlibwasm returns as a record (mass properties, a draft analysis, a bend) is a
    class or interface of the package with three's types (Vector3, Plane, Ray, Box3, Matrix3) and
    radians; keep the kernel's record in a `#private` field when a method needs it.
-6. **Files** read and write the way three's loaders and exporters do: an `XLoader extends
-   THREE.Loader` (`load`, `loadAsync`, `parse`) and an `XExporter` (`parse`). Files are Z up as
-   smlibpy's: convert at the boundary like everything else (bodies through `wrap`/`kernelOf` and
-   `location(matrixWorld)`), so a part standing in three stands in the file.
-7. **Docs.** Every export has a doc comment, which becomes the API reference: say what it does and
+7. **Files** read and write the way three's loaders and exporters do: an `XLoader extends
+   THREE.Loader` (`load`, `loadAsync`, `parse`) and an `XExporter` (`parse`). A loader gives one type
+   (a THREE.Group where a file holds several things). Coordinates go as they are (bodies through
+   `wrap`/`kernelOf` and `location(matrixWorld)`).
+8. **Docs.** Every export has a doc comment, which becomes the API reference: say what it does and
    which frame and unit its values are in.
-8. **Tests.** node's runner, one file per area (`test/<area>.test.ts`), helpers from
-   `test/_util.ts`. Check three's types in and out, the area's Y-up mapping, frames (a moved or
-   rotated receiver and operand), and that nothing of smlibwasm's comes out (`noKernel` in
-   `test/types.test.ts`). Run one file with `node --test test/<area>.test.ts`.
+9. **Tests.** node's runner, one file per area (`test/<area>.test.ts`), helpers from
+   `test/_util.ts`. Check three's types in and out, the area's three conventions (against three's own
+   geometry or curve where there is one), frames (a moved or rotated receiver and operand), and that
+   nothing of smlibwasm's comes out (`noKernel` in `test/types.test.ts`). Run one file with
+   `node --test test/<area>.test.ts`.

@@ -6,17 +6,17 @@ declarations with their doc comments, written by `npm run api` from the package'
 are, results in the frame of what an operation was called on, angles in radians. smlibpy's
 [documentation](https://smlibpy.classcad.ch/docs/) describes the operations themselves.
 
-- [Shapes](#shapes): `Body`, `EdgeLines`, `Part`, `Shell`, `Sketch`, `Face`, `Edge`, `Wire`, `Vertex`, `ShapeList`, `EdgesLike`, `FacesLike`, `RegionLike`, `PushOptions`, `FilletRadius`, `FilletOptions`, `ChamferOptions`, `ExtrudeOptions`, `SweepOptions`, `SortKey`
-- [Solids](#solids): `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Pyramid`, `AnnularSector`, `Hole`, `CounterBoreHole`, `CounterSinkHole`, `Wedge`, `PlacementOptions`, `SphereOptions`, `TorusOptions`
-- [Sketches and text](#sketches-and-text): `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`, `RegularPolygon`, `Triangle`, `Trapezoid`, `Slot`, `ArcSlot`, `Stroke`, `Hull`, `Text`, `Profile`, `Font`, `makeFace`, `loadFont`, `DEFAULT_FONT`, `CornerOptions`, `SketchPlacement`, `SketchPoint`, `TrapezoidOptions`, `StrokeOptions`, `HullItem`, `TextOptions`, `Coordinates`, `FontSource`, `PairAdjustment`, `Contour`
-- [Curves](#curves): `Line`, `PolarLine`, `Polyline`, `FilletPolyline`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `SagittaArc`, `TangentArc`, `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spline`, `Bezier`, `Helix`, `Spiral`, `fitCurve`, `makeCompatible`, `ArcSideOptions`, `HelixOptions`, `FitCurveOptions`
+- [Shapes](#shapes): `Body`, `EdgeLines`, `Part`, `Shell`, `Sketch`, `BrepFace`, `BrepEdge`, `Wire`, `BrepVertex`, `ShapeList`, `EdgesLike`, `FacesLike`, `RegionLike`, `PushOptions`, `FilletRadius`, `FilletOptions`, `ChamferOptions`, `ExtrudeOptions`, `SweepOptions`, `SortKey`
+- [Solids](#solids): `Box`, `Cylinder`, `Cone`, `Ball`, `Torus`, `Pyramid`, `Wedge`, `AnnularSector`, `Hole`, `CounterBoreHole`, `CounterSinkHole`, `PlacementOptions`, `SectorOptions`, `BallOptions`, `TorusOptions`
+- [Sketches and text](#sketches-and-text): `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`, `RegularPolygon`, `TriangleSketch`, `Trapezoid`, `Slot`, `ArcSlot`, `Stroke`, `Hull`, `Text`, `Profile`, `OpenTypeFont`, `makeFace`, `loadFont`, `DEFAULT_FONT`, `CornerOptions`, `SketchPlacement`, `SketchPoint`, `TrapezoidOptions`, `StrokeOptions`, `HullItem`, `TextOptions`, `Coordinates`, `FontSource`, `PairAdjustment`, `Contour`
+- [Curves](#curves): `Segment`, `PolarLine`, `Polyline`, `FilletPolyline`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `SagittaArc`, `TangentArc`, `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spline`, `Bezier`, `Helix`, `Spiral`, `fitCurve`, `makeCompatible`, `ArcSideOptions`, `HelixOptions`, `FitCurveOptions`
 - [Operations and patterns](#operations-and-patterns): `extrude`, `revolve`, `sweep`, `loft`, `swing`, `fillet`, `chamfer`, `shell`, `offset`, `mirror`, `split`, `merge`, `section`, `thicken`, `GridLocations`, `PolarLocations`, `HexLocations`, `Locations`, `TOLERANCE`, `ACCURACY`, `X`, `Y`, `Z`, `ProfileLike`, `LoftOptions`
 - [Measurements](#measurements): `MassProperties`, `SectionProperties`, `DraftAnalysis`, `ClosestPoints`, `Curvature`, `Continuity`, `RayHit`, `Problem`, `FaceDraft`, `BodyInfo`
 - [Deformations](#deformations): `Lattice`, `twist`, `taper`, `bend`, `unroll`, `RangeOptions`, `TwistOptions`, `TaperOptions`, `BendOptions`, `UnrollOptions`, `LatticeLayers`, `LatticeIndex`, `LatticeAxis`
 - [Surfaces](#surfaces): `FitReport`, `StitchReport`, `surface`, `nurbsSurface`, `ruled`, `fill`, `network`, `surfaceFillet`, `blend`, `stitch`, `CurveLike`, `SurfaceOptions`, `NurbsSurfaceData`, `FillOptions`, `SurfaceFilletOptions`, `BlendOptions`, `StitchOptions`, `StitchPiece`
 - [Sheet metal](#sheet-metal): `Bend`, `FlatPattern`, `bendAllowance`, `bendDeduction`, `developedLength`, `fold`, `flange`, `bends`, `unfold`, `flatPattern`, `KFactor`, `BendAllowanceOptions`, `DevelopedLengthOptions`, `FoldOptions`, `FlangeOptions`, `UnfoldOptions`
 - [Triangle meshes](#triangle-meshes): `TriangleMesh`, `tessellate`, `TessellateOptions`, `DecimateOptions`, `RepairReport`, `MeshHit`
-- [Files](#files): `STEPLoader`, `STEPExporter`, `IGESLoader`, `DXFLoader`, `DXFExporter`, `SVGExporter`, `USDLoader`, `USDExporter`, `BREPLoader`, `BREPExporter`, `SMBLoader`, `SMBExporter`, `SMPLoader`, `SMPExporter`, `DrawingView`, `drawingViews`, `STEPLoaderOptions`, `STEPExporterOptions`, `IGESLoaderOptions`, `DXFUnit`, `DXFLoaderOptions`, `DXFExporterOptions`, `SVGExporterOptions`, `USDLoaderOptions`, `USDExporterOptions`, `BREPLoaderOptions`, `BREPExporterOptions`, `SMLibExporterOptions`, `ViewName`, `DrawingViewsOptions`
+- [Files](#files): `STEPLoader`, `STEPExporter`, `IGESLoader`, `DXFLoader`, `DXFExporter`, `SVGExporter`, `USDBrepLoader`, `USDBrepExporter`, `BREPLoader`, `BREPExporter`, `SMBLoader`, `SMBExporter`, `SMPLoader`, `SMPExporter`, `DrawingView`, `drawingViews`, `STEPLoaderOptions`, `STEPExporterOptions`, `IGESLoaderOptions`, `DXFUnit`, `DXFLoaderOptions`, `DXFExporterOptions`, `SVGExporterOptions`, `USDBrepLoaderOptions`, `USDBrepExporterOptions`, `BREPLoaderOptions`, `BREPExporterOptions`, `SMLibExporterOptions`, `ViewName`, `DrawingViewsOptions`
 - [Pictures](#pictures): `Picture`, `ImageDiff`, `render`, `diffImages`, `VIEWS`, `RenderViewName`, `RenderView`, `RenderPoint`, `RenderMarker`, `Frame`, `ImageLike`, `RenderOptions`
 - [Memory and settings](#memory-and-settings): `scope`, `memoryUsage`, `setWarningHandler`, `setGuardSeconds`, `setGuardBooleans`, `GUARD_SECONDS`, `GUARD_BOOLEANS`, `MemoryUsage`
 - [Errors and types](#errors-and-types): `ModelingError`, `KernelError`, `FontError`, `AlignValue`, `Align3`, `Align2`
@@ -51,10 +51,10 @@ export abstract class Body extends THREE.Mesh {
     get angle(): number;
     set angle(value: number);
     /** The faces, in the kernel's order. The same objects every time. */
-    faces(): ShapeList<Face>;
+    faces(): ShapeList<BrepFace>;
     /** The edges (seams, where a closed surface meets itself, left out), in the kernel's order. */
-    edges(): ShapeList<Edge>;
-    vertices(): ShapeList<Vertex>;
+    edges(): ShapeList<BrepEdge>;
+    vertices(): ShapeList<BrepVertex>;
     /** The faces' boundary loops. */
     wires(): ShapeList<Wire>;
     /** The surface area. */
@@ -65,13 +65,13 @@ export abstract class Body extends THREE.Mesh {
      * in the world's). */
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The shortest distance to a point (in this body's frame) or to another shape (where it is). */
-    distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number;
+    distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
     /** The point of the body nearest to `point` (both in its frame). */
     closestPoint(point: THREE.Vector3Like, target?: THREE.Vector3): THREE.Vector3;
     /** The kernel's check of the body (true: sound). */
     isValid(): boolean;
     /** The curves where a plane (in this body's frame) cuts the body. */
-    intersectionCurves(other: THREE.Plane | Body | Face): ShapeList<Edge>;
+    intersectionCurves(other: THREE.Plane | Body | BrepFace): ShapeList<BrepEdge>;
     /** True if `other` holds the same kernel body (as a clone does). */
     equals(other: unknown): boolean;
     /** The body's summary: its type, how many faces, edges and vertices, its box (in its frame). */
@@ -79,7 +79,7 @@ export abstract class Body extends THREE.Mesh {
     /** The kernel's check of the body: what it finds wrong (nothing for a sound body). `level` 0 to 3, more thorough. */
     check(level?: number): Problem[];
     /** The nearest points of this body and another shape (taken where it is), and the faces they lie on. */
-    closestPoints(other: Body | Face | Edge | Wire): ClosestPoints;
+    closestPoints(other: Body | BrepFace | BrepEdge | Wire): ClosestPoints;
     /** The exact hits of a ray (in the body's frame) on its faces, nearest first: the kernel's ray
      * cast on the exact surfaces (three's raycast works on the tessellation). */
     intersectRay(ray: THREE.Ray): RayHit[];
@@ -89,26 +89,27 @@ export abstract class Body extends THREE.Mesh {
      * it is, and the next query builds what it needs again. */
     compact(): void;
     /** The body's contour seen along `direction` (in its frame, from the body towards the viewer;
-     * default +y): the curves where its faces turn away, as curves of their own where the body is. */
-    silhouette(direction?: THREE.Vector3Like): ShapeList<Edge>;
+     * default +z, from the front): the curves where its faces turn away, as curves of their own where
+     * the body is. */
+    silhouette(direction?: THREE.Vector3Like): ShapeList<BrepEdge>;
     /** A curve (taken where it is) projected onto the body along `direction` (in its frame): the
      * curves on its faces. `nearest` keeps what the projection reaches first. */
-    project(curve: Edge | Wire, direction?: THREE.Vector3Like, options?: {
+    project(curve: BrepEdge | Wire, direction?: THREE.Vector3Like, options?: {
         nearest?: boolean;
-    }): ShapeList<Edge>;
+    }): ShapeList<BrepEdge>;
     /**
-     * The body's edges and contours projected onto a plane (in its frame; default the ground, y = 0,
-     * seen from above): a drawing view's visible lines, in the plane. `hidden: true` gives
+     * The body's edges and contours projected onto a plane (in its frame; default the XY plane, seen
+     * from +z: a front view): a drawing view's visible lines, in the plane. `hidden: true` gives
      * [visible, hidden]; `tangentEdges` draws the edges between tangent faces too.
      */
     outline(plane?: THREE.Plane, options?: {
         hidden?: false;
         tangentEdges?: boolean;
-    }): ShapeList<Edge>;
+    }): ShapeList<BrepEdge>;
     outline(plane: THREE.Plane | undefined, options: {
         hidden: true;
         tangentEdges?: boolean;
-    }): [ShapeList<Edge>, ShapeList<Edge>];
+    }): [ShapeList<BrepEdge>, ShapeList<BrepEdge>];
     /**
      * Clones of this body, one at each of `locations` (moved by it, as `clone().applyMatrix4(m)`):
      * `plate.cut(hole.at(GridLocations(60, 40, 2, 2)))`. The clones share the body and its
@@ -185,7 +186,7 @@ export class Part extends Body {
     cut(...others: (Part | Iterable<Part>)[]): Part;
     /** What this part and the others share (smlibpy's `a & b`); with a sheet or a face, the piece of
      * it inside the part (a Shell). */
-    intersect(sheet: Shell | Face): Shell;
+    intersect(sheet: Shell | BrepFace): Shell;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
     /** Rounds edges of this part (faces: all their edges). */
     fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part;
@@ -199,7 +200,7 @@ export class Part extends Body {
     shell(thickness: number, openings?: FacesLike | null, options?: {
         outward?: boolean;
         corners?: string | null;
-        walls?: ReadonlyMap<Face, number> | Iterable<readonly [FacesLike, number]> | null;
+        walls?: ReadonlyMap<BrepFace, number> | Iterable<readonly [FacesLike, number]> | null;
     }): Part;
     /** The part grown (or shrunk, for a negative distance) by `distance` all round; `corners` 'round'
      * or 'sharp'. */
@@ -208,8 +209,8 @@ export class Part extends Body {
     }): Part;
     /** The part on the side of `plane` (in its frame) the plane's normal points to, as three's
      * clipping keeps it; 'below' the other side, 'both' both. A face or sheet splits it too. */
-    split(plane: THREE.Plane | Face | Shell, keep?: 'above' | 'below'): Part;
-    split(plane: THREE.Plane | Face | Shell, keep: 'both'): [Part, Part];
+    split(plane: THREE.Plane | BrepFace | Shell, keep?: 'above' | 'below'): Part;
+    split(plane: THREE.Plane | BrepFace | Shell, keep: 'both'): [Part, Part];
     /** The section where `plane` (in this part's frame) cuts it: a sketch. */
     section(plane: THREE.Plane): Sketch;
     /** The part mirrored in `plane` (in its frame). */
@@ -229,7 +230,7 @@ export class Part extends Body {
     cellAt(point: THREE.Vector3Like, tol?: number | null): Part | null;
     /** Where a point (in the part's frame) lies: 'inside', 'outside', or 'on' with the face, edge or
      * vertex it lies on (within `tol`). */
-    classify(point: THREE.Vector3Like, tol?: number | null): ['inside' | 'outside' | 'on', Face | Edge | Vertex | null];
+    classify(point: THREE.Vector3Like, tol?: number | null): ['inside' | 'outside' | 'on', BrepFace | BrepEdge | BrepVertex | null];
     /** The sheets a fillet of these edges would add, without making it (to show it before). */
     filletPreview(edges: EdgesLike, radius: number, options?: {
         propagate?: boolean;
@@ -237,10 +238,11 @@ export class Part extends Body {
     /** The part with a tool's outline (a body, face, or curves, taken where they are) imprinted on its
      * faces (projected along `direction`, in the part's frame), splitting them; `nearest` imprints on
      * the faces the projection reaches first. */
-    imprint(tool: Body | Face | Edge | Wire | Iterable<Face | Edge | Wire>, direction?: THREE.Vector3Like | null, options?: {
+    imprint(tool: Body | BrepFace | BrepEdge | Wire | Iterable<BrepFace | BrepEdge | Wire>, direction?: THREE.Vector3Like | null, options?: {
         nearest?: boolean;
     }): Part;
-    /** Sections `step` apart along `axis` (in the part's frame; default +y), as sketches. */
+    /** Sections `step` apart along `axis` (in the part's frame; default +z, so that they lie as
+     * sketches do, parallel to XY), as sketches. */
     slices(step: number, axis?: THREE.Vector3Like): Sketch[];
     /** The part without its fillets (or those faces of them given, or those up to `maxRadius`); with
      * `partial`, the ones the kernel cannot remove stay. */
@@ -262,26 +264,26 @@ export class Part extends Body {
     partingLine(direction: THREE.Vector3Like): ShapeList<Wire>;
     /** The faces given tilted by `angle` (radians) about where they meet `neutralPlane` (a THREE.Plane
      * in the part's frame, or a face), for a mold pulled along that plane's normal. */
-    draft(faces: FacesLike, angle: number, neutralPlane: THREE.Plane | Face): Part;
+    draft(faces: FacesLike, angle: number, neutralPlane: THREE.Plane | BrepFace): Part;
     /** The faces given moved by a matrix or a vector (in the part's frame), the faces around them
      * following. */
     moveFaces(faces: FacesLike, by: THREE.Matrix4 | THREE.Vector3Like): Part;
     /** The faces given moved along their normals by `distance`. */
     offsetFaces(faces: FacesLike, distance: number): Part;
     /** A face pushed (or pulled) at a point of it (in the part's frame): a smooth bump or dent. */
-    push(face: Face, at: THREE.Vector3Like, options?: PushOptions): Part;
+    push(face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Part;
     /** A region of a face moved by `by` (a distance along its normal or a Vector3), the face bending
      * smoothly around it. */
-    warp(face: Face, region: RegionLike, by: number | THREE.Vector3Like, options?: {
+    warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: {
         continuity?: string;
     }): Part;
     /** A region of a face pressed flat onto a plane (a THREE.Plane in the part's frame, or a face). */
-    flatten(face: Face, region: RegionLike, plane: THREE.Plane | Face, options?: {
+    flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: {
         continuity?: string;
     }): Part;
     /** The part placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame):
-     * its origin to the face's center, its y axis along the face's normal. */
-    on(target: Face | THREE.Plane | THREE.Matrix4): Part;
+     * its origin to the face's center, its z axis along the face's normal. */
+    on(target: BrepFace | THREE.Plane | THREE.Matrix4): Part;
     /** A copy whose faces and edges are all NURBS. */
     toNurbs(): Part;
     /** The part with gaps, tolerances and topology repaired (mostly for imported parts). */
@@ -303,17 +305,17 @@ export class Part extends Body {
     deform(lattice: deformations.Lattice, options?: {
         tolerance?: number | null;
     }): Part;
-    /** The sheet folded along a line (a THREE.Ray in its frame, or a straight Edge) by `angle` radians; see `fold`. */
-    fold(line: THREE.Ray | Edge, angle: number, options: sheetMetal.FoldOptions): Part;
+    /** The sheet folded along a line (a THREE.Ray in its frame, or a straight BrepEdge) by `angle` radians; see `fold`. */
+    fold(line: THREE.Ray | BrepEdge, angle: number, options: sheetMetal.FoldOptions): Part;
     /** The sheet with a flange along one of its straight edges; see `flange`. */
-    flange(edge: Edge | Iterable<Edge>, length: number, options: sheetMetal.FlangeOptions): Part;
+    flange(edge: BrepEdge | Iterable<BrepEdge>, length: number, options: sheetMetal.FlangeOptions): Part;
     /** The bends of the sheet, their axes in its frame; see `bends`. */
     bends(options?: {
         kFactor?: sheetMetal.KFactor;
     }): sheetMetal.Bend[];
     /** The sheet with every bend flat again; see `unfold`. */
     unfold(options?: sheetMetal.UnfoldOptions): Part;
-    /** The flat pattern of the sheet, on the ground of its frame; see `flatPattern`. */
+    /** The flat pattern of the sheet, in the XY plane of its frame; see `flatPattern`. */
     flatPattern(options?: sheetMetal.UnfoldOptions): sheetMetal.FlatPattern;
 }
 ```
@@ -345,34 +347,34 @@ export class Shell extends Body {
     offset(distance: number): Shell;
     /** The sheet cut along curves on it (taken where they are), keeping the side of `keep` (a point in
      * the sheet's frame on or near the side to keep), or both sides as faces of their own ('split'). */
-    trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: THREE.Vector3Like | 'split'): Shell;
+    trim(curves: BrepEdge | Wire | Iterable<BrepEdge | Wire>, keep: THREE.Vector3Like | 'split'): Shell;
     /** The sheet with its normals turned the other way. */
     flipped(): Shell;
     /** The sheet extended past its free edges (or those given of them) by `distance`; `continuity`
      * 'G1' or 'G2' with the surface. */
     extend(distance: number, options?: {
-        sides?: Edge | Iterable<Edge> | null;
+        sides?: BrepEdge | Iterable<BrepEdge> | null;
         continuity?: string;
     }): Shell;
     /** The sheet with one of its free edges moved onto a curve (taken where it is), the surface
      * following over `extent` of its width. */
-    matchEdge(edge: Edge, target: Edge | Wire, options?: {
+    matchEdge(edge: BrepEdge, target: BrepEdge | Wire, options?: {
         extent?: number;
     }): Shell;
     /** Two neighbouring faces of the sheet as one. */
-    mergeFaces(a: Face, b: Face): Shell;
+    mergeFaces(a: BrepFace, b: BrepFace): Shell;
     /** A face of the sheet pushed at a point (in the sheet's frame): a smooth bump or dent. */
-    push(face: Face, at: THREE.Vector3Like, options?: PushOptions): Shell;
+    push(face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Shell;
     /** A region of a face of the sheet moved by `by` (a distance along its normal or a Vector3). */
-    warp(face: Face, region: RegionLike, by: number | THREE.Vector3Like, options?: {
+    warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: {
         continuity?: string;
     }): Shell;
     /** A region of a face of the sheet pressed flat onto a plane (a THREE.Plane in its frame, or a face). */
-    flatten(face: Face, region: RegionLike, plane: THREE.Plane | Face, options?: {
+    flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: {
         continuity?: string;
     }): Shell;
     /** This sheet and other sheets, parts or faces (taken where they are), sewn into one where they meet. */
-    fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell;
+    fuse(...others: (Shell | Part | BrepFace | Iterable<Shell | Part | BrepFace>)[]): Shell;
     /** The sheet with what lies inside the parts (taken where they are) cut away. */
     cut(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell;
     /** The piece of the sheet inside the parts (taken where they are). */
@@ -380,7 +382,7 @@ export class Shell extends Body {
     /** The sheet mirrored in `plane` (in its frame). */
     mirror(plane: THREE.Plane): Shell;
     /** The sheet placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame). */
-    on(target: Face | THREE.Plane | THREE.Matrix4): Shell;
+    on(target: BrepFace | THREE.Plane | THREE.Matrix4): Shell;
     /** A copy whose faces and edges are all NURBS. */
     toNurbs(): Shell;
     /** The sheet with gaps, tolerances and topology repaired; a Part where it closes around a volume. */
@@ -396,10 +398,10 @@ export class Shell extends Body {
 
 ```ts
 /**
- * A planar region: drawn in its own 2D coordinates (x, y), which lie on the ground of its frame
- * (three's XZ plane; its y runs along -z, so a top view shows it as drawn) and face up (+y), as
- * smlibpy's sketches lie on XY and face +Z. Place it with its transform, or on a face with on().
- * Extrude, revolve and sweep it into parts.
+ * A planar region: drawn in its own 2D coordinates (x, y), which are three's x and y: it lies in the
+ * XY plane of its frame and faces +z, as three's ShapeGeometry does, and extrudes along +z, as
+ * ExtrudeGeometry does. Place it with its transform, or on a face with on(). Extrude, revolve and
+ * sweep it into parts.
  */
 export class Sketch extends Shell {
     readonly isSketch: true;
@@ -417,18 +419,20 @@ export class Sketch extends Shell {
     get plane(): THREE.Plane;
     /** A solid: the region moved `amount` along its normal (or `direction`). */
     extrude(amount: number, options?: ExtrudeOptions): Part;
-    /** A solid of revolution about `axis` (a THREE.Ray in the sketch's frame, in its plane; default
-     * the sketch's y axis) through `angle` radians. */
+    /** A solid of revolution about `axis` (a THREE.Ray in the sketch's frame, in its plane) through
+     * `angle` radians; by default about the frame's y axis, as THREE.LatheGeometry revolves its points
+     * (a sketch elsewhere than in a plane through that axis: about its plane's y axis through its
+     * plane's origin). */
     revolve(axis?: THREE.Ray | null, angle?: number): Part;
-    /** A solid: the region swept along `path` (an Edge or Wire where it is, or a THREE.Curve in the
+    /** A solid: the region swept along `path` (a BrepEdge or Wire where it is, or a THREE.Curve in the
      * sketch's frame). */
-    sweep(path: Edge | Wire | THREE.Curve<THREE.Vector3>, options?: SweepOptions): Part;
+    sweep(path: BrepEdge | Wire | THREE.Curve<THREE.Vector3>, options?: SweepOptions): Part;
     /**
      * The sketch placed on `target`: a face (where it is in the world; the sketch's origin goes to
      * the face's center, its normal along the face's), a THREE.Plane, or a THREE.Matrix4 (both in
      * the sketch's frame).
      */
-    on(target: Face | THREE.Plane | THREE.Matrix4): Sketch;
+    on(target: BrepFace | THREE.Plane | THREE.Matrix4): Sketch;
     /** This region and the others (in the same plane, where they are), fused. */
     fuse(...others: (Sketch | Iterable<Sketch>)[]): Sketch;
     /** This region with the others cut away. */
@@ -446,14 +450,15 @@ export class Sketch extends Shell {
     /** The region facing the other way. */
     flipped(): Sketch;
     /** The region with its corners cut off (all, or those at `vertices`). */
-    chamfer(length: number, vertices?: Iterable<Vertex | THREE.Vector3Like> | null): Sketch;
+    chamfer(length: number, vertices?: Iterable<BrepVertex | THREE.Vector3Like> | null): Sketch;
     /** Area, centroid and second moments of the region. */
     sectionProperties(): SectionProperties;
-    /** A solid: the region swung around an outline (a sketch, face or curve on the ground, taken where
-     * it is), as a rim or a frame is (smlibpy's swing). The region stands in its frame's XY plane: draw
-     * it with x the distance from the y axis and y the height, and stand it up with
-     * `.on(new THREE.Matrix4().makeRotationX(Math.PI / 2))` (smlibpy's `.on(Plane.front)`). */
-    swing(outline: Sketch | Face | Wire | Edge): Part;
+    /** A solid: the region swung around an outline, as a rim or a frame is (smlibpy's swing): a
+     * revolve about z whose circle is the outline (a sketch, face or curve around the z axis, parallel
+     * to XY, taken where it is). The region stands in its frame's XZ plane, as for a lathe about z:
+     * draw it with x the distance from the z axis and y the height, and stand it up with
+     * `.on(new THREE.Matrix4().makeRotationX(Math.PI / 2))`, which turns its y to +z. */
+    swing(outline: Sketch | BrepFace | Wire | BrepEdge): Part;
     /** The region mirrored in `plane` (in its frame). */
     mirror(plane: THREE.Plane): Sketch;
     /** A copy whose curves are all NURBS. */
@@ -463,19 +468,20 @@ export class Sketch extends Shell {
     /** The region with these faces named. */
     nameFaces(faces: FacesLike, name: string | null): Sketch;
     /** The region with its corners rounded (all, or those at `vertices`). */
-    fillet(radius: number, vertices?: Iterable<Vertex | THREE.Vector3Like> | null): Sketch;
+    fillet(radius: number, vertices?: Iterable<BrepVertex | THREE.Vector3Like> | null): Sketch;
 }
 ```
 
-### Face
+### BrepFace
 
 ```ts
 /**
  * A face of a body: a THREE.Mesh of the face's triangles, in its body's frame (add it as a child
  * of the body to draw it there; its own material is a highlight in front of the body's faces).
+ * (smlibpy's Face; three has a Face of its own, the face of a raycast hit.)
  */
-export class Face extends THREE.Mesh {
-    readonly isFace: true;
+export class BrepFace extends THREE.Mesh {
+    readonly isBrepFace: true;
     constructor();
     /** The body the face belongs to. */
     get owner(): Body | null;
@@ -496,12 +502,12 @@ export class Face extends THREE.Mesh {
     normalAt(point?: THREE.Vector3Like | null, target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The shortest distance to a point (in its body's frame) or to another shape (where it is). */
-    distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number;
+    distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
     /** The face's edges: its body's (with `seams`, also the seams where its surface meets itself). */
-    edges(seams?: boolean): ShapeList<Edge>;
-    vertices(): ShapeList<Vertex>;
+    edges(seams?: boolean): ShapeList<BrepEdge>;
+    vertices(): ShapeList<BrepVertex>;
     /** The faces of its body that share an edge with it. */
-    neighbors(): ShapeList<Face>;
+    neighbors(): ShapeList<BrepFace>;
     /** Its outer boundary. */
     outerWire(): Wire;
     /** The boundaries of its holes. */
@@ -542,21 +548,21 @@ export class Face extends THREE.Mesh {
     /** The exact hits of a ray (in its body's frame) on this face, nearest first. */
     intersectRay(ray: THREE.Ray): RayHit[];
     /** A curve (taken where it is) projected onto the face along its normals: the curves on it. */
-    project(curve: Edge | Wire): ShapeList<Edge>;
+    project(curve: BrepEdge | Wire): ShapeList<BrepEdge>;
     /** The face's iso curves at parameter u or v (0 to 1). */
     iso(options?: {
         u?: number | null;
         v?: number | null;
-    }): ShapeList<Edge>;
+    }): ShapeList<BrepEdge>;
     /**
      * A drawing wrapped onto the face, as a label onto a can: a sketch or curves in their own
-     * coordinates (as drawn, on the ground, wherever they are placed), their origin at `at` (a point of
+     * coordinates (as drawn in their XY plane, wherever they are placed), their origin at `at` (a point of
      * the face, in its body's frame; default its middle), their x axis along `direction`. The curves on
      * the face.
      */
-    wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at?: THREE.Vector3Like | Vertex | null, options?: {
+    wrap(shape: BrepEdge | Wire | Sketch | Iterable<BrepEdge>, at?: THREE.Vector3Like | BrepVertex | null, options?: {
         direction?: THREE.Vector3Like | null;
-    }): ShapeList<Edge>;
+    }): ShapeList<BrepEdge>;
     /** The face as a sketch (a planar face) where it is. */
     toSketch(): Sketch;
     /** The face as a sheet of its own where it is. */
@@ -564,14 +570,14 @@ export class Face extends THREE.Mesh {
     /** The face moved `distance` along its normals, as a sheet. */
     offset(distance: number): Shell;
     /** The face split along curves on it (taken where they are): the faces of the split sheet. */
-    split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face>;
+    split(curves: BrepEdge | Wire | Iterable<BrepEdge | Wire>): ShapeList<BrepFace>;
     /** The face turned the other way, as a sheet. */
     flipped(): Shell;
     /** The face's whole surface, its trims taken off, as a sheet. */
     untrimmed(): Shell;
     /** The face extended past its edges (or those given of them) by `distance`, as a sheet. */
     extend(distance: number, options?: {
-        sides?: Edge | Iterable<Edge> | null;
+        sides?: BrepEdge | Iterable<BrepEdge> | null;
         continuity?: string;
     }): Shell;
     /** True for the same face of the same body (of a clone too). */
@@ -585,16 +591,16 @@ export class Face extends THREE.Mesh {
 }
 ```
 
-### Edge
+### BrepEdge
 
 ```ts
 /**
  * An edge: a THREE.Line along the exact curve. Either an edge of a body (in its body's frame;
- * `owner` is the body), or a curve of its own (Line, Spline, Helix, ... or one of three's curves),
- * placed by its own transform.
+ * `owner` is the body), or a curve of its own (Segment, Spline, Helix, ... or one of three's curves),
+ * placed by its own transform. (smlibpy's Edge, named as BrepFace and BrepVertex are.)
  */
-export class Edge extends THREE.Line {
-    readonly isEdge: true;
+export class BrepEdge extends THREE.Line {
+    readonly isBrepEdge: true;
     /** An edge along one of three's curves (LineCurve3, CubicBezierCurve3, CatmullRomCurve3,
      * CurvePath, ...) in its own frame. Without a curve, an empty edge. */
     constructor(curve?: THREE.Curve<THREE.Vector3> | null, material?: THREE.Material | null);
@@ -618,12 +624,12 @@ export class Edge extends THREE.Line {
     center(target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The shortest distance to a point (in its frame) or to another shape (where it is). */
-    distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number;
+    distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
     /** The faces of its body that meet at it. */
-    faces(): ShapeList<Face>;
-    vertices(): ShapeList<Vertex>;
+    faces(): ShapeList<BrepFace>;
+    vertices(): ShapeList<BrepVertex>;
     /** The same curve the other way round (a curve of its own, where this one is). */
-    reversed(): Edge;
+    reversed(): BrepEdge;
     /** How far the edge's curve, its ends and its faces may lie apart (the kernel's tolerance of the
      * edge; a RangeError for a curve of its own). */
     get tolerance(): number;
@@ -645,25 +651,25 @@ export class Edge extends THREE.Line {
         curvatureTol?: number;
     }): Continuity;
     /** The edge's point nearest to `point` (both in its frame). */
-    closestPoint(point: THREE.Vector3Like | Vertex, target?: THREE.Vector3): THREE.Vector3;
+    closestPoint(point: THREE.Vector3Like | BrepVertex, target?: THREE.Vector3): THREE.Vector3;
     /** The fraction of the length at which the edge comes nearest to `point`. */
-    paramAtPoint(point: THREE.Vector3Like | Vertex): number;
+    paramAtPoint(point: THREE.Vector3Like | BrepVertex): number;
     /** The part of the edge from `start` to `end`: fractions of the length or points on it. */
-    trim(start: number | THREE.Vector3Like | Vertex, end: number | THREE.Vector3Like | Vertex): Edge;
+    trim(start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): BrepEdge;
     /** The edge in two at a fraction of its length or a point on it. */
-    split(where: number | THREE.Vector3Like | Vertex): [Edge, Edge];
+    split(where: number | THREE.Vector3Like | BrepVertex): [BrepEdge, BrepEdge];
     /** The edge made longer by `distance` at its 'end' (default), 'start' or 'both'; `continuity`
      * 'G1', 'G2' or 'natural' for curves that are not lines or arcs. */
     extend(distance: number, options?: {
         end?: string;
         continuity?: string;
-    }): Edge;
+    }): BrepEdge;
     /** Where the edge crosses another shape (taken where it is), in its frame. */
-    intersections(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options?: {
+    intersections(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options?: {
         tolerance?: number | null;
     }): THREE.Vector3[];
     /** The fractions of the length at which the edge crosses another shape. */
-    intersectionParams(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options?: {
+    intersectionParams(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options?: {
         tolerance?: number | null;
     }): number[];
     /** Where the edge crosses itself. */
@@ -683,23 +689,23 @@ export class Edge extends THREE.Line {
     /** A parallel curve `distance` away, in the curve's plane (or `plane`, in its frame). */
     offset(distance: number, options?: {
         plane?: THREE.Plane | null;
-    }): Edge;
+    }): BrepEdge;
     /** The curve as lines and arcs within `tolerance`, as a wire. */
     toArcs(tolerance?: number): Wire;
     /** The curve bent locally to pass through a point (in its frame), with a tangent there if given. */
-    through(point: THREE.Vector3Like | Vertex, options?: {
+    through(point: THREE.Vector3Like | BrepVertex, options?: {
         tangent?: THREE.Vector3Like | null;
         at?: number | null;
-    }): Edge;
+    }): BrepEdge;
     /** The curve with its ends moved onto points (and turned to tangents), in its frame. */
     match(options?: {
-        start?: THREE.Vector3Like | Vertex | null;
-        end?: THREE.Vector3Like | Vertex | null;
+        start?: THREE.Vector3Like | BrepVertex | null;
+        end?: THREE.Vector3Like | BrepVertex | null;
         startTangent?: THREE.Vector3Like | null;
         endTangent?: THREE.Vector3Like | null;
-    }): Edge;
+    }): BrepEdge;
     /** The edges of its body that run on from this one tangentially, this one included. */
-    tangentChain(): ShapeList<Edge>;
+    tangentChain(): ShapeList<BrepEdge>;
     /** The curve as NURBS data: degree, knots, control points (Vector3s, in its frame) and weights
      * (null for a non-rational curve). */
     nurbs(): {
@@ -709,12 +715,12 @@ export class Edge extends THREE.Line {
         weights: number[] | null;
     };
     /** The curve mirrored in `plane` (in its frame), a curve of its own where this one is. */
-    mirror(plane: THREE.Plane): Edge;
+    mirror(plane: THREE.Plane): BrepEdge;
     /** The curve placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame): its
-     * origin to the face's center, its y axis along the face's normal. */
-    on(target: Face | THREE.Plane | THREE.Matrix4): Edge;
+     * origin to the face's center, its z axis along the face's normal. */
+    on(target: BrepFace | THREE.Plane | THREE.Matrix4): BrepEdge;
     /** The curve with the knots it does not need taken out. */
-    removeKnots(): Edge;
+    removeKnots(): BrepEdge;
     /** True for the same edge of the same body (of a clone too), or the same curve. */
     equals(other: unknown): boolean;
     /** An edge of a NURBS curve's data (the inverse of nurbs()): degree, knots (every knot as often as
@@ -724,7 +730,7 @@ export class Edge extends THREE.Line {
         knots: readonly number[];
         points: readonly THREE.Vector3Like[];
         weights?: readonly number[] | null;
-    }): Edge;
+    }): BrepEdge;
     /**
      * The exact curve as a THREE.Curve (getPoint(t) evaluates the kernel's curve at fraction t of
      * the length), for three's own uses of curves: `new THREE.TubeGeometry(edge.curve, 64, 1)`.
@@ -750,14 +756,14 @@ export class Wire extends THREE.Line {
     readonly isWire: true;
     /** A wire of edges (where they are, in this wire's frame) or of one of three's curve paths (a
      * THREE.CurvePath, in its own frame). Without either, an empty wire. */
-    constructor(edges?: Iterable<Edge | Wire> | THREE.CurvePath<THREE.Vector3> | null, material?: THREE.Material | null, options?: {
+    constructor(edges?: Iterable<BrepEdge | Wire> | THREE.CurvePath<THREE.Vector3> | null, material?: THREE.Material | null, options?: {
         sort?: boolean;
     });
     get owner(): Body | null;
     get length(): number;
     get isClosed(): boolean;
     /** Its edges, in order (curves of their own, in this wire's frame). */
-    edges(): ShapeList<Edge>;
+    edges(): ShapeList<BrepEdge>;
     pointAt(t?: number, target?: THREE.Vector3): THREE.Vector3;
     /** The unit tangent at a fraction of the length. */
     tangentAt(t?: number, target?: THREE.Vector3): THREE.Vector3;
@@ -767,21 +773,21 @@ export class Wire extends THREE.Line {
     center(target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** Its vertices, in order. */
-    vertices(): ShapeList<Vertex>;
+    vertices(): ShapeList<BrepVertex>;
     /** The shortest distance to a point (in its frame) or another shape (where it is). */
-    distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number;
+    distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
     /** The wire's point nearest to `point` (both in its frame). */
     closestPoint(point: THREE.Vector3Like, target?: THREE.Vector3): THREE.Vector3;
     /** The wire in two at a fraction of its length or a point on it. */
-    split(where: number | THREE.Vector3Like | Vertex): [Wire, Wire];
+    split(where: number | THREE.Vector3Like | BrepVertex): [Wire, Wire];
     /** The part of the wire from `start` to `end`: fractions of the length or points on it. */
-    trim(start: number | THREE.Vector3Like | Vertex, end: number | THREE.Vector3Like | Vertex): Wire;
+    trim(start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): Wire;
     /** Where the wire crosses another shape (taken where it is), in its frame. */
-    intersections(other: Body | Face | Edge | Wire | Iterable<Body | Face | Edge | Wire>, options?: {
+    intersections(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options?: {
         tolerance?: number | null;
     }): THREE.Vector3[];
     /** The wire as one edge (its edges joined into one curve). */
-    toEdge(): Edge;
+    toEdge(): BrepEdge;
     /** A parallel wire `distance` away in its plane (or `plane`, in its frame); `corners` 'round',
      * 'sharp' or 'chamfer'. */
     offset(distance: number, options?: {
@@ -808,9 +814,9 @@ export class Wire extends THREE.Line {
     /** The wire mirrored in `plane` (in its frame). */
     mirror(plane: THREE.Plane): Wire;
     /** The wire placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame). */
-    on(target: Face | THREE.Plane | THREE.Matrix4): Wire;
+    on(target: BrepFace | THREE.Plane | THREE.Matrix4): Wire;
     /** The wire with its corners (all, or those at `vertices`) rounded. */
-    fillet(radius: number, vertices?: Iterable<THREE.Vector3Like | Vertex> | null): Wire;
+    fillet(radius: number, vertices?: Iterable<THREE.Vector3Like | BrepVertex> | null): Wire;
     /** three's raycast for a wire of its own; a body's is drawn as a highlight, not hit. */
     raycast(raycaster: THREE.Raycaster, intersects: THREE.Intersection[]): void;
     /** The region a closed, planar wire bounds. */
@@ -821,13 +827,14 @@ export class Wire extends THREE.Line {
 }
 ```
 
-### Vertex
+### BrepVertex
 
 ```ts
-/** A vertex of a body: a THREE.Points of one point, in its body's frame. */
-export class Vertex extends THREE.Points {
-    readonly isVertex: true;
-    /** A vertex of a body (made by the package), or a point of its own: `new Vertex(point)`. */
+/** A vertex of a body: a THREE.Points of one point, in its body's frame. (smlibpy's Vertex, named
+ * as BrepFace and BrepEdge are.) */
+export class BrepVertex extends THREE.Points {
+    readonly isBrepVertex: true;
+    /** A vertex of a body (made by the package), or a point of its own: `new BrepVertex(point)`. */
     constructor(point?: THREE.Vector3Like | null);
     get x(): number;
     get y(): number;
@@ -839,11 +846,11 @@ export class Vertex extends THREE.Points {
     center(target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The edges of its body that meet at it. */
-    edges(): ShapeList<Edge>;
+    edges(): ShapeList<BrepEdge>;
     /** The faces of its body that meet at it. */
-    faces(): ShapeList<Face>;
+    faces(): ShapeList<BrepFace>;
     /** The shortest distance to a point (in its frame) or another shape (where it is). */
-    distanceTo(other: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex): number;
+    distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
     /** True for the same vertex of the same body (of a clone too), or the same point. */
     equals(other: unknown): boolean;
     get owner(): Body | null;
@@ -861,9 +868,10 @@ export class Vertex extends THREE.Points {
 
 ```ts
 /**
- * A list of faces, edges or vertices with smlibpy's selectors, in three's axes: `top()` is the
- * highest along +Y, `front()` the nearest along +Z, `parallelTo(new Vector3(0, 1, 0))` the ones
- * along Y. Points and directions are in the frame of the list's body.
+ * A list of faces, edges or vertices with smlibpy's selectors, in three's directions: `top()` is the
+ * highest along +y (up), `front()` the nearest along +z (towards three's default camera), `right()`
+ * the furthest along +x; `parallelTo(new Vector3(0, 1, 0))` the ones along y. Points and directions
+ * are in the frame of the list's body.
  */
 export class ShapeList<T = Item> extends Array<T> {
     /** The first item (a RangeError for an empty list). */
@@ -874,13 +882,17 @@ export class ShapeList<T = Item> extends Array<T> {
     filter(predicate: (value: T, index: number, array: T[]) => unknown, thisArg?: unknown): ShapeList<T>;
     /** The only item (a RangeError unless there is exactly one). */
     one(): T;
-    /** The items highest along +Y (smlibpy's top, +Z). */
+    /** The items highest along +y (up). */
     top(): ShapeList<T>;
+    /** The items lowest along +y. */
     bottom(): ShapeList<T>;
-    /** The items nearest along +Z (towards three's default camera; smlibpy's front, -Y). */
+    /** The items furthest along +z (towards three's default camera). */
     front(): ShapeList<T>;
+    /** The items furthest along -z. */
     back(): ShapeList<T>;
+    /** The items furthest along +x. */
     right(): ShapeList<T>;
+    /** The items furthest along -x. */
     left(): ShapeList<T>;
     /** The largest face (or longest edge). */
     largest(): T;
@@ -914,7 +926,7 @@ export class ShapeList<T = Item> extends Array<T> {
     /** The edges where faces meet tangentially. */
     smooth(): ShapeList<T>;
     /** The edges that run on tangentially from these, these included. */
-    tangentChain(): ShapeList<Edge>;
+    tangentChain(): ShapeList<BrepEdge>;
     /** The edges where faces meet with continuous tangents (G1). */
     g1(): ShapeList<T>;
     /** The edges where faces meet with continuous curvature (G2). */
@@ -926,9 +938,9 @@ export class ShapeList<T = Item> extends Array<T> {
     /** The items through a point (within `tol`). */
     atPoint(point: THREE.Vector3Like, tol?: number): ShapeList<T>;
     /** The items that came from these shapes' faces and edges (through the operations since). */
-    derivedFrom(...shapes: (Body | Face | Edge | Iterable<Body | Face | Edge>)[]): ShapeList<T>;
+    derivedFrom(...shapes: (Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>)[]): ShapeList<T>;
     /** The edges (or faces) where what came from `a` meets what came from `b`. */
-    joining(a: Body | Face | Edge | Iterable<Body | Face | Edge>, b: Body | Face | Edge | Iterable<Body | Face | Edge>): ShapeList<T>;
+    joining(a: Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>, b: Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>): ShapeList<T>;
     /** The faces shared by two cells of a merged part. */
     shared(): ShapeList<T>;
     /** The items of this list and another. */
@@ -938,11 +950,11 @@ export class ShapeList<T = Item> extends Array<T> {
     /** The items in both lists. */
     intersection(other: Iterable<T>): ShapeList<T>;
     /** The vertices of the items. */
-    vertices(): ShapeList<Vertex>;
+    vertices(): ShapeList<BrepVertex>;
     /** The edges of the items. */
-    edges(): ShapeList<Edge>;
+    edges(): ShapeList<BrepEdge>;
     /** The faces of the items. */
-    faces(): ShapeList<Face>;
+    faces(): ShapeList<BrepFace>;
     /** The wires of the items. */
     wires(): ShapeList<Wire>;
     /** The average of the items' centers (in the body's frame). */
@@ -963,21 +975,21 @@ export class ShapeList<T = Item> extends Array<T> {
 
 ```ts
 /** What a fillet, chamfer or shell takes: edges (or faces, whose edges are meant) of the body. */
-export type EdgesLike = Edge | Face | Wire | Iterable<Edge | Face | Wire>;
+export type EdgesLike = BrepEdge | BrepFace | Wire | Iterable<BrepEdge | BrepFace | Wire>;
 ```
 
 ### FacesLike
 
 ```ts
 /** Faces of the body. */
-export type FacesLike = Face | Iterable<Face>;
+export type FacesLike = BrepFace | Iterable<BrepFace>;
 ```
 
 ### RegionLike
 
 ```ts
 /** What push, warp and flatten take as a region: a sketch, face or curve (where it is) or points (in the body's frame). */
-export type RegionLike = Sketch | Face | Wire | Edge | Iterable<THREE.Vector3Like>;
+export type RegionLike = Sketch | BrepFace | Wire | BrepEdge | Iterable<THREE.Vector3Like>;
 ```
 
 ### PushOptions
@@ -1036,7 +1048,7 @@ export interface ChamferOptions {
     /** An asymmetric bevel: the angle between the bevel and the `reference` face, in radians. */
     angle?: number | null;
     /** The face (or faces) of the part each edge lies on, which `length` is measured on. */
-    reference?: Face | Iterable<Face> | null;
+    reference?: BrepFace | Iterable<BrepFace> | null;
     /** Bevel the edges that continue the given ones tangentially too (default true). */
     propagate?: boolean;
     /** Where three bevels meet: "patch" (default) or "mitre". */
@@ -1074,7 +1086,7 @@ export interface SweepOptions {
     scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
     /** The profile's point that goes along the path: its center (default), the sketch's origin, or a
      * point (the sketch's own 2D coordinates) or vertex of it. */
-    anchor?: 'center' | 'origin' | THREE.Vector2Like | Vertex;
+    anchor?: 'center' | 'origin' | THREE.Vector2Like | BrepVertex;
 }
 ```
 
@@ -1094,117 +1106,160 @@ smlibpy's solids, made as three's geometries are; heights run along y.
 
 ```ts
 /**
- * A box: `length` along x, `width` along z and `height` along y (up), centered on the origin; as
- * smlibpy's Box(length, width, height), whose height is along its Z.
+ * A box: `width` along x, `height` along y and `depth` along z, centered on the origin, as
+ * `THREE.BoxGeometry(width, height, depth)`.
  */
 export class Box extends Part {
     readonly parameters: {
-        readonly length: number;
         readonly width: number;
         readonly height: number;
+        readonly depth: number;
         readonly align?: Align3;
     };
-    constructor(length?: number, width?: number, height?: number, options?: PlacementOptions);
+    constructor(width?: number, height?: number, depth?: number, options?: PlacementOptions);
 }
 ```
 
 ### Cylinder
 
 ```ts
-/** A cylinder along y (up), centered on the origin; `arcSize` (radians) makes a sector of one. */
+/**
+ * A cylinder along y, centered on the origin, as `THREE.CylinderGeometry(radiusTop, radiusBottom,
+ * height)`: `radiusTop` at the top (+y), `radiusBottom` at the bottom (a frustum where they differ,
+ * a cone where one is 0). A sector of one runs from `thetaStart` over `thetaLength` radians about
+ * +y, from +z (at 0) towards +x (at π/2), as three's does.
+ */
 export class Cylinder extends Part {
     readonly parameters: {
-        readonly radius: number;
+        readonly radiusTop: number;
+        readonly radiusBottom: number;
         readonly height: number;
-        readonly arcSize: number;
+        readonly thetaStart: number;
+        readonly thetaLength: number;
         readonly align?: Align3;
     };
-    constructor(radius?: number, height?: number, options?: PlacementOptions & {
-        arcSize?: number;
-    });
+    constructor(radiusTop?: number, radiusBottom?: number, height?: number, options?: SectorOptions);
 }
 ```
 
 ### Cone
 
 ```ts
-/** A cone (or frustum) along y, `bottomRadius` below, `topRadius` above (0: a point). */
+/**
+ * A cone along y, centered on the origin, its tip at the top (+y), as `THREE.ConeGeometry(radius,
+ * height)` (a Cylinder of `radiusTop` 0). `thetaStart` and `thetaLength` make a sector, as for
+ * Cylinder.
+ */
 export class Cone extends Part {
     readonly parameters: {
-        readonly bottomRadius: number;
-        readonly topRadius: number;
+        readonly radius: number;
         readonly height: number;
-        readonly arcSize: number;
+        readonly thetaStart: number;
+        readonly thetaLength: number;
         readonly align?: Align3;
     };
-    constructor(bottomRadius?: number, topRadius?: number, height?: number, options?: PlacementOptions & {
-        arcSize?: number;
-    });
+    constructor(radius?: number, height?: number, options?: SectorOptions);
 }
 ```
 
-### Sphere
+### Ball
 
 ```ts
-/** A sphere around the origin (or a zone or sector of one). */
-export class Sphere extends Part {
+/**
+ * A solid sphere around the origin, its poles on y, as `THREE.SphereGeometry(radius)`; or the part
+ * of one its angles keep (see BallOptions), with flat sides where three's leaves it open. (smlibpy's
+ * Sphere; a ball is the solid a sphere bounds, and `THREE.Sphere` is three's.)
+ */
+export class Ball extends Part {
     readonly parameters: {
         readonly radius: number;
-    } & SphereOptions;
-    constructor(radius?: number, options?: SphereOptions);
+        readonly phiStart: number;
+        readonly phiLength: number;
+        readonly thetaStart: number;
+        readonly thetaLength: number;
+        readonly align?: Align3;
+    };
+    constructor(radius?: number, options?: BallOptions);
 }
 ```
 
 ### Torus
 
 ```ts
-/** A torus around y (lying on the XZ plane). */
+/**
+ * A torus in the XY plane around z, centered on the origin, as `THREE.TorusGeometry(radius, tube)`:
+ * `radius` from the center to the middle of the tube, `tube` the tube's radius.
+ */
 export class Torus extends Part {
     readonly parameters: {
-        readonly majorRadius: number;
-        readonly minorRadius: number;
+        readonly radius: number;
+        readonly tube: number;
     } & TorusOptions;
-    constructor(majorRadius?: number, minorRadius?: number, options?: TorusOptions);
+    constructor(radius?: number, tube?: number, options?: TorusOptions);
 }
 ```
 
 ### Pyramid
 
 ```ts
-/** A pyramid: a `length` (x) by `width` (z) base, its apex `height` above (+y). */
+/** A pyramid: a `width` (x) by `depth` (z) base, its apex `height` above (+y), centered on its
+ * bounding box. */
 export class Pyramid extends Part {
     readonly parameters: {
-        readonly length: number;
         readonly width: number;
         readonly height: number;
+        readonly depth: number;
         readonly align?: Align3;
     };
-    constructor(length?: number, width?: number, height?: number, options?: PlacementOptions);
+    constructor(width?: number, height?: number, depth?: number, options?: PlacementOptions);
+}
+```
+
+### Wedge
+
+```ts
+/** A ramp: a `width` (x) by `depth` (z) base whose high side, `height` tall (y), is at x =
+ * -width/2, the slope running down towards +x; `topWidth` gives it a flat top of that width from
+ * the high side. Centered on its bounding box. */
+export class Wedge extends Part {
+    readonly parameters: {
+        readonly width: number;
+        readonly height: number;
+        readonly depth: number;
+        readonly topWidth: number;
+        readonly align?: Align3;
+    };
+    constructor(width?: number, height?: number, depth?: number, topWidth?: number, options?: PlacementOptions);
 }
 ```
 
 ### AnnularSector
 
 ```ts
-/** A sector of a thick ring around y: from `innerRadius` to `outerRadius`, `height` high, over
- * `arcSize` radians. */
+/**
+ * A sector of a thick ring in the XY plane, as `THREE.RingGeometry(innerRadius, outerRadius)` with
+ * a thickness: between `innerRadius` and `outerRadius` from the z axis, `height` along z (centered
+ * on z = 0), from `thetaStart` over `thetaLength` radians about +z from +x (a whole ring by
+ * default), as three's ring runs. An `innerRadius` of 0 gives a sector of a cylinder along z.
+ */
 export class AnnularSector extends Part {
     readonly parameters: {
         readonly innerRadius: number;
         readonly outerRadius: number;
         readonly height: number;
-        readonly arcSize: number;
+        readonly thetaStart: number;
+        readonly thetaLength: number;
         readonly align?: Align3;
     };
-    constructor(innerRadius?: number, outerRadius?: number, height?: number, arcSize?: number, options?: PlacementOptions);
+    constructor(innerRadius?: number, outerRadius?: number, height?: number, options?: SectorOptions);
 }
 ```
 
 ### Hole
 
 ```ts
-/** A drilling tool: a cylinder from the origin down to -`depth` (along -y), to cut into a face
- * placed with `at(Locations(face))`. */
+/** A drilling tool: a cylinder from the origin down to -`depth` along -z, to cut into a face its
+ * frame lies on (`at(Locations(face))`, whose z is the face's normal). */
 export class Hole extends Part {
     readonly parameters: {
         readonly radius: number;
@@ -1217,7 +1272,7 @@ export class Hole extends Part {
 ### CounterBoreHole
 
 ```ts
-/** A drilling tool with a counterbore at the top. */
+/** A drilling tool with a counterbore at the top (z = 0), drilling along -z as Hole. */
 export class CounterBoreHole extends Part {
     readonly parameters: {
         readonly radius: number;
@@ -1232,7 +1287,8 @@ export class CounterBoreHole extends Part {
 ### CounterSinkHole
 
 ```ts
-/** A drilling tool with a conical countersink of included `angle` (radians; default 82 degrees) at the top. */
+/** A drilling tool with a conical countersink of included `angle` (radians; default 82 degrees) at
+ * the top (z = 0), drilling along -z as Hole. */
 export class CounterSinkHole extends Part {
     readonly parameters: {
         readonly radius: number;
@@ -1244,53 +1300,51 @@ export class CounterSinkHole extends Part {
 }
 ```
 
-### Wedge
-
-```ts
-/** A wedge: a box whose top (along y) is `topLength` long (0: a ridge). */
-export class Wedge extends Part {
-    readonly parameters: {
-        readonly length: number;
-        readonly width: number;
-        readonly height: number;
-        readonly topLength: number;
-        readonly align?: Align3;
-    };
-    constructor(length?: number, width?: number, height?: number, topLength?: number, options?: PlacementOptions);
-}
-```
-
 ### PlacementOptions
 
 ```ts
-/** Where a solid lies: its 'min' side, 'center' or 'max' side at the origin, per axis of three's
- * ({ y: 'min' } stands it on the XZ plane), or one value for all. */
+/** Where a solid lies: its 'min' side, 'center' or 'max' side at the origin, per axis ({ y: 'min' }
+ * stands it on the XZ plane, x and z as they are), or one value for all. Without it a solid lies as
+ * three's geometry of it does. */
 export interface PlacementOptions {
     align?: Align3;
 }
 ```
 
-### SphereOptions
+### SectorOptions
 
 ```ts
-/** Options of Sphere: a zone between two latitudes (radians from the equator, the XZ plane,
- * towards +y; from -π/2 to π/2) and a sector of `arcSize3` radians about y. */
-export interface SphereOptions extends PlacementOptions {
-    arcSize1?: number;
-    arcSize2?: number;
-    arcSize3?: number;
+/** Options of the solids that are sectors about their axis as three's are: from `thetaStart` over
+ * `thetaLength` radians. */
+export interface SectorOptions extends PlacementOptions {
+    thetaStart?: number;
+    thetaLength?: number;
+}
+```
+
+### BallOptions
+
+```ts
+/** Options of Ball: the part of the sphere three's SphereGeometry makes of its angles (radians):
+ * `phiStart` and `phiLength` about +y, `thetaStart` and `thetaLength` down from the pole at +y. */
+export interface BallOptions extends PlacementOptions {
+    phiStart?: number;
+    phiLength?: number;
+    thetaStart?: number;
+    thetaLength?: number;
 }
 ```
 
 ### TorusOptions
 
 ```ts
-/** Options of Torus: a part of the tube's section (from `minorStartAngle` to `minorEndAngle`) and of
- * the ring (`majorAngle`), in radians. */
+/** Options of Torus: the part of the ring (`arc` radians from +x about +z, as three's) and of the
+ * tube's section (from `minorStartAngle` to `minorEndAngle`: radians from the side away from the
+ * axis, 0, towards +z, π/2), each a whole turn by default. */
 export interface TorusOptions extends PlacementOptions {
+    arc?: number;
     minorStartAngle?: number;
     minorEndAngle?: number;
-    majorAngle?: number;
 }
 ```
 
@@ -1361,7 +1415,7 @@ export class Ellipse extends Sketch {
 
 ```ts
 /** A polygon through `points` (closed by itself): THREE.Vector2s of the sketch's 2D coordinates, or
- * THREE.Vector3s of three's on the ground. The points stay where they are unless `align` is given. */
+ * THREE.Vector3s of three's in the XY plane. The points stay where they are unless `align` is given. */
 export class Polygon extends Sketch {
     readonly parameters: {
         readonly points: readonly SketchPoint[];
@@ -1391,13 +1445,14 @@ export class RegularPolygon extends Sketch {
 }
 ```
 
-### Triangle
+### TriangleSketch
 
 ```ts
 /** A triangle: a base `width` long along x and its top corner `height` above it along y, centered
  * on its bounding box. `apex` is the top corner's x from the left end of the base: the middle by
- * default (an isosceles triangle), 0 for a right angle at the left end, `width` for one at the right. */
-export class Triangle extends Sketch {
+ * default (an isosceles triangle), 0 for a right angle at the left end, `width` for one at the right.
+ * (smlibpy's Triangle; `THREE.Triangle` is three's.) */
+export class TriangleSketch extends Sketch {
     readonly parameters: {
         readonly width: number;
         readonly height: number;
@@ -1433,7 +1488,7 @@ export class Trapezoid extends Sketch {
 
 ```ts
 /** A slot: `length` overall along x (round ends included), `width` across, centered. For a slot
- * between two centers use `new Stroke(new Line(a, b), width)`; along an arc, ArcSlot. */
+ * between two centers use `new Stroke(new Segment(a, b), width)`; along an arc, ArcSlot. */
 export class Slot extends Sketch {
     readonly parameters: {
         readonly length: number;
@@ -1447,7 +1502,7 @@ export class Slot extends Sketch {
 
 ```ts
 /** A slot along an arc around the origin: its centerline, of `radius`, runs over `angle` radians from
- * +x (turned by `rotation`), counterclockwise seen from above; `width` wide, with round ends. The
+ * +x (turned by `rotation`), counterclockwise seen from +z; `width` wide, with round ends. The
  * arc's center stays on the origin unless `align` is given. */
 export class ArcSlot extends Sketch {
     readonly parameters: {
@@ -1464,17 +1519,17 @@ export class ArcSlot extends Sketch {
 ```ts
 /**
  * The region a pen `width` wide covers along `path`: a slot between two centers
- * (`new Stroke(new Line(a, b), 6)`), a slot along an arc, a rib from its centerline, a groove along a
- * spline; a ring along a closed path. The path is an Edge or Wire, taken where it is, or a
+ * (`new Stroke(new Segment(a, b), 6)`), a slot along an arc, a rib from its centerline, a groove along a
+ * spline; a ring along a closed path. The path is a BrepEdge or Wire, taken where it is, or a
  * THREE.Curve in the stroke's frame; it lies in a plane, and so does the region. Lines and arcs give
  * exact lines and arcs, splines and ellipses their offsets (within 1e-6 of the path's size).
  */
 export class Stroke extends Sketch {
     readonly parameters: {
-        readonly path: Edge | Wire | THREE.Curve<THREE.Vector3>;
+        readonly path: BrepEdge | Wire | THREE.Curve<THREE.Vector3>;
         readonly width: number;
     } & StrokeOptions;
-    constructor(path?: Edge | Wire | THREE.Curve<THREE.Vector3> | null, width?: number, options?: StrokeOptions);
+    constructor(path?: BrepEdge | Wire | THREE.Curve<THREE.Vector3> | null, width?: number, options?: StrokeOptions);
 }
 ```
 
@@ -1485,7 +1540,7 @@ export class Stroke extends Sketch {
  * The convex hull of points and shapes: the smallest convex region around them, as a string pulled
  * tight around them; around circles and arcs it follows the arcs exactly, joined by tangent lines
  * (`new Hull(new Circle(10), movedCircle)` is a lever's outline). Shapes are taken where they are.
- * The hull lies in the plane of the first sketch among them, else on the ground (y = 0): edges,
+ * The hull lies in the plane of the first sketch among them, else in the XY plane (z = 0): edges,
  * wires and faces off that plane are projected onto it, points must lie in it.
  */
 export class Hull extends Sketch {
@@ -1500,8 +1555,9 @@ export class Hull extends Sketch {
 
 ```ts
 /**
- * Text as a sketch: the exact outlines of a font's letters, lying on the ground and read from above
- * (along x, lines below each other along y). `size` is the height of the capital letters (H, E, T);
+ * Text as a sketch: the exact outlines of a font's letters in the XY plane, read from the front (+z,
+ * where three's default camera is), as three's TextGeometry lies: along x, lines below each other
+ * along -y. `size` is the height of the capital letters (H, E, T);
  * round letters overshoot it a little, descenders go below the baseline. "\n" starts a new line.
  * Straight parts are lines, curved runs B-splines through the font's own points; counters are holes
  * (an o is one face with a hole, an i two faces). A character the font lacks is a RangeError, a font
@@ -1520,7 +1576,7 @@ export class Text extends Sketch {
 
 ```ts
 /**
- * A pen that draws one outline on the ground, segment by segment: lines and tangent arcs, each from
+ * A pen that draws one outline in the XY plane, segment by segment: lines and tangent arcs, each from
  * where the last one ended, with the corners it passes rounded or beveled.
  *
  *     const section = new Profile()
@@ -1535,10 +1591,9 @@ export class Text extends Sketch {
  * heading without drawing. `fillet` and `chamfer` round or bevel the corner at the pen, between the
  * segment before and the one after. `mirror` adds the mirror image of the path drawn so far.
  *
- * Points are THREE.Vector2s of the sketch's 2D coordinates (x along three's x, y along -z), or
- * THREE.Vector3s of three's on the ground; headings are radians counterclockwise from +x, seen from
- * above (π/2 is the sketch's +y, three's -z). Errors name the segment by the call that drew it,
- * with its angles in degrees.
+ * Points are THREE.Vector2s of the sketch's 2D coordinates (three's x and y), or THREE.Vector3s in
+ * the XY plane; headings are radians counterclockwise from +x, seen from +z (π/2 is +y). Errors name
+ * the segment by the call that drew it.
  */
 export class Profile {
     /** A pen at `start` (default the origin), heading `heading` radians: `new Profile()`,
@@ -1565,13 +1620,13 @@ export class Profile {
     /** A straight line along the heading: `length` long (`forward(20)`), or until x or y reaches a
      * value (`forward({ x: 30 })`, `forward({ y: 5 })`). */
     forward(length: number | Coordinates): Profile;
-    /** Turns the heading by `angle` radians (positive: left, counterclockwise seen from above) without
+    /** Turns the heading by `angle` radians (positive: left, counterclockwise seen from +z) without
      * drawing: the next segment starts at a corner. */
     turn(angle: number): Profile;
     /** Sets the heading (radians counterclockwise from +x) without drawing. */
     turnTo(heading: number): Profile;
     /** A tangent arc of `radius` that turns the heading by `angle` radians: positive turns left
-     * (counterclockwise seen from above), negative right; `arc(5, Math.PI)` is a U-turn. */
+     * (counterclockwise seen from +z), negative right; `arc(5, Math.PI)` is a U-turn. */
     arc(radius: number, angle: number): Profile;
     /** An arc to an end point, tangent to the heading (`arcTo(20, 10)`), or through a point on the way
      * (`arcTo(20, 10, { through: new THREE.Vector2(15, 12) })`, which need not be tangent). */
@@ -1596,28 +1651,29 @@ export class Profile {
      */
     mirror(origin: THREE.Vector2Like | THREE.Vector3Like, direction: THREE.Vector2Like | THREE.Vector3Like): Profile;
     /**
-     * The region inside the outline, a Sketch on the ground (a straight line goes back to the start if
+     * The region inside the outline, a Sketch in the XY plane (a straight line goes back to the start if
      * the pen is not there). `align` moves it ('min', 'center', 'max', per axis of the sketch); null,
      * the default, leaves the outline where it was drawn.
      */
     close(options?: {
         align?: Align2 | null;
     }): Sketch;
-    /** The path as drawn, an open Wire of exact lines and arcs on the ground (a sweep path, or the
+    /** The path as drawn, an open Wire of exact lines and arcs in the XY plane (a sweep path, or the
      * centerline of a Stroke). */
     wire(): Wire;
     toString(): string;
 }
 ```
 
-### Font
+### OpenTypeFont
 
 ```ts
 /**
  * One font: its characters, metrics, kerning and glyph outlines (font units, y up). Read once with
- * `loadFont(bytes)`, or made with `new Font(bytes)`; give it to Text as `font`.
+ * `loadFont(bytes)`, or made with `new OpenTypeFont(bytes)`; give it to Text as `font`. (smlibpy's
+ * Font; three's FontLoader gives a Font of its own, of typeface JSON.)
  */
-export class Font {
+export class OpenTypeFont {
     /** The font file's path, for a font read from a file (Node); null for one read from bytes. */
     readonly path: string | null;
     /** The full name of the font ("Lato Regular"). */
@@ -1655,7 +1711,7 @@ export class Font {
  * curves made a sketch (a Polyline with `close`, a closed Spline, a face's outline). The holes are
  * taken where they are; the result is in `outer`'s frame and placed as it is, as `wire.toSketch()`.
  */
-export function makeFace(outer: Wire | Edge, ...holes: (Wire | Edge)[]): Sketch;
+export function makeFace(outer: Wire | BrepEdge, ...holes: (Wire | BrepEdge)[]): Sketch;
 ```
 
 ### loadFont
@@ -1663,9 +1719,9 @@ export function makeFace(outer: Wire | Edge, ...holes: (Wire | Edge)[]): Sketch;
 ```ts
 /**
  * The font of a file's bytes (or, in Node, of a file's path), read once and kept: the same bytes
- * give the same Font. Without a source, the built-in default (`DEFAULT_FONT`).
+ * give the same OpenTypeFont. Without a source, the built-in default (`DEFAULT_FONT`).
  */
-export function loadFont(source?: FontSource | null): Font;
+export function loadFont(source?: FontSource | null): OpenTypeFont;
 ```
 
 ### DEFAULT_FONT
@@ -1691,7 +1747,7 @@ export interface CornerOptions {
 ### SketchPlacement
 
 ```ts
-/** Where the shape lies and how it is turned: `rotation`, radians counterclockwise (seen from above)
+/** Where the shape lies and how it is turned: `rotation`, radians counterclockwise (seen from +z)
  * about its center; then `align`, its 'min' side, 'center' or 'max' side at the origin, per axis of
  * the sketch ({ x, y }) or one value for both. */
 export interface SketchPlacement {
@@ -1703,8 +1759,8 @@ export interface SketchPlacement {
 ### SketchPoint
 
 ```ts
-/** A point of a sketch: a THREE.Vector2 (or { x, y }) of its own 2D coordinates on the ground, or a
- * THREE.Vector3 (or { x, y, z }) of three's. */
+/** A point of a sketch: a THREE.Vector2 (or { x, y }) of its own 2D coordinates, or a THREE.Vector3
+ * (or { x, y, z }) of three's. */
 export type SketchPoint = THREE.Vector2Like | THREE.Vector3Like;
 ```
 
@@ -1730,9 +1786,9 @@ export interface StrokeOptions {
 ### HullItem
 
 ```ts
-/** What Hull takes: points (THREE.Vector2s of the sketch's 2D coordinates on the ground, or
- * THREE.Vector3s of three's), vertices, edges, wires, sketches and faces, or lists of them. */
-export type HullItem = SketchPoint | Vertex | Edge | Wire | Sketch | Face | Iterable<HullItem>;
+/** What Hull takes: points (THREE.Vector2s of the sketch's 2D coordinates, or THREE.Vector3s of
+ * three's), vertices, edges, wires, sketches and faces, or lists of them. */
+export type HullItem = SketchPoint | BrepVertex | BrepEdge | Wire | Sketch | BrepFace | Iterable<HullItem>;
 ```
 
 ### TextOptions
@@ -1740,9 +1796,9 @@ export type HullItem = SketchPoint | Vertex | Edge | Wire | Sketch | Face | Iter
 ```ts
 /** Options of Text. */
 export interface TextOptions {
-    /** The font: a Font (`loadFont(bytes)`), or the bytes of a font file (TTF, OTF, TTC, WOFF, WOFF2:
+    /** The font: an OpenTypeFont (`loadFont(bytes)`), or the bytes of a font file (TTF, OTF, TTC, WOFF, WOFF2:
      * an ArrayBuffer or a Uint8Array). Default: the built-in Lato Regular. */
-    font?: Font | ArrayBuffer | ArrayBufferView | null;
+    font?: OpenTypeFont | ArrayBuffer | ArrayBufferView | null;
     /**
      * Where the text's layout box goes (from the start to the end of the longest line, from the last
      * baseline to the cap height of the first line), per axis of the sketch or one value for both:
@@ -1760,12 +1816,12 @@ export interface TextOptions {
     /** Apply the font's kerning pairs (default true). */
     kerning?: boolean;
     /**
-     * A curve on the ground (y = 0) to set one line of text along: an Edge or Wire, taken where it is,
-     * or a THREE.Curve in the text's frame. Each letter stands upright on it at the middle of its
+     * A curve in the XY plane (z = 0) to set one line of text along: a BrepEdge or Wire, taken where it
+     * is, or a THREE.Curve in the text's frame. Each letter stands upright on it at the middle of its
      * advance, turned with its tangent (not bent): the text reads along the path and stands on its
-     * left, seen from above, so a clockwise arc carries it over the top of a circle.
+     * left, seen from +z, so a clockwise arc carries it over the top of a circle.
      */
-    path?: Edge | Wire | THREE.Curve<THREE.Vector3> | null;
+    path?: BrepEdge | Wire | THREE.Curve<THREE.Vector3> | null;
 }
 ```
 
@@ -1819,11 +1875,11 @@ export type Contour = THREE.Vector2[][];
 
 Edges and wires of their own: points are Vector3s, angles radians, planar curves lie on the ground.
 
-### Line
+### Segment
 
 ```ts
-/** A straight line from `start` to `end`. */
-export class Line extends Edge {
+/** A straight line from `start` to `end` (smlibpy's Line; `THREE.Line` is three's). */
+export class Segment extends BrepEdge {
     constructor(start?: THREE.Vector3Like, end?: THREE.Vector3Like);
 }
 ```
@@ -1831,9 +1887,9 @@ export class Line extends Edge {
 ### PolarLine
 
 ```ts
-/** A line `length` long from `start` in the direction `angle` radians from +x on the ground,
- * counterclockwise seen from above (π/2: along -z). */
-export class PolarLine extends Edge {
+/** A line `length` long from `start` in the direction `angle` radians from +x in the XY plane,
+ * counterclockwise seen from +z (π/2: along +y). */
+export class PolarLine extends BrepEdge {
     constructor(start?: THREE.Vector3Like, length?: number, angle?: number);
 }
 ```
@@ -1867,9 +1923,9 @@ export class FilletPolyline extends Wire {
 
 ```ts
 /** A circle around `center`, or the arc of it from `startAngle` over `arcSize` (radians, from +x
- * counterclockwise seen from above; a negative `arcSize` runs clockwise), on the plane of constant y
- * through `center`. `arcSize` 2π (the default) is the whole circle. */
-export class CenterArc extends Edge {
+ * counterclockwise seen from +z; a negative `arcSize` runs clockwise), in the plane of constant z
+ * through `center`, as three's ArcCurve. `arcSize` 2π (the default) is the whole circle. */
+export class CenterArc extends BrepEdge {
     constructor(center?: THREE.Vector3Like, radius?: number, startAngle?: number, arcSize?: number);
 }
 ```
@@ -1878,7 +1934,7 @@ export class CenterArc extends Edge {
 
 ```ts
 /** The circular arc from `start` through `through` to `end` (in the plane of the three points). */
-export class ThreePointArc extends Edge {
+export class ThreePointArc extends BrepEdge {
     constructor(start?: THREE.Vector3Like, through?: THREE.Vector3Like, end?: THREE.Vector3Like);
 }
 ```
@@ -1888,10 +1944,10 @@ export class ThreePointArc extends Edge {
 ```ts
 /**
  * The shorter arc of `radius` from `start` to `end`. A positive radius bulges to the left of start to
- * end seen from above (going along +x: towards -z), a negative one to the right; `normal` sees it
- * from elsewhere.
+ * end seen from +z (going along +x: towards +y), a negative one to the right; `normal` sees it from
+ * elsewhere.
  */
-export class RadiusArc extends Edge {
+export class RadiusArc extends BrepEdge {
     constructor(start?: THREE.Vector3Like, end?: THREE.Vector3Like, radius?: number, options?: ArcSideOptions);
 }
 ```
@@ -1900,9 +1956,9 @@ export class RadiusArc extends Edge {
 
 ```ts
 /** The arc from `start` to `end` whose middle is `sagitta` from the middle of the chord: to its left
- * seen from above for a positive sagitta (`normal` sees it from elsewhere), to its right for a
+ * seen from +z for a positive sagitta (`normal` sees it from elsewhere), to its right for a
  * negative one. */
-export class SagittaArc extends Edge {
+export class SagittaArc extends BrepEdge {
     constructor(start?: THREE.Vector3Like, end?: THREE.Vector3Like, sagitta?: number, options?: ArcSideOptions);
 }
 ```
@@ -1912,7 +1968,7 @@ export class SagittaArc extends Edge {
 ```ts
 /** The arc from `start` to `end` that leaves `start` along `tangent` (a line if `end` lies straight
  * ahead). */
-export class TangentArc extends Edge {
+export class TangentArc extends BrepEdge {
     constructor(start?: THREE.Vector3Like, end?: THREE.Vector3Like, tangent?: THREE.Vector3Like);
 }
 ```
@@ -1921,13 +1977,13 @@ export class TangentArc extends Edge {
 
 ```ts
 /**
- * An ellipse around `center` on the plane of constant y through it, `xRadius` along x and `yRadius`
- * along z, or the arc of it from `startAngle` to `endAngle` (radians counterclockwise seen from
- * above): the point at angle a lies xRadius cos a along x and yRadius sin a along -z from the
- * center. The arc runs counterclockwise, also across 0 (from 5π/3 to π/3 it passes +x); equal
- * angles give the whole ellipse.
+ * An ellipse around `center` in the plane of constant z through it, `xRadius` along x and `yRadius`
+ * along y, or the arc of it from `startAngle` to `endAngle` (radians counterclockwise seen from +z),
+ * as three's EllipseCurve: the point at angle a lies xRadius cos a along x and yRadius sin a along y
+ * from the center. The arc runs counterclockwise, also across 0 (from 5π/3 to π/3 it passes +x);
+ * equal angles give the whole ellipse.
  */
-export class EllipticalArc extends Edge {
+export class EllipticalArc extends BrepEdge {
     constructor(center?: THREE.Vector3Like, xRadius?: number, yRadius?: number, startAngle?: number, endAngle?: number);
 }
 ```
@@ -1936,13 +1992,13 @@ export class EllipticalArc extends Edge {
 
 ```ts
 /**
- * A piece of a parabola on the plane of constant y through its `vertex`, opening towards -z (a
- * sketch's +y on the ground; a negative `focalLength`: towards +z): the points `x` along x from the
- * vertex and `x² / (4 focalLength)` towards -z from it, for `x` from `start` to `end`. Exact (a
- * quadratic B-spline). `new ParabolicArc(new THREE.Vector3(), 10, -20, 20)` runs from (-20, 0, -10)
- * through the vertex to (20, 0, -10); its focus is (0, 0, -10).
+ * A piece of a parabola in the plane of constant z through its `vertex`, opening towards +y (a
+ * negative `focalLength`: towards -y): the points `x` along x from the vertex and
+ * `x² / (4 focalLength)` along +y from it, for `x` from `start` to `end`. Exact (a quadratic
+ * B-spline). `new ParabolicArc(new THREE.Vector3(), 10, -20, 20)` runs from (-20, 10, 0) through the
+ * vertex to (20, 10, 0); its focus is (0, 10, 0).
  */
-export class ParabolicArc extends Edge {
+export class ParabolicArc extends BrepEdge {
     constructor(vertex?: THREE.Vector3Like, focalLength?: number, start?: number, end?: number);
 }
 ```
@@ -1951,12 +2007,11 @@ export class ParabolicArc extends Edge {
 
 ```ts
 /**
- * A piece of the branch on the +x side of `center` of the hyperbola x²/xRadius² - v²/yRadius² = 1 on
- * the plane of constant y through `center`, where v runs towards -z (a sketch's y on the ground):
- * from v = `start` to v = `end`. Its vertex is `xRadius` along x from the center, its asymptotes have
+ * A piece of the branch on the +x side of `center` of the hyperbola x²/xRadius² - y²/yRadius² = 1 in
+ * the plane of constant z through `center`: from y = `start` to y = `end`. Its vertex is `xRadius` along x from the center, its asymptotes have
  * the slopes ±yRadius / xRadius. Exact (a rational quadratic B-spline).
  */
-export class HyperbolicArc extends Edge {
+export class HyperbolicArc extends BrepEdge {
     constructor(center?: THREE.Vector3Like, xRadius?: number, yRadius?: number, start?: number, end?: number);
 }
 ```
@@ -1970,7 +2025,7 @@ export class HyperbolicArc extends Edge {
  * 0.5 a parabola, less an ellipse (flatter), more a hyperbola (fuller); √2 - 1 a circular arc for
  * a square corner. Exact (a rational quadratic B-spline).
  */
-export class ConicArc extends Edge {
+export class ConicArc extends BrepEdge {
     constructor(start?: THREE.Vector3Like, apex?: THREE.Vector3Like, end?: THREE.Vector3Like, rho?: number);
 }
 ```
@@ -1983,7 +2038,7 @@ export class ConicArc extends Edge {
  * (`[start, end]`, either may be null), or one at every point (the curve passes through each in its
  * direction); `closed`: a loop back to the first point, as smooth there as everywhere else.
  */
-export class Spline extends Edge {
+export class Spline extends BrepEdge {
     constructor(points?: readonly THREE.Vector3Like[], options?: {
         tangents?: readonly (THREE.Vector3Like | null)[] | null;
         closed?: boolean;
@@ -1995,7 +2050,7 @@ export class Spline extends Edge {
 
 ```ts
 /** A Bézier curve of these control points (rational with `weights`, one per point). */
-export class Bezier extends Edge {
+export class Bezier extends BrepEdge {
     constructor(points?: readonly THREE.Vector3Like[], options?: {
         weights?: readonly number[] | null;
     });
@@ -2006,11 +2061,11 @@ export class Bezier extends Edge {
 
 ```ts
 /**
- * A helix `height` high, rising `pitch` per turn, of `radius`: around y from the origin up, starting
- * on +x and turning counterclockwise seen from above as it rises (right-handed). Any number of
- * turns.
+ * A helix `height` high, rising `pitch` per turn, of `radius`: around z from the origin along +z, as
+ * three's HelixCurve (addons) rises, starting on +x and turning counterclockwise seen from +z as it
+ * rises (right-handed). Any number of turns.
  */
-export class Helix extends Edge {
+export class Helix extends BrepEdge {
     constructor(pitch?: number, height?: number, radius?: number, options?: HelixOptions);
 }
 ```
@@ -2019,12 +2074,12 @@ export class Helix extends Edge {
 
 ```ts
 /**
- * A flat (Archimedean) spiral on the ground around the origin: its radius grows (or shrinks) evenly
+ * A flat (Archimedean) spiral in the XY plane around the origin: its radius grows (or shrinks) evenly
  * with the angle from `startRadius` to `endRadius` over `turns` turns, starting on +x and turning
- * counterclockwise seen from above (`clockwise`: the other way). Either radius may be 0. A B-spline
+ * counterclockwise seen from +z (`clockwise`: the other way). Either radius may be 0. A B-spline
  * within 1e-4 of the exact spiral; `new Spiral(2, 20, 5)` runs from (2, 0, 0) to (20, 0, 0).
  */
-export class Spiral extends Edge {
+export class Spiral extends BrepEdge {
     constructor(startRadius?: number, endRadius?: number, turns?: number, options?: {
         clockwise?: boolean;
     });
@@ -2041,7 +2096,7 @@ export class Spiral extends Edge {
  * point to the last; fewer than six points give the Spline through them. A ModelingError says how
  * close the best fit came where none keeps within the tolerance.
  */
-export function fitCurve(points: Iterable<THREE.Vector3Like>, options?: FitCurveOptions): Edge;
+export function fitCurve(points: Iterable<THREE.Vector3Like>, options?: FitCurveOptions): BrepEdge;
 ```
 
 ### makeCompatible
@@ -2053,7 +2108,7 @@ export function fitCurve(points: Iterable<THREE.Vector3Like>, options?: FitCurve
  * become B-splines too (arcs rational ones). The edges are taken where they are; the copies are
  * placed as the first edge is (in its frame, with its transform).
  */
-export function makeCompatible(...edges: (Edge | Iterable<Edge>)[]): Edge[];
+export function makeCompatible(...edges: (BrepEdge | Iterable<BrepEdge>)[]): BrepEdge[];
 ```
 
 ### ArcSideOptions
@@ -2062,9 +2117,9 @@ export function makeCompatible(...edges: (Edge | Iterable<Edge>)[]): Edge[];
 /** Which side an arc between two points bulges to. */
 export interface ArcSideOptions {
     /**
-     * The direction the arc is seen from (default up, +y): its left is the left of start to end seen
-     * from there, and it lies in the plane through `start` and `end` that faces it. Give one for two
-     * points one above the other, or for an arc in an upright plane.
+     * The direction the arc is seen from (default +z, the front): its left is the left of start to end
+     * seen from there, and it lies in the plane through `start` and `end` that faces it. Give one for
+     * two points one behind the other, or for an arc in another plane.
      */
     normal?: THREE.Vector3Like;
 }
@@ -2077,12 +2132,12 @@ export interface ArcSideOptions {
 export interface HelixOptions {
     /** The center of the circle it starts on (default the origin). */
     center?: THREE.Vector3Like;
-    /** The direction of its axis, which it rises along (default up, +y; another one turns where it
+    /** The direction of its axis, which it rises along (default +z; another one turns where it
      * starts too). */
     direction?: THREE.Vector3Like;
     /** The radius at its end: a conical helix (default `radius`). */
     endRadius?: number | null;
-    /** Turn the other way: clockwise seen from above as it rises (default counterclockwise). */
+    /** Turn the other way: clockwise seen from where it rises to (default counterclockwise). */
     leftHanded?: boolean;
 }
 ```
@@ -2112,15 +2167,15 @@ Free functions take their first shape as the receiver; patterns are Matrix4s.
 
 ```ts
 /** A solid of a sketch or face moved `amount` along its normal (or `direction`); a sheet of a curve. */
-export function extrude(profile: Sketch | Face, amount: number, options?: ExtrudeOptions): Part;
+export function extrude(profile: Sketch | BrepFace, amount: number, options?: ExtrudeOptions): Part;
 export function extrude(profile: ProfileLike, amount: number, options?: ExtrudeOptions): Part | Shell;
 ```
 
 ### revolve
 
 ```ts
-/** A solid of revolution of a sketch about `axis` (a THREE.Ray in its frame; default its y axis)
- * through `angle` radians; a sheet of a curve. */
+/** A solid of revolution of a sketch about `axis` (a THREE.Ray in its frame; default its frame's y
+ * axis, as THREE.LatheGeometry revolves) through `angle` radians; a sheet of a curve. */
 export function revolve(profile: Sketch, axis?: THREE.Ray | null, angle?: number): Part;
 export function revolve(profile: ProfileLike, axis?: THREE.Ray | null, angle?: number): Part | Shell;
 ```
@@ -2128,18 +2183,18 @@ export function revolve(profile: ProfileLike, axis?: THREE.Ray | null, angle?: n
 ### sweep
 
 ```ts
-/** A solid along `path` (an Edge or Wire where it is, or a THREE.Curve in the profile's frame); a
+/** A solid along `path` (a BrepEdge or Wire where it is, or a THREE.Curve in the profile's frame); a
  * sheet of a curve. `orient` turns the profile to face along the path, `translational` keeps it as
  * it is; `rails` a curve the profile's ends follow. */
-export function sweep(profile: Sketch | Face, path: Edge | Wire | THREE.Curve<THREE.Vector3>, options?: SweepOptions & {
+export function sweep(profile: Sketch | BrepFace, path: BrepEdge | Wire | THREE.Curve<THREE.Vector3>, options?: SweepOptions & {
     orient?: boolean;
     translational?: boolean;
-    rails?: Edge | Wire | null;
+    rails?: BrepEdge | Wire | null;
 }): Part;
-export function sweep(profile: ProfileLike, path: Edge | Wire | THREE.Curve<THREE.Vector3>, options?: SweepOptions & {
+export function sweep(profile: ProfileLike, path: BrepEdge | Wire | THREE.Curve<THREE.Vector3>, options?: SweepOptions & {
     orient?: boolean;
     translational?: boolean;
-    rails?: Edge | Wire | null;
+    rails?: BrepEdge | Wire | null;
 }): Part | Shell;
 ```
 
@@ -2147,7 +2202,7 @@ export function sweep(profile: ProfileLike, path: Edge | Wire | THREE.Curve<THRE
 
 ```ts
 /** A solid through sketches (or a sheet through curves), each where it is, in the frame of the first. */
-export function loft(sections: readonly (Sketch | Face)[], options?: LoftOptions): Part;
+export function loft(sections: readonly (Sketch | BrepFace)[], options?: LoftOptions): Part;
 export function loft(sections: readonly ProfileLike[], options?: LoftOptions): Part | Shell;
 ```
 
@@ -2156,8 +2211,8 @@ export function loft(sections: readonly ProfileLike[], options?: LoftOptions): P
 ```ts
 /** A solid of a profile swung around an outline (a sketch, face or curve, where it is), as a rim or
  * a frame is; a sheet of a curve. */
-export function swing(profile: Sketch | Face, outline: Sketch | Face | Wire | Edge): Part;
-export function swing(profile: ProfileLike, outline: Sketch | Face | Wire | Edge): Part | Shell;
+export function swing(profile: Sketch | BrepFace, outline: Sketch | BrepFace | Wire | BrepEdge): Part;
+export function swing(profile: ProfileLike, outline: Sketch | BrepFace | Wire | BrepEdge): Part | Shell;
 ```
 
 ### fillet
@@ -2165,7 +2220,7 @@ export function swing(profile: ProfileLike, outline: Sketch | Face | Wire | Edge
 ```ts
 /** The part with these edges (of one part) rounded; a sketch with the corners at these vertices rounded. */
 export function fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part;
-export function fillet(vertices: Vertex | readonly Vertex[], radius: number): Sketch;
+export function fillet(vertices: BrepVertex | readonly BrepVertex[], radius: number): Sketch;
 ```
 
 ### chamfer
@@ -2173,7 +2228,7 @@ export function fillet(vertices: Vertex | readonly Vertex[], radius: number): Sk
 ```ts
 /** The part with these edges (of one part) bevelled; a sketch with the corners at these vertices cut. */
 export function chamfer(edges: EdgesLike, length: number, options?: ChamferOptions): Part;
-export function chamfer(vertices: Vertex | readonly Vertex[], length: number): Sketch;
+export function chamfer(vertices: BrepVertex | readonly BrepVertex[], length: number): Sketch;
 ```
 
 ### shell
@@ -2195,29 +2250,29 @@ export function offset(shape: Sketch, distance: number, options?: {
     corners?: string;
     round?: boolean | null;
 }): Sketch;
-export function offset(shape: Shell | Face, distance: number): Shell;
+export function offset(shape: Shell | BrepFace, distance: number): Shell;
 export function offset(shape: Wire, distance: number, options?: {
     corners?: string;
     plane?: THREE.Plane | null;
 }): Wire;
-export function offset(shape: Edge, distance: number, options?: {
+export function offset(shape: BrepEdge, distance: number, options?: {
     plane?: THREE.Plane | null;
-}): Edge;
+}): BrepEdge;
 ```
 
 ### mirror
 
 ```ts
 /** A shape mirrored in `plane` (in its frame). */
-export function mirror<S extends Part | Shell | Sketch | Edge | Wire>(shape: S, plane: THREE.Plane): S;
+export function mirror<S extends Part | Shell | Sketch | BrepEdge | Wire>(shape: S, plane: THREE.Plane): S;
 ```
 
 ### split
 
 ```ts
 /** The part split by a plane (see Part.split). */
-export function split(part: Part, plane: THREE.Plane | Face | Shell, keep: 'both'): [Part, Part];
-export function split(part: Part, plane: THREE.Plane | Face | Shell, keep?: 'above' | 'below'): Part;
+export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep: 'both'): [Part, Part];
+export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep?: 'above' | 'below'): Part;
 ```
 
 ### merge
@@ -2238,7 +2293,7 @@ export function section(part: Part, plane: THREE.Plane): Sketch;
 
 ```ts
 /** A solid of a sheet or face grown by `thickness` (`both`: half to each side). */
-export function thicken(surface: Shell | Face, thickness: number, options?: {
+export function thicken(surface: Shell | BrepFace, thickness: number, options?: {
     both?: boolean;
 }): Part;
 ```
@@ -2246,9 +2301,9 @@ export function thicken(surface: Shell | Face, thickness: number, options?: {
 ### GridLocations
 
 ```ts
-/** A grid on the ground: `xCount` places `xSpacing` apart along x, `zCount` places `zSpacing`
- * apart along z (smlibpy's GridLocations on XY), centered unless `centered` is false. */
-export function GridLocations(xSpacing: number, zSpacing: number, xCount: number, zCount: number, options?: {
+/** A grid in the XY plane: `xCount` places `xSpacing` apart along x, `yCount` places `ySpacing`
+ * apart along y, centered on the origin unless `centered` is false. */
+export function GridLocations(xSpacing: number, ySpacing: number, xCount: number, yCount: number, options?: {
     centered?: boolean;
 }): THREE.Matrix4[];
 ```
@@ -2256,8 +2311,9 @@ export function GridLocations(xSpacing: number, zSpacing: number, xCount: number
 ### PolarLocations
 
 ```ts
-/** `count` places on a circle of `radius` around y, from `startAngle` over `angularRange`
- * (radians), each turned to face outward unless `rotate` is false. */
+/** `count` places on a circle of `radius` around z in the XY plane, from `startAngle` over
+ * `angularRange` (radians from +x, counterclockwise seen from +z), each turned about z to face
+ * outward (its x away from the center) unless `rotate` is false. */
 export function PolarLocations(radius: number, count: number, options?: {
     startAngle?: number;
     angularRange?: number;
@@ -2268,8 +2324,9 @@ export function PolarLocations(radius: number, count: number, options?: {
 ### HexLocations
 
 ```ts
-/** A hexagonal grid on the ground, `spacing` apart. */
-export function HexLocations(spacing: number, xCount: number, zCount: number, options?: {
+/** A hexagonal grid in the XY plane, `spacing` apart: `xCount` places along x in each of `yCount`
+ * rows. */
+export function HexLocations(spacing: number, xCount: number, yCount: number, options?: {
     centered?: boolean;
 }): THREE.Matrix4[];
 ```
@@ -2278,11 +2335,12 @@ export function HexLocations(spacing: number, xCount: number, zCount: number, op
 
 ```ts
 /**
- * Places in the world (smlibpy's Locations): at a face's center with its y axis along the face's
- * normal (so a cylinder or hole placed there stands on the face), at a vertex, at a point, or a
- * matrix as it is; faces and vertices where their body is.
+ * Places in the world (smlibpy's Locations): at a face's center with its z axis along the face's
+ * normal (as a sketch on the face lies: a Hole placed there drills into the face; a cylinder, along
+ * its y, stands on it once turned, `cylinder.rotation.x = Math.PI / 2`), at a vertex, at a point, or
+ * a matrix as it is; faces and vertices where their body is.
  */
-export function Locations(...items: (Face | Vertex | THREE.Vector3Like | THREE.Matrix4 | Iterable<Face | Vertex | THREE.Vector3Like | THREE.Matrix4>)[]): THREE.Matrix4[];
+export function Locations(...items: (BrepFace | BrepVertex | THREE.Vector3Like | THREE.Matrix4 | Iterable<BrepFace | BrepVertex | THREE.Vector3Like | THREE.Matrix4>)[]): THREE.Matrix4[];
 ```
 
 ### TOLERANCE
@@ -2323,7 +2381,7 @@ export const Z: Readonly<THREE.Vector3>;
 ```ts
 /** What extrude, revolve, sweep, loft and swing take: a sketch or face (a solid comes of it), or a
  * curve (a sheet comes of it). */
-export type ProfileLike = Sketch | Face | Wire | Edge;
+export type ProfileLike = Sketch | BrepFace | Wire | BrepEdge;
 ```
 
 ### LoftOptions
@@ -2336,13 +2394,13 @@ export interface LoftOptions {
     /** Through three sections or more with a cubic surface (false: quadratic). */
     smooth?: boolean;
     /** Leave the first section along a direction (a Vector3 in the first section's frame) or tangent to faces (where they are). */
-    startTangent?: THREE.Vector3Like | Face | Iterable<Face> | null;
+    startTangent?: THREE.Vector3Like | BrepFace | Iterable<BrepFace> | null;
     /** Arrive at the last section so. */
-    endTangent?: THREE.Vector3Like | Face | Iterable<Face> | null;
+    endTangent?: THREE.Vector3Like | BrepFace | Iterable<BrepFace> | null;
     /** Back from the last section to the first: a ring. */
     closed?: boolean;
     /** Curves (where they are) the sections' corners follow. */
-    rails?: Edge | Wire | readonly (Edge | Wire)[] | null;
+    rails?: BrepEdge | Wire | readonly (BrepEdge | Wire)[] | null;
 }
 ```
 
@@ -2420,17 +2478,17 @@ export class DraftAnalysis {
     readonly minAngle: number;
     readonly faces: readonly FaceDraft[];
     /** Faces drafted at least `minAngle`. */
-    get positive(): ShapeList<Face>;
+    get positive(): ShapeList<BrepFace>;
     /** Faces drafted less than `minAngle`. */
-    get insufficient(): ShapeList<Face>;
+    get insufficient(): ShapeList<BrepFace>;
     /** Faces along the pull direction. */
-    get vertical(): ShapeList<Face>;
+    get vertical(): ShapeList<BrepFace>;
     /** Faces that hold the mold back. */
-    get undercut(): ShapeList<Face>;
+    get undercut(): ShapeList<BrepFace>;
     /** True when no face is insufficient, vertical or an undercut. */
     get ok(): boolean;
     /** A face's smallest and largest draft, in radians. */
-    angles(face: Face): [number, number];
+    angles(face: BrepFace): [number, number];
     get length(): number;
 }
 ```
@@ -2444,8 +2502,8 @@ export interface ClosestPoints {
     readonly otherPoint: THREE.Vector3;
     readonly distance: number;
     /** The faces the points lie on, where they lie on faces. */
-    readonly face: Face | null;
-    readonly otherFace: Face | null;
+    readonly face: BrepFace | null;
+    readonly otherFace: BrepFace | null;
 }
 ```
 
@@ -2493,7 +2551,7 @@ export interface RayHit {
     readonly distance: number;
     /** The face's outward normal there. */
     readonly normal: THREE.Vector3;
-    readonly face: Face | null;
+    readonly face: BrepFace | null;
 }
 ```
 
@@ -2502,13 +2560,13 @@ export interface RayHit {
 ```ts
 /** A defect the kernel's check found (smlibpy's Problem). */
 export interface Problem {
-    readonly shape: Body | Face | Edge | Vertex;
+    readonly shape: Body | BrepFace | BrepEdge | BrepVertex;
     readonly message: string;
     readonly value: number | null;
     readonly tolerance: number | null;
     readonly category: string;
     readonly test: string;
-    readonly other: Body | Face | Edge | Vertex | null;
+    readonly other: Body | BrepFace | BrepEdge | BrepVertex | null;
 }
 ```
 
@@ -2517,7 +2575,7 @@ export interface Problem {
 ```ts
 /** How a face drafts for a mold pulled along a direction (smlibpy's FaceDraft). */
 export interface FaceDraft {
-    readonly face: Face;
+    readonly face: BrepFace;
     /** The smallest and largest draft angle over the face, in radians (negative: an undercut). */
     readonly minAngle: number;
     readonly maxAngle: number;
@@ -2553,7 +2611,7 @@ export interface BodyInfo {
  * lattice to a shape, and space inside the box moves smoothly with them (a Bezier volume; space
  * outside follows the same polynomial). A lattice whose points were not moved changes nothing.
  *
- * Its points are indexed along three's x, y (up) and z: `points[i][j][k]` is the point i along x, j
+ * Its points are indexed along x, y (up) and z: `points[i][j][k]` is the point i along x, j
  * along y and k along z, a THREE.Vector3 in the frame of the shapes the lattice is applied to (the
  * frame of the shape whose box it was made around, as a plane given to a method is). `move`, `scale`
  * and `rotate` take a selection `[i, j, k]` (see `LatticeIndex`, or `layer()`), change the lattice in
@@ -2565,11 +2623,11 @@ export interface BodyInfo {
  * by 2.
  */
 export class Lattice {
-    /** Where the points are, `points[i][j][k]` along three's x, y (up) and z, in the frame of the
+    /** Where the points are, `points[i][j][k]` along x, y (up) and z, in the frame of the
      * shapes the lattice is applied to. Writable: `lattice.points[1][2][1].y += 5` lifts one point. */
     points: THREE.Vector3[][][];
     /**
-     * @param box A THREE.Box3, or a shape (anything with `bbox()`: a Part, Shell, Face, Edge or Wire),
+     * @param box A THREE.Box3, or a shape (anything with `bbox()`: a Part, Shell, BrepFace, BrepEdge or Wire),
      *   whose bounding box (in its frame) is used.
      * @param counts Points per axis, one number for all or three ([x, y, z]), 2 to 12: 2 moves the
      *   corners only (a trilinear map), 3 adds the middles (default). More points concentrate a
@@ -2612,7 +2670,7 @@ export class Lattice {
     map(point: THREE.Vector3Like, target?: THREE.Vector3): THREE.Vector3;
     /**
      * The shape deformed by the lattice, which is in the shape's frame: a Part gives a Part and a Shell
-     * (or Sketch) a Shell, in the shape's frame with its transform; an Edge an Edge and a Wire a Wire
+     * (or Sketch) a Shell, in the shape's frame with its transform; a BrepEdge a BrepEdge and a Wire a Wire
      * (exact B-splines; lines and arcs it only moves stay lines and arcs), curves of their own where
      * the shape is; points their THREE.Vector3s (as `map`). The result is exact, unless a face's image
      * needs a degree above 12: such faces are within `tolerance`. A lattice that folds a part onto
@@ -2625,9 +2683,9 @@ export class Lattice {
     apply(shape: Shell, options?: {
         tolerance?: number | null;
     }): Shell;
-    apply(shape: Edge, options?: {
+    apply(shape: BrepEdge, options?: {
         tolerance?: number | null;
-    }): Edge;
+    }): BrepEdge;
     apply(shape: Wire, options?: {
         tolerance?: number | null;
     }): Wire;
@@ -2654,7 +2712,7 @@ export class Lattice {
  * become NURBS within `tolerance`.
  *
  * A Part gives a Part and a Shell (or Sketch) a Shell, in the shape's frame with its transform; an
- * Edge gives an Edge and a Wire a Wire, curves of their own where the shape is; a point (a
+ * BrepEdge gives a BrepEdge and a Wire a Wire, curves of their own where the shape is; a point (a
  * THREE.Vector3 or `{ x, y, z }`) gives the THREE.Vector3 the twist moves it to, an array of points
  * an array. Give points `start` and `end` (the range of the part they belong to): a point has no
  * length along the axis. An edge's or wire's default range is its own; give it the part's `start`
@@ -2662,7 +2720,7 @@ export class Lattice {
  */
 export function twist(shape: Part, angle: number, options?: TwistOptions): Part;
 export function twist(shape: Shell, angle: number, options?: TwistOptions): Shell;
-export function twist(shape: Edge, angle: number, options?: TwistOptions): Edge;
+export function twist(shape: BrepEdge, angle: number, options?: TwistOptions): BrepEdge;
 export function twist(shape: Wire, angle: number, options?: TwistOptions): Wire;
 export function twist(point: THREE.Vector3Like, angle: number, options?: TwistOptions): THREE.Vector3;
 export function twist(points: readonly THREE.Vector3Like[], angle: number, options?: TwistOptions): THREE.Vector3[];
@@ -2680,7 +2738,7 @@ export function twist(points: readonly THREE.Vector3Like[], angle: number, optio
  */
 export function taper(shape: Part, scale: number, options?: TaperOptions): Part;
 export function taper(shape: Shell, scale: number, options?: TaperOptions): Shell;
-export function taper(shape: Edge, scale: number, options?: TaperOptions): Edge;
+export function taper(shape: BrepEdge, scale: number, options?: TaperOptions): BrepEdge;
 export function taper(shape: Wire, scale: number, options?: TaperOptions): Wire;
 export function taper(point: THREE.Vector3Like, scale: number, options?: TaperOptions): THREE.Vector3;
 export function taper(points: readonly THREE.Vector3Like[], scale: number, options?: TaperOptions): THREE.Vector3[];
@@ -2691,7 +2749,7 @@ export function taper(points: readonly THREE.Vector3Like[], scale: number, optio
 ```ts
 /**
  * The shape bent around an axis by `angle` radians (less than a full turn; positive: toward the y
- * axis of `plane`), like a bar over a mandrel. Material on the inside of the neutral layer is
+ * axis of `frame`), like a bar over a mandrel. Material on the inside of the neutral layer is
  * compressed, on the outside stretched. The bend axis lies `radius` from the neutral layer on the
  * side the part bends toward, and the part must not reach it. `start` and `end` are distances along
  * the frame's x axis from its origin (default: where the part begins and ends along it, so
@@ -2700,12 +2758,12 @@ export function taper(points: readonly THREE.Vector3Like[], scale: number, optio
  *
  * Plane faces across the bend become exact cylinders about the bend axis and lines across it exact
  * arcs, so a bent plate is sheet metal to `bends` and `unfold`. A Wire comes back with every piece an
- * edge of its own (a straight path bent in its middle: line, arc, line), an Edge as one edge. Shapes,
+ * edge of its own (a straight path bent in its middle: line, arc, line), a BrepEdge as one edge. Shapes,
  * curves and points otherwise as for `twist`.
  */
 export function bend(shape: Part, angle: number, options?: BendOptions): Part;
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell;
-export function bend(shape: Edge, angle: number, options?: BendOptions): Edge;
+export function bend(shape: BrepEdge, angle: number, options?: BendOptions): BrepEdge;
 export function bend(shape: Wire, angle: number, options?: BendOptions): Wire;
 export function bend(point: THREE.Vector3Like, angle: number, options?: BendOptions): THREE.Vector3;
 export function bend(points: readonly THREE.Vector3Like[], angle: number, options?: BendOptions): THREE.Vector3[];
@@ -2725,7 +2783,7 @@ export function bend(points: readonly THREE.Vector3Like[], angle: number, option
  */
 export function unroll(shape: Part, options: UnrollOptions): Part;
 export function unroll(shape: Shell, options: UnrollOptions): Shell;
-export function unroll(shape: Edge, options: UnrollOptions): Edge;
+export function unroll(shape: BrepEdge, options: UnrollOptions): BrepEdge;
 export function unroll(shape: Wire, options: UnrollOptions): Wire;
 export function unroll(point: THREE.Vector3Like, options: UnrollOptions): THREE.Vector3;
 export function unroll(points: readonly THREE.Vector3Like[], options: UnrollOptions): THREE.Vector3[];
@@ -2763,7 +2821,8 @@ export interface TwistOptions extends RangeOptions {
 ```ts
 /** Options of tapers. */
 export interface TaperOptions extends RangeOptions {
-    /** The line the cross-sections shrink toward, in the shape's frame (default: its y axis). */
+    /** The line the cross-sections shrink toward, in the shape's frame (default: its y axis, through
+     * the origin). */
     axis?: THREE.Ray | null;
 }
 ```
@@ -2781,9 +2840,10 @@ export interface BendOptions extends RangeOptions {
      * The frame of the bend, in the shape's frame: its x axis runs along the part, a positive angle
      * bends the part toward its y axis, the bend axis is parallel to x × y, and the layer through its
      * origin spanned by x and x × y is the neutral layer, which keeps its length. Default: the
-     * identity (a part lying along x bends up, toward +y, about an axis along z).
+     * identity (a part lying along x bends up, toward +y, about an axis along z). (smlibpy's `plane`:
+     * a frame, which a THREE.Plane is not.)
      */
-    plane?: THREE.Matrix4 | null;
+    frame?: THREE.Matrix4 | null;
 }
 ```
 
@@ -2815,7 +2875,7 @@ export type LatticeLayers = number | null | readonly number[];
 ### LatticeIndex
 
 ```ts
-/** A selection of points of a lattice: `[i, j, k]` along three's x, y (up) and z, each a
+/** A selection of points of a lattice: `[i, j, k]` along x, y (up) and z, each a
  * `LatticeLayers`; the points are every combination (`[1, -1, 1]` is the middle of the top layer of
  * a 3 x 3 x 3 lattice, `[null, -1, null]` the whole top layer). */
 export type LatticeIndex = readonly [LatticeLayers, LatticeLayers, LatticeLayers];
@@ -2880,8 +2940,9 @@ export class StitchReport {
  * and at least 4 x 4 (the surface is bicubic); its normal is (points[i + 1][j] - points[i][j]) ×
  * (points[i][j + 1] - points[i][j]), so rows that follow one another along +z, each running along +x,
  * face up (+y). A cloud is points in any order (at least 4), such as a scan, which the surface
- * approaches; it spans the smallest rectangle around them in their best-fit plane and faces up (+y),
- * a cloud standing upright -z, one facing along x +x. A cloud must be a height field over its
+ * approaches; it spans the smallest rectangle around them in their best-fit plane and faces +z where
+ * that plane's normal has a z part (a cloud over the XY plane faces +z), else +y, else +x. A cloud
+ * must be a height field over its
  * best-fit plane (no overhangs); one that is not gets a surface that misses it, without an error:
  * check the report's `maxDistance`.
  */
@@ -2902,7 +2963,7 @@ export function surface(points: readonly (readonly THREE.Vector3Like[])[] | read
  * ends at the corners of the net), the degrees `[u, v]` or one for both (default: from the knots,
  * else 3, less where there are fewer points), and a positive weight per control point in the same
  * rows (null: not rational). Or the data in one object (NurbsSurfaceData: the inverse of
- * `Face.nurbs()`, in the frame of the face's body), or three's NURBSSurface
+ * `BrepFace.nurbs()`, in the frame of the face's body), or three's NURBSSurface
  * (three/addons/curves/NURBSSurface.js) read as three evaluates it: `degree1` and `knots1` along u
  * (the first index of its control points), and the `w` of each control point its weight (for
  * clamped knots, which three's getPoint assumes, the same surface). The face's normal is along
@@ -2962,7 +3023,7 @@ export function network(u: Iterable<CurveLike>, v: Iterable<CurveLike>): Shell;
  * on them. `b` is taken where it is; the blend is in the frame of `a` (its body's, for a face), with
  * its transform.
  */
-export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options?: SurfaceFilletOptions): Shell;
+export function surfaceFillet(a: BrepFace | Shell, b: BrepFace | Shell, radius: number, options?: SurfaceFilletOptions): Shell;
 ```
 
 ### blend
@@ -2976,7 +3037,7 @@ export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, 
  * are bridged all round. The sheets are taken where they are; the blend is in the frame of `edgeA`'s
  * sheet, with its transform.
  */
-export function blend(edgeA: Edge, edgeB: Edge, options?: BlendOptions): Shell;
+export function blend(edgeA: BrepEdge, edgeB: BrepEdge, options?: BlendOptions): Shell;
 ```
 
 ### stitch
@@ -3002,9 +3063,9 @@ export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell;
 ### CurveLike
 
 ```ts
-/** A curve given to a surface: an Edge or Wire (where it is), or one of three's 3D curves (in the
+/** A curve given to a surface: a BrepEdge or Wire (where it is), or one of three's 3D curves (in the
  * frame of the first curve). */
-export type CurveLike = Edge | Wire | THREE.Curve<THREE.Vector3>;
+export type CurveLike = BrepEdge | Wire | THREE.Curve<THREE.Vector3>;
 ```
 
 ### SurfaceOptions
@@ -3106,7 +3167,7 @@ export interface StitchOptions {
 
 ```ts
 /** What `stitch` sews: faces, sheets (sketches too) and parts, and lists of them. */
-export type StitchPiece = Part | Shell | Face | Iterable<StitchPiece>;
+export type StitchPiece = Part | Shell | BrepFace | Iterable<StitchPiece>;
 ```
 
 ## Sheet metal
@@ -3129,12 +3190,12 @@ export class Bend {
     readonly length: number;
     /** From `bends`: the axis of its cylinders, a THREE.Ray in the part's frame (else null). */
     readonly axis: THREE.Ray | null;
-    /** In a FlatPattern: the bend line, the middle of its strip on the bottom of the flat (an Edge with
+    /** In a FlatPattern: the bend line, the middle of its strip on the bottom of the flat (a BrepEdge with
      * the pattern's transform; else null). */
-    readonly line: Edge | null;
-    /** In a FlatPattern: 'up' where the sheet beyond the line folds up (+Y), else 'down' (else null). */
+    readonly line: BrepEdge | null;
+    /** In a FlatPattern: 'up' where the sheet beyond the line folds up (+z), else 'down' (else null). */
     readonly direction: 'up' | 'down' | null;
-    constructor(angle: number, radius: number, thickness: number, kFactor: number, length: number, axis?: THREE.Ray | null, line?: Edge | null, direction?: 'up' | 'down' | null);
+    constructor(angle: number, radius: number, thickness: number, kFactor: number, length: number, axis?: THREE.Ray | null, line?: BrepEdge | null, direction?: 'up' | 'down' | null);
     /** The bend allowance, the width of the bend's strip in the flat: `angle * (radius + kFactor * thickness)`. */
     get allowance(): number;
     /** A summary of the bend (its angle in radians). */
@@ -3146,15 +3207,15 @@ export class Bend {
 
 ```ts
 /**
- * The unfolded part, laid on the ground of the part's frame (three's XZ plane, as smlibpy lays it on
- * XY) and with the part's transform: its bottom face at y = 0 and its top at y = thickness, the
- * longer side of the smallest rectangle around it along x, and, seen from above as a sketch is
- * drawn, its corner at the origin: x from 0 to its length, z from minus its width to 0.
+ * The unfolded part, laid in the XY plane of the part's frame, as a sketch lies, and with the part's
+ * transform: its bottom face at z = 0 and its top at z = thickness, the longer side of the smallest
+ * rectangle around it along x, and its corner at the origin: x from 0 to its length, y from 0 to its
+ * width.
  */
 export class FlatPattern {
     /** The flat part. */
     readonly part: Part;
-    /** The cut contour (outer boundary and holes) as a sketch at y = 0. */
+    /** The cut contour (outer boundary and holes) as a sketch at z = 0. */
     readonly outline: Sketch;
     /** The bends, each with its bend line, angle, radius, direction and K-factor. */
     readonly bends: Bend[];
@@ -3163,9 +3224,9 @@ export class FlatPattern {
     /** The K-factor of every bend, or null where the bends have different ones (each Bend has its own). */
     readonly kFactor: number | null;
     constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number | null);
-    /** The bend lines (each bend's `line`), at y = 0. */
-    get bendLines(): ShapeList<Edge>;
-    /** The size of the blank: its length along x, its thickness along y and its width along z,
+    /** The bend lines (each bend's `line`), at z = 0. */
+    get bendLines(): ShapeList<BrepEdge>;
+    /** The size of the blank: its length along x, its width along y and its thickness along z,
      * measured on its edges (a new THREE.Vector3). */
     get size(): THREE.Vector3;
     /** A summary: the size of the blank (length x width), its thickness and bends. */
@@ -3217,11 +3278,11 @@ export function developedLength(...args: [
  * The part (a sheet of constant thickness: a plate, or a part bent before) folded along a line by
  * `angle` radians, up to π (a hem): the strip of the bend allowance centered on the line becomes the
  * bend, exact cylinders of `radius` and `radius + thickness`. The line lies on the top or bottom face
- * of the sheet: a THREE.Ray in the part's frame, or a straight Edge (where it is). A positive angle
+ * of the sheet: a THREE.Ray in the part's frame, or a straight BrepEdge (where it is). A positive angle
  * folds the sheet toward the side the face with the line faces (a line on the top folds it up), a
  * negative one the other way.
  */
-export function fold(part: Part, line: THREE.Ray | Edge, angle: number, options: FoldOptions): Part;
+export function fold(part: Part, line: THREE.Ray | BrepEdge, angle: number, options: FoldOptions): Part;
 ```
 
 ### flange
@@ -3229,12 +3290,12 @@ export function fold(part: Part, line: THREE.Ray | Edge, angle: number, options:
 ```ts
 /**
  * The part with a flange along a straight edge of the sheet, where a top or bottom face meets a side
- * face square to it (an edge of the part, picked by selectors: `plate.edges().parallelTo(Z).top().right()`):
+ * face square to it (an edge of the part, picked by selectors: `plate.edges().parallelTo(Y).front().right()`):
  * the sheet extended beyond the edge and bent there, so the sheet keeps its size. `length` is the
  * flange's outside length, from the virtual sharp (where the outside faces of sheet and flange meet)
  * to its end: for a right angle, its height over the outside face of the sheet.
  */
-export function flange(part: Part, edge: Edge | Iterable<Edge>, length: number, options: FlangeOptions): Part;
+export function flange(part: Part, edge: BrepEdge | Iterable<BrepEdge>, length: number, options: FlangeOptions): Part;
 ```
 
 ### bends
@@ -3259,8 +3320,8 @@ export function bends(part: Part, options?: {
  * stays where it is, the rest of the sheet unfolds into its plane. With the K-factor the part was bent
  * with (by default each bend's own, from fold and flange, else 0.44), it is the blank it was bent from.
  * Rolled parts (one bend, no flat sheet), bends at a free end of the sheet (a curl) and bends over π
- * unroll at the neutral radius `radius + kFactor * thickness`. For the flat pattern on the ground, with
- * its outline and bend lines, see `flatPattern`.
+ * unroll at the neutral radius `radius + kFactor * thickness`. For the flat pattern in the XY plane,
+ * with its outline and bend lines, see `flatPattern`.
  */
 export function unfold(part: Part, options?: UnfoldOptions): Part;
 ```
@@ -3270,9 +3331,9 @@ export function unfold(part: Part, options?: UnfoldOptions): Part;
 ```ts
 /**
  * The flat pattern of a sheet metal part (see FlatPattern): the part unfolded with `fixed` (default:
- * the largest planar face) as its bottom, laid on the ground of the part's frame with the longer side
- * along x, its cut contour as a sketch, and its bends with their bend lines; a bend is 'up' where the
- * sheet beyond its line folds up (+Y). `kFactor` as for `unfold`.
+ * the largest planar face) as its bottom, laid in the XY plane of the part's frame with the longer
+ * side along x, its cut contour as a sketch, and its bends with their bend lines; a bend is 'up' where
+ * the sheet beyond its line folds up (+z). `kFactor` as for `unfold`.
  */
 export function flatPattern(part: Part, options?: UnfoldOptions): FlatPattern;
 ```
@@ -3327,8 +3388,8 @@ export interface FoldOptions {
     /** A point on the side of the line that stays in place (in the part's frame), or a shape there
      * (where it is: its center; a vertex's point). By default the side that reaches farther from the
      * line stays. */
-    fixed?: THREE.Vector3Like | Body | Face | Edge | Wire | Vertex | null;
-    /** Bend only along the segment `line` (an Edge), not across the whole sheet; the strip next to the
+    fixed?: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex | null;
+    /** Bend only along the segment `line` (a BrepEdge), not across the whole sheet; the strip next to the
      * segment must be cut free from the rest of the sheet (relief cuts). */
     partial?: boolean;
 }
@@ -3357,7 +3418,7 @@ export interface UnfoldOptions {
     /** The K-factor of each bend (see KFactor); default: the one each bend was folded with, else 0.44. */
     kFactor?: KFactor;
     /** The planar face of the part that stays in place (default: the largest planar face). */
-    fixed?: Face | null;
+    fixed?: BrepFace | null;
 }
 ```
 
@@ -3367,15 +3428,17 @@ export interface UnfoldOptions {
 
 ```ts
 /**
- * A triangle mesh (smlibpy's Mesh): a THREE.Mesh whose geometry is its triangles, in three's
- * coordinates (Y up) and in the kernel's order, with the kernel's corner normals where it has them
- * (a tessellation's are the exact surfaces' normals) and each triangle's own normal otherwise. Its
+ * A triangle mesh (smlibpy's Mesh): a THREE.Mesh whose geometry is its triangles, in the kernel's
+ * order, with the kernel's corner normals where it has them (a tessellation's are the exact
+ * surfaces' normals) and each triangle's own normal otherwise. Its
  * geometry is made when three first reads it; clones share it and the kernel's mesh, as three's
  * clones share their geometry. It raycasts, renders, exports (STLExporter, GLTFExporter) and
  * measures (Box3.setFromObject) as any mesh; `intersectRay` is the kernel's exact ray cast.
  *
  * Its own material is a MeshStandardMaterial drawn on both sides (meshes of scans and STL files
- * are often open). Assigning a geometry changes what three draws, not the mesh.
+ * are often open). Assigning a geometry makes it the mesh, as a THREE.Mesh's geometry is its shape:
+ * three draws it as it is, and the kernel's operations take it (its corners welded by position) when
+ * one first needs it.
  */
 export class TriangleMesh extends THREE.Mesh {
     readonly isTriangleMesh: true;
@@ -3385,7 +3448,7 @@ export class TriangleMesh extends THREE.Mesh {
      * tessellated where they are in the world (`options`: how finely), into one mesh; or nothing:
      * an empty mesh. The mesh is in its own frame, which is the world's until it is moved.
      */
-    constructor(source?: THREE.BufferGeometry | Body | Face | Iterable<Body | Face> | null, material?: THREE.Material | THREE.Material[] | null, options?: TessellateOptions);
+    constructor(source?: THREE.BufferGeometry | Body | BrepFace | Iterable<Body | BrepFace> | null, material?: THREE.Material | THREE.Material[] | null, options?: TessellateOptions);
     /** The number of triangles. */
     get triangleCount(): number;
     /** The surface area. */
@@ -3398,7 +3461,7 @@ export class TriangleMesh extends THREE.Mesh {
     center(target?: THREE.Vector3): THREE.Vector3;
     /** The center of mass of the volume a closed mesh encloses, in its frame (see `massProperties`). */
     get centroid(): THREE.Vector3;
-    /** One unit normal per triangle (x, y, z each, three's axes), in the kernel's order. */
+    /** One unit normal per triangle (x, y, z each), in the kernel's order. */
     get triangleNormals(): Float32Array;
     /**
      * Mass, volume, area, center and inertia (about the center, in three's axes) of the volume it
@@ -3429,7 +3492,7 @@ export class TriangleMesh extends THREE.Mesh {
      */
     section(plane: THREE.Plane): ShapeList<Wire>;
     /**
-     * Sections across `axis` (a direction in this mesh's frame; default +Y, up), `step` apart: the
+     * Sections across `axis` (a direction in this mesh's frame; default +z, as a part's slices), `step` apart: the
      * mesh cut into layers `step` thick from its lowest point along the axis up, each cut in its
      * middle (the contours of a printer's layers). Layers whose plane cuts nothing are left out.
      */
@@ -3483,14 +3546,14 @@ export class TriangleMesh extends THREE.Mesh {
 
 ```ts
 /**
- * One TriangleMesh of bodies and faces (Part, Shell, Sketch, Face), each tessellated where it is:
+ * One TriangleMesh of bodies and faces (Part, Shell, Sketch, BrepFace), each tessellated where it is:
  * in the frame of the first one, with its transform, name and material (a face's: its body's), as
  * the result of an operation called on it; the others moved into that frame. `tolerance` is the
  * largest distance of the triangles from the exact faces (null: 0.1 % of each body's diagonal),
  * `angle` the largest angle between neighbouring normals in radians, `maxEdge` the longest edge a
  * triangle may have. (`new TriangleMesh(bodies)` takes them into the world's frame instead.)
  */
-export function tessellate(shapes: Body | Face | Iterable<Body | Face>, tolerance?: number | null, angle?: number, options?: {
+export function tessellate(shapes: Body | BrepFace | Iterable<Body | BrepFace>, tolerance?: number | null, angle?: number, options?: {
     maxEdge?: number | null;
 }): TriangleMesh;
 ```
@@ -3574,19 +3637,18 @@ Loaders (THREE.Loader: load, loadAsync, parse) and exporters (parse); files are 
 
 ```ts
 /**
- * Reads STEP files (AP203, AP214, AP242) into a THREE.Group of what they hold, standing as they
- * stand in the file (it is Z up, three Y up), in millimeters, with the assembly's placements applied:
+ * Reads STEP files (AP203, AP214, AP242) into a THREE.Group of what they hold, in the file's
+ * coordinates (see the module's notes on Z up), in millimeters, with the assembly's placements
+ * applied:
  *
  * - bodies: a Part for each solid, a Shell for each sheet, named and colored as the file has them;
- * - curves that belong to no body (wireframe geometry, contours): Edge and Wire objects of their own,
+ * - curves that belong to no body (wireframe geometry, contours): BrepEdge and Wire objects of their own,
  *   named, and colored by their material where the file colors them;
- * - points that belong to no body: Vertex objects of their own, named and colored so;
+ * - points that belong to no body: BrepVertex objects of their own, named and colored so;
  * - coordinate systems (named placements, as NX, CATIA and tool catalogs write `MCS`, `PCS` or
- *   `CSW`): empties (plain THREE.Object3Ds) named as the file names them and placed at them, as a
- *   sketch lies on the ground of its frame: the object's ground (its XZ plane) is the coordinate
- *   system's XY plane, its +Y the coordinate system's Z axis, its x the coordinate system's x. So
- *   `new Rectangle(20, 10).on(frame.matrixWorld)` draws on it, and STEPExporter writes it back (as it
- *   writes any named empty).
+ *   `CSW`): empties (plain THREE.Object3Ds) named as the file names them and placed at them, their
+ *   axes the coordinate system's. So `new Rectangle(20, 10).on(frame.matrixWorld)` draws in its XY
+ *   plane, and STEPExporter writes it back (as it writes any named empty).
  *
  * Curves, points and coordinate systems keep the product they belong to in `userData.product`, a
  * coordinate system its color in `userData.color` (a CSS color). A body that cannot be read is left
@@ -3608,17 +3670,16 @@ export class STEPLoader extends THREE.Loader<THREE.Group> {
 
 ```ts
 /**
- * Writes what is under an object (or several) to STEP AP214, each where the scene shows it (the file
- * is Z up: a part standing in three stands in it), in millimeters unless `unit` says otherwise:
+ * Writes what is under an object (or several) to STEP AP214, each where the scene shows it, in
+ * millimeters unless `unit` says otherwise:
  *
  * - bodies (Part, Shell, Sketch): exact solids and sheets, named by their object's name and colored
  *   by their material's color;
  * - edges and wires of their own: curves, named and colored the same way;
- * - THREE.Points (Vertex objects of their own among them): each of their points, named and colored
+ * - THREE.Points (BrepVertex objects of their own among them): each of their points, named and colored
  *   so;
  * - named empties (plain THREE.Object3Ds with a name, as STEPLoader gives a file's coordinate
- *   systems): coordinate systems, the object's ground (XZ plane) their XY plane and its +Y their Z
- *   axis; `frames: false` leaves them out. Unnamed empties (pivots, and the containers of three's
+ *   systems): coordinate systems, the object's axes theirs; `frames: false` leaves them out. Unnamed empties (pivots, and the containers of three's
  *   helpers) are passed over.
  *
  * `userData.product` puts a curve, point or coordinate system into the product of that name (in an
@@ -3637,8 +3698,8 @@ export class STEPExporter {
 
 ```ts
 /**
- * Reads IGES files (5.3, ASCII) into a THREE.Group of their bodies, standing as they stand in the file
- * (Z up there), in millimeters whatever unit the file uses, named and colored as the file has them.
+ * Reads IGES files (5.3, ASCII) into a THREE.Group of their bodies, in the file's coordinates, in
+ * millimeters whatever unit the file uses, named and colored as the file has them.
  * Solids (manifold solid B-rep objects) come in as STEP's do; trimmed and bounded surfaces, the way
  * most CAD systems write IGES, are stitched where their edges meet, and each set of faces that closes
  * up becomes a Part, the others Shells. What cannot be read is left out with a warning (`strict`
@@ -3659,23 +3720,23 @@ export class IGESLoader extends THREE.Loader<THREE.Group> {
 
 ```ts
 /**
- * Reads DXF drawings (ASCII) as a Sketch on the ground (three's XZ plane, the drawing's XY plane): the
- * drawing's (x, y) is three's (x, 0, -y), so a view from above shows it as drawn, and the sketch
- * extrudes up. Lines, arcs, circles, ellipses, polylines (bulges as exact arcs), splines (exact
- * NURBS) and inserted blocks are joined end to end into closed loops, nested by the even-odd rule (a
- * loop inside a loop is a hole, a loop inside a hole an island), in millimeters. Curves that do not
- * close into loops, or outlines that branch, throw a ModelingError that says where; with
- * `wires: true` the loader gives a THREE.Group of every chain of curves as a Wire instead.
+ * Reads DXF drawings (ASCII) into a THREE.Group of one Sketch in the XY plane (the drawing's): the
+ * drawing's (x, y) is three's (x, y), so three's default camera shows it as drawn, and the sketch
+ * extrudes towards +z. Lines, arcs, circles, ellipses, polylines (bulges as exact arcs), splines
+ * (exact NURBS) and inserted blocks are joined end to end into closed loops, nested by the even-odd
+ * rule (a loop inside a loop is a hole, a loop inside a hole an island), in millimeters. Curves that
+ * do not close into loops, or outlines that branch, throw a ModelingError that says where; with
+ * `wires: true` the group holds every chain of curves as a Wire instead.
  */
-export class DXFLoader extends THREE.Loader<Sketch | THREE.Group> {
+export class DXFLoader extends THREE.Loader<THREE.Group> {
     /** How drawings are read. */
     options: DXFLoaderOptions;
     /** Sets how drawings are read (see DXFLoaderOptions). */
     setOptions(options: DXFLoaderOptions): this;
-    load(url: string, onLoad: (result: Sketch | THREE.Group) => void, onProgress?: (event: ProgressEvent) => void, onError?: (error: unknown) => void): void;
-    /** The sketch of the contents of a DXF file (its text or bytes); with `wires`, a THREE.Group of its
-     * chains of curves. */
-    parse(data: string | ArrayBuffer | Uint8Array): Sketch | THREE.Group;
+    load(url: string, onLoad: (group: THREE.Group) => void, onProgress?: (event: ProgressEvent) => void, onError?: (error: unknown) => void): void;
+    /** The sketch of the contents of a DXF file (its text or bytes), in a THREE.Group; with `wires`,
+     * its chains of curves. */
+    parse(data: string | ArrayBuffer | Uint8Array): THREE.Group;
 }
 ```
 
@@ -3684,8 +3745,8 @@ export class DXFLoader extends THREE.Loader<Sketch | THREE.Group> {
 ```ts
 /**
  * Writes 2D shapes to a DXF drawing (AutoCAD 2000, AC1015), each where the scene shows it, seen from
- * above: on the ground (three's XZ plane, the drawing's XY), three's (x, y, z) is the drawing's
- * (x, -z), so a sketch comes out as it is drawn. Sketches, planar sheets and planar faces give their
+ * the front (+z), as three's default camera sees it: three's (x, y) is the drawing's (x, y), so a
+ * sketch comes out as it is drawn. Sketches, planar sheets and planar faces give their
  * outlines (an object's name becomes its layer), edges and wires their curves, drawing views their
  * lines (on the layers VISIBLE and HIDDEN, the hidden lines dashed). Every curve is written exactly:
  * LINE, ARC, CIRCLE, ELLIPSE, or SPLINE with the kernel's control points, knots and weights (see
@@ -3701,8 +3762,8 @@ export class DXFExporter {
 
 ```ts
 /**
- * Draws 2D shapes as SVG, each where the scene shows it, seen from above (+Y), as a top view shows
- * them: three's x to the right and -z up (a drawing's x and y; the SVG's y runs down). Drawing views
+ * Draws 2D shapes as SVG, each where the scene shows it, seen from the front (+z), as three's default
+ * camera sees them: three's x to the right and y up (a drawing's x and y; the SVG's y runs down). Drawing views
  * give their lines (the hidden ones dashed), edges and wires their curves, sketches, sheets and faces
  * their edges. Lines and circular arcs are exact, other curves polylines. Lengths are millimeters: the
  * drawing prints at its true size. Parts are passed over: drawingViews draws them.
@@ -3713,26 +3774,28 @@ export class SVGExporter {
 }
 ```
 
-### USDLoader
+### USDBrepLoader
 
 ```ts
 /**
  * Reads the exact bodies of USD stages (.usda text) of NVIDIA's usd-brep schema (its BrepArray prims,
  * as smlibpy, smlibwasm, usd-brep and Omniverse write them) into a THREE.Group of Parts and Shells,
  * named and colored as their prims have them (the material bound to them, else their displayColor),
- * in millimeters and placed as the stage places them (Z up there, Y up here). three's own USDLoader
- * reads USD's meshes; this one keeps the exact bodies, and passes the meshes over.
+ * in millimeters and placed as the stage places them, in the stage's coordinates. A stage that says
+ * it is Z up stands up in three: its group is turned (`rotation.x = -Math.PI / 2`), as three's own
+ * USDLoader turns it. three's USDLoader reads USD's meshes; this one keeps the exact bodies (usd-brep's
+ * B-reps, hence its name), and passes the meshes over.
  *
  * The layers a stage names (subLayers, references, payloads) are read as USD composes them: `load`
  * and `loadAsync` load them relative to the file's URL (through the loader's manager, path and
  * resourcePath; binary USD is not read), or the `resolve` option gives them. A body that cannot be
  * read is left out with a warning (`strict` throws instead).
  */
-export class USDLoader extends THREE.Loader<THREE.Group> {
+export class USDBrepLoader extends THREE.Loader<THREE.Group> {
     /** How stages are read. */
-    options: USDLoaderOptions;
-    /** Sets how stages are read (see USDLoaderOptions). */
-    setOptions(options: USDLoaderOptions): this;
+    options: USDBrepLoaderOptions;
+    /** Sets how stages are read (see USDBrepLoaderOptions). */
+    setOptions(options: USDBrepLoaderOptions): this;
     load(url: string, onLoad: (group: THREE.Group) => void, onProgress?: (event: ProgressEvent) => void, onError?: (error: unknown) => void): void;
     /** The bodies of the contents of a USD file (its text or bytes), with the layers it names from the
      * `resolve` option. */
@@ -3740,7 +3803,7 @@ export class USDLoader extends THREE.Loader<THREE.Group> {
 }
 ```
 
-### USDExporter
+### USDBrepExporter
 
 ```ts
 /**
@@ -3748,13 +3811,14 @@ export class USDLoader extends THREE.Loader<THREE.Group> {
  * scene shows it: a BrepArray prim (usd-brep's schema, which Omniverse and usd-brep's tools read as
  * solids) named by its object's name and colored by its material's color, and a Mesh prim of it,
  * which other USD tools and viewers draw (see `mesh`). The stage is Z up in millimeters
- * (metersPerUnit 0.001): a part standing in three stands in it. Binary USD (.usdc, .usdz) is not
- * written: OpenUSD's usdcat converts the text, usdzip packs it. three's USDZExporter writes meshes
+ * (metersPerUnit 0.001), turned from three's so that a part standing in three stands in USD's tools
+ * (and in USDBrepLoader's group). Binary USD (.usdc, .usdz) is not written: OpenUSD's usdcat converts
+ * the text, usdzip packs it. three's USDZExporter writes meshes
  * only; curves and points have no place here (STEPExporter writes them).
  */
-export class USDExporter {
+export class USDBrepExporter {
     /** The text of a USD stage of the bodies under `input`. */
-    parse(input: THREE.Object3D | readonly THREE.Object3D[], options?: USDExporterOptions): string;
+    parse(input: THREE.Object3D | readonly THREE.Object3D[], options?: USDBrepExporterOptions): string;
 }
 ```
 
@@ -3764,8 +3828,8 @@ export class USDExporter {
 /**
  * Reads OpenCASCADE .brep files (ASCII from BRepTools::Write, binary from BinTools::Write, as
  * build123d, CadQuery, FreeCAD and OpenCASCADE write them) into a THREE.Group of a Part for each solid
- * of the file's shape and a Shell for each sheet, standing as they stand in the file (Z up there), in
- * its units (millimeters for those tools), with their exact surfaces and curves. The format has no
+ * of the file's shape and a Shell for each sheet, in the file's coordinates and units (millimeters for
+ * those tools), with their exact surfaces and curves. The format has no
  * names or colors; curves and points outside faces are not read (a warning says how many).
  */
 export class BREPLoader extends THREE.Loader<THREE.Group> {
@@ -3784,7 +3848,7 @@ export class BREPLoader extends THREE.Loader<THREE.Group> {
 ```ts
 /**
  * Writes the exact bodies under an object (or several) to an OpenCASCADE .brep file (ASCII, as
- * BRepTools::Write writes it), each where the scene shows it (Z up in the file), which build123d
+ * BRepTools::Write writes it), each where the scene shows it, which build123d
  * (import_brep), CadQuery (importBrep), FreeCAD and OpenCASCADE read: one shape, the solid or shell
  * of a single body or a compound of them, with their exact surfaces and curves. Names and colors are
  * not written: the format has no place for them (STEPExporter keeps them).
@@ -3800,7 +3864,7 @@ export class BREPExporter {
 ```ts
 /**
  * Reads SMLib's native .smb files (one exact body, ASCII or binary) as that body: a Part when it
- * encloses a volume, a Shell when it does not, standing as it stands in the file (Z up there).
+ * encloses a volume, a Shell when it does not, in the file's coordinates.
  */
 export class SMBLoader extends THREE.Loader<Part | Shell> {
     load(url: string, onLoad: (body: Part | Shell) => void, onProgress?: (event: ProgressEvent) => void, onError?: (error: unknown) => void): void;
@@ -3813,8 +3877,8 @@ export class SMBLoader extends THREE.Loader<Part | Shell> {
 
 ```ts
 /**
- * Writes the one exact body under an object to SMLib's native .smb format, where the scene shows it
- * (Z up in the file); reading it back gives the same geometry. Names and colors are not written
+ * Writes the one exact body under an object to SMLib's native .smb format, where the scene shows it;
+ * reading it back gives the same geometry. Names and colors are not written
  * (SMPExporter keeps them). Throws a RangeError unless there is exactly one body.
  */
 export class SMBExporter {
@@ -3827,9 +3891,9 @@ export class SMBExporter {
 
 ```ts
 /**
- * Reads SMLib part files (.smp) into a THREE.Group of what they hold, in the file's order, standing as
- * it stands in the file (Z up there): bodies (a Part where it encloses a volume, else a Shell) named
- * and colored as written, and curves as Edge and Wire objects of their own.
+ * Reads SMLib part files (.smp) into a THREE.Group of what they hold, in the file's order and
+ * coordinates: bodies (a Part where it encloses a volume, else a Shell) named
+ * and colored as written, and curves as BrepEdge and Wire objects of their own.
  */
 export class SMPLoader extends THREE.Loader<THREE.Group> {
     load(url: string, onLoad: (group: THREE.Group) => void, onProgress?: (event: ProgressEvent) => void, onError?: (error: unknown) => void): void;
@@ -3843,7 +3907,7 @@ export class SMPLoader extends THREE.Loader<THREE.Group> {
 ```ts
 /**
  * Writes the exact bodies under an object (or several) to an SMLib part file (.smp), the kernel's own
- * container, each where the scene shows it (Z up in the file): bodies named by their object's name and
+ * container, each where the scene shows it: bodies named by their object's name and
  * colored by their material's color, and edges and wires of their own as curves (the format names
  * bodies only). SMPLoader reads them back in the same order.
  */
@@ -3858,8 +3922,9 @@ export class SMPExporter {
 ```ts
 /**
  * One view of a drawing (see `drawingViews`): its name, the direction it looks from, and its lines.
- * The lines are edges of their own (THREE.Lines) on the ground, at the drawing's 2D coordinates:
- * the sheet's (u, v) is three's (u, 0, -v), and a view from above shows them as the sheet has them.
+ * The lines are edges of their own (THREE.Lines) in the XY plane, at the drawing's 2D coordinates:
+ * the sheet's (u, v) is three's (u, v, 0), and three's default camera shows them as the sheet has
+ * them.
  * DXFExporter writes views on the layers VISIBLE and HIDDEN (hidden lines dashed), SVGExporter as
  * paths (hidden ones dashed), each line where the scene shows it.
  */
@@ -3870,11 +3935,11 @@ export class DrawingView {
      * for the front view, (0, 1, 0) for the top view. */
     readonly direction: THREE.Vector3;
     /** The lines seen from there. */
-    readonly visible: ShapeList<Edge>;
+    readonly visible: ShapeList<BrepEdge>;
     /** The lines the parts hide (drawn dashed). */
-    readonly hidden: ShapeList<Edge>;
-    constructor(name: ViewName, direction: THREE.Vector3Like, visible: Iterable<Edge>, hidden: Iterable<Edge>);
-    /** The box around the view's lines, where they are (on the ground: its y extent is 0); empty
+    readonly hidden: ShapeList<BrepEdge>;
+    constructor(name: ViewName, direction: THREE.Vector3Like, visible: Iterable<BrepEdge>, hidden: Iterable<BrepEdge>);
+    /** The box around the view's lines, where they are (in the XY plane: its z extent is 0); empty
      * for a view without lines. */
     bbox(target?: THREE.Box3): THREE.Box3;
 }
@@ -3884,8 +3949,8 @@ export class DrawingView {
 
 ```ts
 /**
- * The views of parts for a 2D drawing, laid out on the ground (three's XZ plane) as a sheet arranges
- * them: the front view where the parts' front is, the others beside it (see `projection`), the
+ * The views of parts for a 2D drawing, laid out in the XY plane as a sheet arranges them: the front
+ * view where the parts' front is, the others beside it (see `projection`), the
  * views of the front row sharing its height, those of its column its width.
  *
  * - `parts`: a part or shell, objects that hold them (their visible bodies), or a list of them:
@@ -3966,7 +4031,7 @@ export interface DXFLoaderOptions {
     /** Curve ends closer than this (in millimeters) are joined (default: 1e-7 of the drawing's size). */
     tolerance?: number | null;
     /** Give every chain of curves of the drawing as a Wire, open or closed (closed ones first, each in
-     * drawing order), in a THREE.Group, instead of the sketch of its closed outlines. */
+     * drawing order), instead of the sketch of its closed outlines. */
     wires?: boolean;
 }
 ```
@@ -3985,12 +4050,11 @@ export interface DXFExporterOptions {
     /** For `curves: 'arcs'`: the largest distance between a curve and its lines and arcs, in
      * millimeters (default 0.01). */
     tolerance?: number;
-    /** The drawing's frame, in world coordinates: its ground (XZ plane) is the drawing, its x the
-     * drawing's x and its -z the drawing's y, as a sketch lies on the ground of its frame (so
-     * `sketch.matrixWorld` draws a sketch in its own coordinates wherever it is). The shapes must lie
-     * parallel to it. Default: the ground (three's XZ plane) where the shapes lie parallel to it,
-     * otherwise the plane of the first sketch. */
-    plane?: THREE.Matrix4 | null;
+    /** The drawing's frame, in world coordinates: its XY plane is the drawing, its x and y the
+     * drawing's, as a sketch lies in the XY plane of its frame (so `sketch.matrixWorld` draws a sketch
+     * in its own coordinates wherever it is). The shapes must lie parallel to it. Default: the XY plane
+     * where the shapes lie parallel to it, otherwise the plane of the first sketch. */
+    frame?: THREE.Matrix4 | null;
     /** Leave out invisible objects (default true). */
     onlyVisible?: boolean;
 }
@@ -4011,18 +4075,19 @@ export interface SVGExporterOptions {
 }
 ```
 
-### USDLoaderOptions
+### USDBrepLoaderOptions
 
 ```ts
-/** How USDLoader reads. */
-export interface USDLoaderOptions {
+/** How USDBrepLoader reads. */
+export interface USDBrepLoaderOptions {
     /** Run the kernel's import healer on the bodies (default false). */
     heal?: boolean;
     /** The stage's unit ('mm', 'cm', 'm', 'um' or 'inch') instead of its metersPerUnit; a stage without
      * one is read as millimeters (where USD itself takes centimeters). */
     units?: 'mm' | 'cm' | 'm' | 'um' | 'inch' | null;
     /** Place the bodies as the stage does (default true: the transforms of their prims and the prims
-     * above them, a Y-up stage turned to Z up); false leaves each where its prim has it. */
+     * above them, and a Z-up stage's group turned to stand it up, as three's USDLoader turns it); false
+     * leaves each where its prim has it. */
     placement?: boolean;
     /** Check each body with the kernel first (default true): gaps of more than 1e-3 of its size make it
      * unreadable, smaller ones give a warning. */
@@ -4040,11 +4105,11 @@ export interface USDLoaderOptions {
 }
 ```
 
-### USDExporterOptions
+### USDBrepExporterOptions
 
 ```ts
-/** How USDExporter writes. */
-export interface USDExporterOptions {
+/** How USDBrepExporter writes. */
+export interface USDBrepExporterOptions {
     /** Write a Mesh prim of each body too (`<name>_mesh`, default true), which USD viewers draw; false
      * writes the exact bodies alone, for usd-brep and Omniverse, which draw them themselves. */
     mesh?: boolean;
@@ -4175,7 +4240,7 @@ export class ImageDiff {
 /**
  * A PNG picture of objects, drawn in software (no GPU: Node, workers, tests): each object and what
  * is under it, where the scene shows it. Bodies (Part, Shell, Sketch) are drawn shaded with their
- * edges, TriangleMeshes shaded, curves of their own (Edge, Wire) as lines on top, each in its
+ * edges, TriangleMeshes shaded, curves of their own (BrepEdge, Wire) as lines on top, each in its
  * material's color (a sketch drawn with solids: its outline on top, in blue); faces, edges and
  * vertices added to their body (three's highlights) are drawn highlighted, and faces or edges given
  * on their own are drawn where their body is. Other objects (lights, cameras, plain meshes) are
@@ -4532,7 +4597,7 @@ export type AlignValue = 'min' | 'center' | 'max';
 ### Align3
 
 ```ts
-/** One alignment for every axis, or one per axis of three's (x, y up, z). */
+/** One alignment for every axis, or one per axis (x, y, z); an axis not named stays as it is. */
 export type Align3 = AlignValue | {
     x?: AlignValue;
     y?: AlignValue;
@@ -4543,7 +4608,8 @@ export type Align3 = AlignValue | {
 ### Align2
 
 ```ts
-/** One alignment for both axes of a sketch, or one per axis (its own x and y). */
+/** One alignment for both axes of a sketch, or one per axis (its own x and y); an axis not named
+ * stays as it is. */
 export type Align2 = AlignValue | {
     x?: AlignValue;
     y?: AlignValue;
@@ -4578,7 +4644,7 @@ export class KernelWorker<M extends object = Record<string, (...args: Any[]) => 
     constructor(worker: URL | string | (() => WorkerLike), options?: KernelWorkerOptions);
     /**
      * Calls the worker's function `name` with `args`; resolves to what it returns, as it arrives
-     * (bodies as Part, Shell or Sketch, curves as Edge or Wire: `Crossed`). Bodies, curves, faces,
+     * (bodies as Part, Shell or Sketch, curves as BrepEdge or Wire: `Crossed`). Bodies, curves, faces,
      * edges and vertices of bodies, groups, three's values and plain data cross in both directions
      * (see the module's comment); other objects are a TypeError.
      */
@@ -4627,11 +4693,11 @@ export type FunctionName<M> = {
 ```ts
 /**
  * What a value of type `T` is once it has crossed to or from a worker: bodies as Part, Shell or
- * Sketch and curves as Edge or Wire (the classes of the package's results: a Box arrives as a Part,
- * a Line as an Edge), groups as THREE.Group or THREE.Object3D, lists, arrays and plain objects item
+ * Sketch and curves as BrepEdge or Wire (the classes of the package's results: a Box arrives as a Part,
+ * a Segment as a BrepEdge), groups as THREE.Group or THREE.Object3D, lists, arrays and plain objects item
  * by item, the rest as it is (functions do not cross).
  */
-export type Crossed<T> = 0 extends 1 & T ? Any : T extends Primitive | Date | RegExp | ArrayBuffer | ArrayBufferView | ThreeValue ? T : T extends Sketch ? Sketch : T extends Part ? Part : T extends Shell ? Shell : T extends Wire ? Wire : T extends Edge ? Edge : T extends Face ? Face : T extends Vertex ? Vertex : T extends EdgeLines ? EdgeLines : T extends TriangleMesh ? TriangleMesh : T extends ShapeList<infer U> ? ShapeList<Crossed<U>> : T extends THREE.Group ? THREE.Group : T extends THREE.Object3D ? THREE.Object3D : T extends THREE.BufferGeometry ? THREE.BufferGeometry : T extends ReadonlyMap<infer K, infer V> ? Map<Crossed<K>, Crossed<V>> : T extends ReadonlySet<infer U> ? Set<Crossed<U>> : T extends readonly unknown[] ? {
+export type Crossed<T> = 0 extends 1 & T ? Any : T extends Primitive | Date | RegExp | ArrayBuffer | ArrayBufferView | ThreeValue ? T : T extends Sketch ? Sketch : T extends Part ? Part : T extends Shell ? Shell : T extends Wire ? Wire : T extends BrepEdge ? BrepEdge : T extends BrepFace ? BrepFace : T extends BrepVertex ? BrepVertex : T extends EdgeLines ? EdgeLines : T extends TriangleMesh ? TriangleMesh : T extends ShapeList<infer U> ? ShapeList<Crossed<U>> : T extends THREE.Group ? THREE.Group : T extends THREE.Object3D ? THREE.Object3D : T extends THREE.BufferGeometry ? THREE.BufferGeometry : T extends ReadonlyMap<infer K, infer V> ? Map<Crossed<K>, Crossed<V>> : T extends ReadonlySet<infer U> ? Set<Crossed<U>> : T extends readonly unknown[] ? {
     -readonly [K in keyof T]: Crossed<T[K]>;
 } : T extends (...args: never[]) => unknown ? never : {
     [K in keyof T]: Crossed<T[K]>;
