@@ -58,6 +58,8 @@ import {
   type Problem,
   type RayHit,
 } from './properties.ts'
+import * as deformations from './deform.ts'
+import * as sheetMetal from './sheetmetal.ts'
 
 // --------------------------------------------------------------------------------------- state
 const STATE = Symbol('smlibpy-three')
@@ -279,7 +281,8 @@ export function adopt<T extends Body>(result: T, like: Body): T {
   THREE.Object3D.prototype.copy.call(result, like, false)
   const r = state(result)
   const l = state(like)
-  r.material = l.material ?? l.ownMaterial
+  // (a sheet or sketch made from a part draws both sides: it keeps its own material)
+  r.material = result instanceof Part === like instanceof Part ? (l.material ?? l.ownMaterial) : null
   r.tolerance = l.tolerance
   r.angle = l.angle
   result.edgeLines.visible = like.edgeLines.visible
@@ -1281,6 +1284,58 @@ export class Part extends Body {
     return same<Part>(this, (v: sm.Part) => v.named(name, { faces: f }))
   }
 
+  // -- deformations -----------------------------------------------------------------------------
+  /** The part twisted about an axis (default: its y axis) by `angle` radians over its length; see `twist`. */
+  twist(angle: number, options: deformations.TwistOptions = {}): Part {
+    return deformations.twist(this, angle, options)
+  }
+
+  /** The part tapered along an axis (default: its y axis): its cross-sections scaled from 1 to `scale`; see `taper`. */
+  taper(scale: number, options: deformations.TaperOptions = {}): Part {
+    return deformations.taper(this, scale, options)
+  }
+
+  /** The part bent by `angle` radians (by default up, toward +y, about an axis along z); see `bend`. */
+  bend(angle: number, options: deformations.BendOptions = {}): Part {
+    return deformations.bend(this, angle, options)
+  }
+
+  /** The part wrapped around an axis laid out flat; see `unroll`. */
+  unroll(options: deformations.UnrollOptions): Part {
+    return deformations.unroll(this, options)
+  }
+
+  /** The part deformed by a lattice (in the part's frame); see `Lattice.apply`. */
+  deform(lattice: deformations.Lattice, options: { tolerance?: number | null } = {}): Part {
+    return lattice.apply(this, options)
+  }
+
+  // -- sheet metal ------------------------------------------------------------------------------
+  /** The sheet folded along a line (a THREE.Ray in its frame, or a straight Edge) by `angle` radians; see `fold`. */
+  fold(line: THREE.Ray | Edge, angle: number, options: sheetMetal.FoldOptions): Part {
+    return sheetMetal.fold(this, line, angle, options)
+  }
+
+  /** The sheet with a flange along one of its straight edges; see `flange`. */
+  flange(edge: Edge | Iterable<Edge>, length: number, options: sheetMetal.FlangeOptions): Part {
+    return sheetMetal.flange(this, edge, length, options)
+  }
+
+  /** The bends of the sheet, their axes in its frame; see `bends`. */
+  bends(options: { kFactor?: sheetMetal.KFactor } = {}): sheetMetal.Bend[] {
+    return sheetMetal.bends(this, options)
+  }
+
+  /** The sheet with every bend flat again; see `unfold`. */
+  unfold(options: sheetMetal.UnfoldOptions = {}): Part {
+    return sheetMetal.unfold(this, options)
+  }
+
+  /** The flat pattern of the sheet, on the ground of its frame; see `flatPattern`. */
+  flatPattern(options: sheetMetal.UnfoldOptions = {}): sheetMetal.FlatPattern {
+    return sheetMetal.flatPattern(this, options)
+  }
+
   /** The kernel edges for `edges`, which must be this part's (or a clone's). */
   private own(items: EdgesLike | FacesLike, what: string): (sm.Edge | sm.Face | sm.Wire)[] {
     const value = kernelOf(this)
@@ -1304,6 +1359,31 @@ export class Shell extends Body {
   thicken(thickness: number, options: { both?: boolean } = {}): Part {
     const value = kernelOf(this) as sm.Shell
     return adopt(wrap(call(() => value.thicken(thickness, options))) as Part, this)
+  }
+
+  /** The sheet twisted about an axis (default: its y axis) by `angle` radians; see `twist`. */
+  twist(angle: number, options: deformations.TwistOptions = {}): Shell {
+    return deformations.twist(this, angle, options)
+  }
+
+  /** The sheet tapered along an axis (default: its y axis); see `taper`. */
+  taper(scale: number, options: deformations.TaperOptions = {}): Shell {
+    return deformations.taper(this, scale, options)
+  }
+
+  /** The sheet bent by `angle` radians (by default up, toward +y, about an axis along z); see `bend`. */
+  bend(angle: number, options: deformations.BendOptions = {}): Shell {
+    return deformations.bend(this, angle, options)
+  }
+
+  /** The sheet wrapped around an axis laid out flat; see `unroll`. */
+  unroll(options: deformations.UnrollOptions): Shell {
+    return deformations.unroll(this, options)
+  }
+
+  /** The sheet deformed by a lattice (in the sheet's frame); see `Lattice.apply`. */
+  deform(lattice: deformations.Lattice, options: { tolerance?: number | null } = {}): Shell {
+    return lattice.apply(this, options)
   }
 
   /** The sheet moved `distance` along its normals (a parallel surface). */
