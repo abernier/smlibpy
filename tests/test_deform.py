@@ -1,4 +1,4 @@
-"""Deformations: twist, taper, bend and lattices (smlibpy.deform)."""
+"""Deformations: twist, taper, bend and lattices (smlibpy.deformations)."""
 
 import math
 
@@ -7,7 +7,7 @@ import pytest
 
 from smlibpy import (Axis, Box, Cylinder, Lattice, ModelingError, Part, Plane, Rectangle, Shell, Sphere, X, Y, Z,
                      bend, export_step, import_step, taper, twist)
-from smlibpy import deform as D
+from smlibpy import deformations as D
 from smlibpy._kernel import ext, k
 
 

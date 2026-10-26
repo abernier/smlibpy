@@ -64,6 +64,7 @@ export class Locations extends Array<Location> {
     return this.moved(_asPlane(target).location)
   }
 
+  /** Where the locations move the origin to. */
   get points(): Vector[] {
     return this.map((l) => l.position)
   }

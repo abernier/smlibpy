@@ -89,7 +89,7 @@ test('step keeps names, colors and parts', () => {
   approx(back[1].bbox().min.z, 11) // boxes are centered
 })
 
-const units: [string, number][] = [
+const units: ['inch' | 'cm' | 'm' | 'um' | 'mm' | 'in', number][] = [
   ['inch', 25.4],
   ['cm', 10.0],
   ['m', 1000.0],

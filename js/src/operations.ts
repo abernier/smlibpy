@@ -1,12 +1,17 @@
 // Operations as functions.
 //
-// Each function is also available as a method (`extrude(sketch, 5)` is `sketch.extrude(5)`). The
-// functions read naturally when the target is implied by a selection:
-// `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
+// Every operation of a body is a method and a function of the same name and parameters, the
+// function taking the body first: `draft(part, faces, 3, Plane.XY)` is `part.draft(faces, 3,
+// Plane.XY)`, `extrude(sketch, 5)` is `sketch.extrude(5)`. `fillet`, `chamfer` and `filletPreview`
+// take the edges instead and find their part, which reads naturally when the selection says it all:
+// `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to. The method
+// does the work; test/api_forms.test.ts holds the two forms to each other (as smlibpy's
+// tests/test_api_forms.py does).
 
 import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import { _traced } from './_errors.ts'
-import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG, _vec } from './geometry.ts'
+import { Axis, type Location, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG, _vec } from './geometry.ts'
+import type { Mesh } from './mesh.ts'
 import { solve, spread } from './_linalg.ts'
 import { Line, Spline, _basis } from './curves.ts'
 import {
@@ -18,6 +23,8 @@ import {
   type FilletOptions,
   type FilletRadius,
   Part,
+  type PushOptions,
+  type RegionLike,
   type Shape,
   ShapeList,
   Shell,
@@ -306,7 +313,7 @@ export type LoftOptions = {
  *   loft runs into tangentially. `closed`: run on from the last section through the first again,
  *   smoothly (three sections or more): a ring without ends. `rails`: a curve (an edge or a wire) or a
  *   list of them that run from the first section to the last and cross every section once, for open
- *   sections (a surface): the loft passes through them exactly, as through the sections (a Gordon
+ *   sections (a surface): the loft passes through them as through the sections, within about 3e-7 (a Gordon
  *   surface through the sections and the rails, cubic or as near as the counts allow). Where no rail
  *   runs along the sections' starts or their ends, the loft's border there runs smoothly through them.
  *   Sections and rails must be smooth curves (each is joined into one). Not with `ruled`, the tangents
@@ -1498,7 +1505,7 @@ export interface SweepOptions {
   anchor?: 'center' | 'origin' | VectorLike | Vertex
   /** A second rail (an edge or a wire; the path is the first) for an open profile that runs from the
    * path to it: the profile is moved, turned and scaled (the same in every direction) so that its ends
-   * stay on both, and the surface (a `Shell`) passes through both rails exactly. The profile's frame
+   * stay on both, and the surface (a `Shell`) passes through both rails, within about 2e-7. The profile's frame
    * turns with the line from the path to the rail and with the rails' mean direction; the rails are
    * matched by the fraction of their lengths, from where the profile meets them to their ends. Not with
    * `orient`, `translational`, `sharpCorners`, `up`, `twist`, `scale` or `anchor`, which the rails decide:
@@ -1527,7 +1534,7 @@ export interface SweepOptions {
  * the kernel cannot sweep an open path of several edges so, each edge is swept on its own, turned
  * to its own start, and the pieces are fused (with a warning unless the profile is round: it turns
  * where the edges meet). A closed path it cannot sweep so (the fuse where the halves of a loop
- * closed with a kink cross) is swept in pieces as before 0.5.0, where that puts the profile on the
+ * closed with a kink cross) is swept in pieces, each turned from the path's start to its own, where that puts the profile on the
  * path. Faces without area that a fuse leaves are taken out (or the sweep throws `ModelingError`).
  * The corners of a planar path of several edges are mitered, the profile placed as on any other
  * path; where they cannot be (arcs that meet at a corner), the path is swept piece by piece, with a
@@ -2410,27 +2417,27 @@ export function shell(
   part: Part,
   thickness: number,
   openings: FacesLike | null = null,
-  options: { outward?: boolean; corners?: string | null; walls?: WallsLike | null } = {},
+  options: { outward?: boolean; corners?: 'round' | 'sharp' | null; walls?: WallsLike | null } = {},
 ): Part {
   _opts('shell', options)
   return part.shell(thickness, openings, options)
 }
 
 /** Options of the function `offset`: `corners` for a part, a sketch or a wire, `plane` for a wire or an edge. */
-export type OffsetFunctionOptions = { corners?: string; round?: boolean | null; plane?: Plane | null }
+export type OffsetFunctionOptions = { corners?: 'round' | 'sharp' | 'chamfer'; plane?: Plane | null }
 /** Grow or shrink a part or a sketch by `distance` (also the option `corners`: for a part
  * `"sharp" | "round"`, see `Part.offset`; for a sketch `"round" | "sharp" | "chamfer"`, see
  * `Sketch.offset`), move a sheet or a face along its normals (`Shell.offset`, `Face.offset`: a
  * sheet), or move a wire or an edge sideways (`Wire.offset`, `Edge.offset`). */
-export function offset(shape: Part, distance: number, options?: OffsetFunctionOptions): Part
-export function offset(shape: Sketch, distance: number, options?: OffsetFunctionOptions): Sketch
-export function offset(shape: Shell | Face, distance: number, options?: OffsetFunctionOptions): Shell
-export function offset(shape: Wire, distance: number, options?: OffsetFunctionOptions): Wire
-export function offset(shape: Edge, distance: number, options?: OffsetFunctionOptions): Edge
+export function offset(shape: Part, distance: number, options?: { corners?: 'sharp' | 'round' }): Part
+export function offset(shape: Sketch, distance: number, options?: { corners?: 'round' | 'sharp' | 'chamfer' }): Sketch
+export function offset(shape: Shell | Face, distance: number): Shell
+export function offset(shape: Wire, distance: number, options?: { corners?: 'round' | 'sharp' | 'chamfer'; plane?: Plane | null }): Wire
+export function offset(shape: Edge, distance: number, options?: { plane?: Plane | null }): Edge
 export function offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: number, options?: OffsetFunctionOptions): Part | Sketch | Shell | Wire | Edge
 export function offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: number, options: OffsetFunctionOptions = {}): Part | Sketch | Shell | Wire | Edge {
   if (shape instanceof Sketch) return shape.offset(distance, options)
-  if (shape instanceof Part) return shape.offset(distance, options)
+  if (shape instanceof Part) return shape.offset(distance, options as { corners?: 'sharp' | 'round' })
   if (shape instanceof Wire) return shape.offset(distance, options)
   if (shape instanceof Edge) return shape.offset(distance, options)
   if (typeof (shape as Any)?.offset !== 'function') {
@@ -2442,7 +2449,7 @@ export function offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distan
 
 /** A mirrored copy of a shape. */
 export function mirror<S extends Shape>(shape: S, plane: Plane | Face | Axis | ShapeList<Face> = Plane.XZ): S {
-  return shape.mirror(plane)
+  return _subject(shape, 'mirror', 'a shape').mirror(plane)
 }
 
 /** Cut a part with a plane or along a sheet (see `Part.split`). */
@@ -2450,6 +2457,7 @@ export function split(part: Part, plane: Plane | Face | Shell, keep: 'both'): [P
 export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below'): Part
 export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below' | 'both'): Part | [Part, Part]
 export function split(part: Part, plane: Plane | Face | Shell, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
+  if (!(part instanceof Part)) throw new TypeError(`split takes a part, not a ${_typeName(part)} (an edge or a wire splits with edge.split(t))`)
   return keep === 'both' ? part.split(plane, 'both') : part.split(plane, keep)
 }
 
@@ -2467,7 +2475,7 @@ export function merge(...parts: (Part | Iterable<Part>)[]): Part {
 
 /** Cross-section of a part (see `Part.section`). */
 export function section(part: Part, plane: Plane | Face = Plane.XY): Sketch {
-  return part.section(plane)
+  return _subject(part, 'section', 'a part or a mesh').section(plane)
 }
 
 /** Turn a face or sheet into a solid of `thickness` (`both`: half of it to each side; see
@@ -2479,4 +2487,190 @@ export function thicken(surface: Shell | Face, thickness: number, options: { bot
   }
   // (in a scope: a face's sheet is freed at once)
   return scope(() => (surface instanceof Face ? surface.toShell() : surface).thicken(thickness, { both: options.both ?? false }))
+}
+
+/** The shape a function form works on, if it has the method of that name. */
+function _subject(shape: unknown, name: string, kinds: string): Any {
+  if (typeof (shape as Any)?.[name] !== 'function') throw new TypeError(`${name} takes ${kinds}, not a ${_typeName(shape)}`)
+  return shape
+}
+
+// -- Booleans -------------------------------------------------------------------------------------
+/** Union of bodies, Python's `a + b` (see `Part.fuse`, `Shell.fuse`, `Sketch.fuse`). */
+export function fuse(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch
+export function fuse(shape: Shell, ...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell
+export function fuse(shape: Part, ...others: (Part | Iterable<Part>)[]): Part
+export function fuse(shape: Part | Shell, ...others: Any[]): Part | Shell {
+  return _subject(shape, 'fuse', 'a part, a sheet or a sketch').fuse(...others)
+}
+
+/** A body less others, Python's `a - b` (see `Part.cut`, `Shell.cut`, `Sketch.cut`). */
+export function cut(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch
+export function cut(shape: Shell, ...others: (Part | Iterable<Part>)[]): Shell
+export function cut(shape: Part, ...others: (Part | Iterable<Part>)[]): Part
+export function cut(shape: Part | Shell, ...others: Any[]): Part | Shell {
+  return _subject(shape, 'cut', 'a part, a sheet or a sketch').cut(...others)
+}
+
+/** What bodies share, Python's `a & b` (see `Part.intersect`, `Shell.intersect`, `Sketch.intersect`). */
+export function intersect(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch
+export function intersect(shape: Shell, ...others: (Part | Iterable<Part>)[]): Shell
+export function intersect(shape: Part, sheet: Shell | Face): Shell
+export function intersect(shape: Part, ...others: (Part | Iterable<Part>)[]): Part
+export function intersect(shape: Part | Shell, ...others: Any[]): Part | Shell {
+  return _subject(shape, 'intersect', 'a part, a sheet or a sketch').intersect(...others)
+}
+
+/** The region in exactly one of the sketches, Python's `a ^ b` (see `Sketch.xor`). */
+export function xor(sketch: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch {
+  return _subject(sketch, 'xor', 'a sketch').xor(...others)
+}
+
+/** The part's faces split where a tool crosses them (see `Part.imprint`). */
+export function imprint(
+  part: Part,
+  tool: Part | Shell | Face | ShapeList<Face> | Edge | Wire | Iterable<Edge | Wire>,
+  direction: Axis | VectorLike | null = null,
+  options: { nearest?: boolean } = {},
+): Part {
+  _opts('imprint', options)
+  return _subject(part, 'imprint', 'a part').imprint(tool, direction, options)
+}
+
+// -- features and direct editing ------------------------------------------------------------------
+/** The surfaces of a fillet's rounds as untrimmed sheets, the part unchanged (see
+ * `Part.filletPreview`); takes the edges, as `fillet` does. */
+export function filletPreview(edges: EdgesLike, radius: number, options: { propagate?: boolean } = {}): ShapeList<Shell> {
+  _opts('filletPreview', options)
+  return _ownerPart(edges).filletPreview(edges, radius, options)
+}
+
+/** Tilt faces by a draft angle about a neutral plane (see `Part.draft`). */
+export function draft(part: Part, faces: FacesLike, angle: number, neutralPlane: Plane | Face): Part {
+  return _subject(part, 'draft', 'a part').draft(faces, angle, neutralPlane)
+}
+
+/** Move faces by a vector or a location, the part rebuilt around them (see `Part.moveFaces`). */
+export function moveFaces(part: Part, faces: FacesLike, by: Location | VectorLike): Part {
+  return _subject(part, 'moveFaces', 'a part').moveFaces(faces, by)
+}
+
+/** Offset faces along their normals, the part rebuilt around them (see `Part.offsetFaces`). */
+export function offsetFaces(part: Part, faces: FacesLike, distance: number): Part {
+  return _subject(part, 'offsetFaces', 'a part').offsetFaces(faces, distance)
+}
+
+/** The part with a hole, a boss or a pocket taken out (see `Part.removeFaces`). */
+export function removeFaces(part: Part, faces: FacesLike, options: { partial?: boolean } = {}): Part {
+  _opts('removeFaces', options)
+  return _subject(part, 'removeFaces', 'a part').removeFaces(faces, options)
+}
+
+/** The part with fillets taken out and their edges sharp again (see `Part.removeFillets`). */
+export function removeFillets(part: Part, faces: FacesLike | null = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
+  _opts('removeFillets', options)
+  return _subject(part, 'removeFillets', 'a part').removeFillets(faces, options)
+}
+
+// -- shaping parts and sheets ---------------------------------------------------------------------
+/** A smooth dent or bump in a face at a point (see `Part.push`, `Shell.push`). */
+export function push(shape: Part, face: Face, at: VectorLike, options?: PushOptions): Part
+export function push(shape: Shell, face: Face, at: VectorLike, options?: PushOptions): Shell
+export function push(shape: Part | Shell, face: Face, at: VectorLike, options: PushOptions = {}): Part | Shell {
+  _opts('push', options)
+  return _subject(shape, 'push', 'a part or a sheet').push(face, at, options)
+}
+
+/** Raise or sink a region of a face (see `Part.warp`, `Shell.warp`). */
+export function warp(shape: Part, face: Face, region: RegionLike, by: number | VectorLike, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Part
+export function warp(shape: Shell, face: Face, region: RegionLike, by: number | VectorLike, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Shell
+export function warp(shape: Part | Shell, face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part | Shell {
+  _opts('warp', options)
+  return _subject(shape, 'warp', 'a part or a sheet').warp(face, region, by, options)
+}
+
+/** Press a region of a face onto a plane (see `Part.flatten`, `Shell.flatten`). */
+export function flatten(shape: Part, face: Face, region: RegionLike, plane: Plane | Face, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Part
+export function flatten(shape: Shell, face: Face, region: RegionLike, plane: Plane | Face, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Shell
+export function flatten(shape: Part | Shell, face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part | Shell {
+  _opts('flatten', options)
+  return _subject(shape, 'flatten', 'a part or a sheet').flatten(face, region, plane, options)
+}
+
+/** Extend a sheet or a face past its edges (options `sides`, `continuity`: see `Shell.extend`,
+ * `Face.extend`), or an edge past an end (`end`, `continuity`: see `Edge.extend`). */
+export function extend(shape: Edge, distance: number, options?: { end?: 'start' | 'end' | 'both'; continuity?: 'G1' | 'G2' | 'natural' }): Edge
+export function extend(shape: Shell | Face, distance: number, options?: { sides?: Edge | Iterable<Edge> | null; continuity?: 'natural' | 'G1' | 'G2' }): Shell
+export function extend(shape: Shell | Face | Edge, distance: number, options: Record<string, unknown> = {}): Shell | Edge {
+  return _subject(shape, 'extend', 'a sheet, a face or an edge').extend(distance, options)
+}
+
+/** Trim a sheet with curves on it, keeping a side (`trim(sheet, curves, keep)`: see `Shell.trim`), or
+ * an edge or a wire to a stretch of it (`trim(edge, start, end)`: see `Edge.trim`, `Wire.trim`). */
+export function trim(shape: Shell, curves: Edge | Wire | Iterable<Edge | Wire>, keep: VectorLike | string): Shell
+export function trim(shape: Edge, start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Edge
+export function trim(shape: Wire, start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Wire
+export function trim(shape: Shell | Edge | Wire, ...args: Any[]): Shell | Edge | Wire {
+  return _subject(shape, 'trim', 'a sheet, an edge or a wire').trim(...args)
+}
+
+/** An edge of a sheet moved onto a curve (see `Shell.matchEdge`). */
+export function matchEdge(sheet: Shell, edge: Edge, target: Edge | Wire, options: { extent?: number } = {}): Shell {
+  _opts('matchEdge', options)
+  return _subject(sheet, 'matchEdge', 'a sheet').matchEdge(edge, target, options)
+}
+
+/** Two faces of a sheet that share a side made one (see `Shell.mergeFaces`). */
+export function mergeFaces(sheet: Shell, a: Face, b: Face): Shell {
+  return _subject(sheet, 'mergeFaces', 'a sheet').mergeFaces(a, b)
+}
+
+// -- curves and sketches made from bodies ---------------------------------------------------------
+/** A curve projected onto a body along a direction (see `Part.project`), or onto a face along its
+ * normals (see `Face.project`). */
+export function project(shape: Face, curve: Edge | Wire): ShapeList<Edge>
+export function project(shape: Part | Shell, curve: Edge | Wire, direction?: Axis | VectorLike, options?: { nearest?: boolean }): ShapeList<Edge>
+export function project(shape: Part | Shell | Face, curve: Edge | Wire, ...rest: Any[]): ShapeList<Edge> {
+  return _subject(shape, 'project', 'a part, a sheet or a face').project(curve, ...rest)
+}
+
+/** The lines of a view of a body, also its hidden ones (see `Part.outline`). */
+export function outline(shape: Part | Shell, plane?: Plane, options?: { hidden?: false; tangentEdges?: boolean }): ShapeList<Edge>
+export function outline(shape: Part | Shell, plane: Plane | undefined, options: { hidden: true; tangentEdges?: boolean }): [ShapeList<Edge>, ShapeList<Edge>]
+export function outline(
+  shape: Part | Shell,
+  plane: Plane = Plane.XY,
+  options: { hidden?: boolean; tangentEdges?: boolean } = {},
+): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] {
+  _opts('outline', options)
+  return _subject(shape, 'outline', 'a part or a sheet').outline(plane, options)
+}
+
+/** The contour of a body seen along a direction (see `Part.silhouette`). */
+export function silhouette(shape: Part | Shell, direction: Axis | VectorLike = [0, 0, 1]): ShapeList<Edge> {
+  return _subject(shape, 'silhouette', 'a part or a sheet').silhouette(direction)
+}
+
+/** The curves where a body meets another, a face or a plane (see `Part.intersectionCurves`). */
+export function intersectionCurves(shape: Part | Shell, other: Part | Shell | Face | Plane): ShapeList<Edge> {
+  return _subject(shape, 'intersectionCurves', 'a part or a sheet').intersectionCurves(other)
+}
+
+/** The parting lines of a part for a pull direction (see `Part.partingLine`). */
+export function partingLine(part: Part, direction: Axis | VectorLike): ShapeList<Wire> {
+  return _subject(part, 'partingLine', 'a part').partingLine(direction)
+}
+
+/** Sections of a part (sketches) or a mesh (wires) every `step` along an axis (see `Part.slices`,
+ * `Mesh.slices`). */
+export function slices(shape: Part, step: number, axis?: Axis | VectorLike): Sketch[]
+export function slices(shape: Mesh, step: number, axis?: Axis | VectorLike): ShapeList<Wire>[]
+export function slices(shape: Part | Mesh, step: number, axis: Axis | VectorLike = Z): Sketch[] | ShapeList<Wire>[] {
+  return _subject(shape, 'slices', 'a part or a mesh').slices(step, axis)
+}
+
+// -- changing a shape's size ----------------------------------------------------------------------
+/** A scaled copy of a shape or a mesh, about `center` (see `Shape.scale`). */
+export function scale<S extends Shape | Mesh>(shape: S, factor: number | VectorLike, center: VectorLike = [0, 0, 0]): S {
+  return _subject(shape, 'scale', 'a shape or a mesh').scale(factor, center)
 }

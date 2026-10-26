@@ -179,7 +179,7 @@ def gltf_triangles(doc, buf, prim):
 
 
 def test_exports_and_renderer_take_the_halved_mesh(tmp_path):
-    from smlibpy.render import _Scene
+    from smlibpy.pictures import _Scene
 
     bar = Box(20, 20, 100).twist(90)
     mesh = bar.mesh()

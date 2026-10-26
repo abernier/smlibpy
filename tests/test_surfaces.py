@@ -256,3 +256,12 @@ def test_fills_of_a_sketch_s_outline_run_through_the_curves():
     holed = Rectangle(20, 20) - Circle(4)
     hole = [e for e in holed.edges() if e.geom_type == "circle"]
     assert fill(hole).area == pytest.approx(math.pi * 16, rel=1e-6)  # (a hole: tangent to the region around it)
+
+
+def test_a_closed_grid_tube_that_thickens_into_no_volume_raises():
+    # (the kernel's body has volume -1e-12 and is_valid() refuses it; its coarse volume did not show it)
+    tube = surface([[(10 * math.cos(a), 10 * math.sin(a), z) for a in np.linspace(0, 2 * math.pi, 9)]
+                    for z in (0, 10, 20, 30)])
+    with pytest.raises(ModelingError, match="thicken: the kernel returned a body that is without volume"):
+        tube.thicken(1)
+    assert Box(20, 20, 20).faces().top()[0].to_shell().thicken(2).volume == pytest.approx(800)

@@ -76,6 +76,8 @@ class Mesh:
     # -- measures -------------------------------------------------------------
     @property
     def triangle_normals(self) -> np.ndarray:
+        """The normal (length 1) of every triangle, an (n, 3) array; it follows the right-hand rule
+        of the triangle's corners."""
         v = self.vertices[self.triangles]
         n = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
         ln = np.linalg.norm(n, axis=1, keepdims=True)
@@ -83,6 +85,7 @@ class Mesh:
 
     @property
     def area(self) -> float:
+        """The total area of the triangles."""
         v = self.vertices[self.triangles]
         return float(0.5 * np.linalg.norm(np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]), axis=1).sum())
 
@@ -97,6 +100,7 @@ class Mesh:
         return float(np.einsum("ij,ij->i", v[:, 0], np.cross(v[:, 1], v[:, 2])).sum() / 6.0)
 
     def bbox(self) -> BoundBox:
+        """The box along the axes around the mesh's points; ValueError for an empty mesh."""
         if not len(self.vertices):
             raise ValueError("an empty mesh has no bounding box")
         return BoundBox(self.vertices.min(axis=0), self.vertices.max(axis=0))
@@ -566,6 +570,7 @@ class Mesh:
                 handle.dispose()
 
     def export(self, path: str, **kwargs: Any) -> None:
+        """Write the mesh to a file; the format follows the extension (see :func:`smlibpy.export`)."""
         from .exporters import export
 
         export(self, path, **kwargs)

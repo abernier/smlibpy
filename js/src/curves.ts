@@ -821,7 +821,9 @@ function _nearest(q: readonly number[][], us: readonly number[], u0: readonly nu
  * and takes more control points (spread evenly over the points) until every point is within the
  * tolerance, measured to the nearest point of the curve. An open curve runs from the first point to
  * the last; where the points run smoothly there and no tangent is given, it leaves them in the points'
- * own direction. A tolerance below the points' noise makes the curve go through them all.
+ * own direction. Below the points' noise it takes up to a control point per point, and where even that
+ * does not keep within the tolerance it throws a `ModelingError` with the distance it reached (`Spline`
+ * passes through every point).
  *
  * `points`: the points in order along the curve (2D points lie at z = 0). Options: `tolerance`, the
  * largest distance from any point to the curve (default: 1/1000 of the size of the points);
@@ -969,7 +971,9 @@ export function Helix(
  * the angle from `startRadius` to `endRadius` over `turns` turns. It starts on the plane's X axis and
  * turns counterclockwise seen from the plane's normal (`clockwise: true`: the other way). Either
  * radius may be 0 (a spiral from or to the center). For spiral springs, scroll grooves and coils; a
- * B-spline within 1e-4 of the exact spiral, as `Helix`, of any number of turns.
+ * B-spline within 1e-4 of the exact spiral, as `Helix`. Less than a turn with a large change of radius
+ * (`Spiral(2, 20, 0.5)`) and very many turns (`Spiral(20, 0, 130)`) are beyond the kernel's
+ * approximation: a `KernelError`, whose hint says what makes such a curve.
  *
  * `Spiral(2, 20, 5)` runs from (2, 0) to (20, 0) in five turns, 9/5 = 3.6 apart.
  */
@@ -996,7 +1000,8 @@ export function Spiral(startRadius: number, endRadius: number, turns: number, pl
     if (r0 === 0) poles[0] = [0, 0, 0]
     if (r1 === 0) poles[poles.length - 1] = [0, 0, 0]
     return _canonicalCurve(poles, d.knots, d.degree, d.weights)
-  })
+  }, 'the kernel could not approximate this spiral (it fails for less than a turn with a large change of radius, '
+    + 'and for some numbers of turns, such as 130 from 20 to 0); fitCurve through points of the spiral makes it')
   return _placed(flat, plane)
 }
 
@@ -1043,7 +1048,7 @@ function _fp(v: Vector): string {
 /** Round the corners of a wire (Wire.fillet): a planar wire's corners between lines and arcs exactly
  * in its plane (as Sketch.fillet), a wire that is not planar its corners between lines. Corners that
  * cannot be rounded throw, named or not; points that are not corners throw. */
-export function _filletWire(wire: Wire, radius: number, vertices: Iterable<VectorLike | Vertex> | null): Wire {
+export function _filletWire(wire: Wire, radius: number, vertices: VectorLike | Vertex | Iterable<VectorLike | Vertex> | null): Wire {
   if (!(radius > 0)) throw new RangeError('fillet: the radius must be positive')
   const edges = [...wire.edges()]
   const n = edges.length
@@ -1054,7 +1059,10 @@ export function _filletWire(wire: Wire, radius: number, vertices: Iterable<Vecto
   const joints = Array.from({ length: closed ? n : n - 1 }, (_, i) => i) // corner i: where edges[i] ends and edges[i + 1] starts
   let chosen = new Set(joints)
   if (vertices != null) {
-    const targets = [...vertices].map((v) => (v instanceof Vertex ? v.point : _vec(v)))
+    // (one corner, as Sketch.fillet takes it)
+    const one = vertices instanceof Vertex || vertices instanceof Vector
+      || (Array.isArray(vertices) && vertices.length > 0 && vertices.every((c) => typeof c === 'number'))
+    const targets = [...(one ? [vertices] : vertices as Iterable<VectorLike | Vertex>)].map((v) => (v instanceof Vertex ? v.point : _vec(v as VectorLike)))
     if (!targets.length) throw new RangeError('fillet: no corners given (the selection is empty)')
     chosen = new Set()
     const missing: Vector[] = []

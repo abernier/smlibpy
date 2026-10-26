@@ -227,7 +227,7 @@ class _Worker:
                     compare: str | None = None, **options: Any) -> dict[str, Any]:
         """A picture of what is shown. ``highlight`` and a ``section`` given as text are Python
         expressions evaluated in the session; ``compare`` is the path of an earlier snapshot."""
-        from smlibpy.render import diff_images, render
+        from smlibpy.pictures import diff_images, render
 
         items = self._items(names)
         if not items:
@@ -362,7 +362,7 @@ class _Worker:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         shapes = [s.named(n) if hasattr(s, "named") and not getattr(s, "name", None) else s for n, s in items]
         if ext == ".png":
-            from smlibpy.render import render
+            from smlibpy.pictures import render
 
             render(*shapes, path=path, size=(1200, 900))
         elif ext == ".smb":

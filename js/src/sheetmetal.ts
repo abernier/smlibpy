@@ -23,7 +23,7 @@ import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _list, _merge
 import { CenterArc, Line, ThreePointArc, _mod, _withOptions } from './curves.ts'
 import { tessellate } from './mesh.ts'
 import { Box } from './parts.ts'
-import { type _Spec, _Plan, _imprint, _run } from './deform.ts'
+import { type _Spec, _Plan, _imprint, _run } from './deformations.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
 type Any = any
@@ -1204,7 +1204,7 @@ function _strip(g: _BendGeom, nr: number): number {
   return (inside * nr) / g.radius
 }
 
-/** `part` sent through a deformation (deform.ts), with this module's hint on failure. */
+/** `part` sent through a deformation (deformations.ts), with this module's hint on failure. */
 function _deformed(part: Part, spec: _Spec, ratio: [number, number], what: string, hint: string): Part {
   try {
     return _run(new _Plan(part, spec, ratio), what, part) as Part

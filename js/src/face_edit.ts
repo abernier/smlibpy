@@ -298,7 +298,7 @@ function _across(body: Part, f: Face, reach: number, facing: number): Face {
  * outward the outside) is edited, and the shell is the Boolean difference of the part and it. */
 export function shellWalls(part: Part, shelled: Part, walls: readonly [Face, number][], t: number, outward: boolean, closed: boolean): Part {
   const corners = shelled.info().corners ?? 'round'
-  const body = closed ? part.offset(outward ? t : -t, { corners }) : shelled
+  const body = closed ? part.offset(outward ? t : -t, { corners: corners as 'sharp' | 'round' }) : shelled
   // (the face across the wall faces the other way in a shell with walls grown inward; the cavity as a
   // body of its own faces the way the part does)
   const facing = outward || closed ? 1 : -1

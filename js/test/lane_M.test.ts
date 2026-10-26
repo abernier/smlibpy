@@ -237,7 +237,7 @@ test('drawing views, first and third angle, as DXF and SVG', () => {
   approx(third.get('right')!.min.x, 25)
   approx(third.get('back')!.min.x, third.get('right')!.max.x + 5)
   assert.throws(() => drawingViews(part, ['front', 'side']), /unknown view 'side'/)
-  assert.throws(() => drawingViews(part, 'front', { projection: 'second-angle' }), RangeError)
+  assert.throws(() => drawingViews(part, 'front', { projection: 'second-angle' as never }), RangeError)
   const dxf = toDxf(views)
   assert.ok(dxf.includes('\nDASHED\n'))
   approx(total(fromDxfWires(dxf, { layers: 'HIDDEN' })), 80)

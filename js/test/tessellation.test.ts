@@ -42,7 +42,7 @@ import {
 import { ext, k } from '../src/kernel.ts'
 import { gltfDocument } from '../src/exporters.ts'
 import { _tessellate, faceMeshes } from '../src/mesh.ts'
-import * as render from '../src/render.ts'
+import * as render from '../src/pictures.ts'
 import { approx } from './_approx.ts'
 import { Box as _Box, Cylinder as _Cylinder, Mesh as _Mesh } from '../src/index.ts'
 import { fromStl as _fromStl, toStl as _toStl } from '../src/exporters.ts'

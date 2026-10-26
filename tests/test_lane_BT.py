@@ -950,3 +950,11 @@ def test_named_and_colored_share_the_brep_not_the_identity():
     # a sketch keeps its plane
     s = Rectangle(10, 4).on(Plane.XZ).named("r")
     assert s.plane.z_dir == Plane.XZ.z_dir and s._h is not None
+
+
+def test_an_unknown_color_name_is_not_read_as_hex():
+    from smlibpy.colors import to_rgb
+
+    with pytest.raises(ValueError, match="unknown color 'maroon'"):
+        to_rgb("maroon")
+    assert to_rgb("abc") == to_rgb("#aabbcc") and to_rgb("#a52a2a") == to_rgb("brown")

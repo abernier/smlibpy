@@ -67,6 +67,15 @@ the Python code works around a kernel defect, so does the TypeScript.
   tests/test_js_options.py and js/test/options.test.ts fail until then). Constructors of parts,
   sketches and patterns pass `arguments.length` too. An options object is a plain object, also
   one of another realm (an iframe, `node:vm`); an instance of a class is not.
+- **Choices.** An option Python types as `Literal["round", "sharp"]` is a union of the same
+  strings (`corners?: 'round' | 'sharp'`), checked at run time as well. A parameter Python
+  renamed with `@renamed` (the old name still works there, with a DeprecationWarning) has only
+  its new name here: `_opts` names it for a caller who passes the old one.
+- **Operations** are methods and functions in both (AGENTS.md, "The API"): the function form
+  checks that it got a body with that method (`_subject`) and calls it, `draft(part, faces, 3,
+  Plane.XY)` being `part.draft(faces, 3, Plane.XY)`. js/test/api_forms.test.ts checks that
+  smlibwasm has every name smlibpy has (`js/test/_python_api.json`, which
+  `tools/gen_js_options.py` writes) and that the two forms give the same results.
 - **Properties** stay properties (getters): `edge.length`, `face.area`, `part.volume`,
   `face.geomType`, `list.first`. Methods stay methods.
 - **Operators** become methods:
@@ -139,7 +148,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
   `step_reader.ts`: `_repr`, `interpretExtras` (occt.ts quotes names with `_repr`); `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
-  with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
+  with it); `step_import.ts`: `StepModel` (pictures.ts draws it); `shapes.ts`: `_held` (deformations.ts
   holds the copies of a Boolean's operands with it), `_curvesOf` (surfaces.ts takes `fill`'s
   curves with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `WHOLE_TURN` (parts.ts makes
@@ -149,11 +158,11 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_push`, `_warp`, `_flatten`, `_checked` (the push, warp and flatten of Part and Shell), `_ownFace`
   (sheet_edit.ts takes a sheet's faces with it); `sheet_edit.ts`: `_matchEdge`, `_mergeFaces` (Shell's
   `matchEdge` and `mergeFaces`); `mesh.ts`: `_rayTriangles`, `faceMeshes`, `_rays`,
-  `_triangleFaces`, `_tessellate` (shapes.ts casts rays with them; render.ts takes `_tessellate`),
+  `_triangleFaces`, `_tessellate` (shapes.ts casts rays with them; pictures.ts takes `_tessellate`),
   `_levels` (shapes.ts slices parts with it), `_deviation` (its test), `_coloredMesh`,
-  `_triangleColors` (exporters.ts, usd.ts and render.ts color faces with them);
+  `_triangleColors` (exporters.ts, usd.ts and pictures.ts color faces with them);
   `dxf.ts`: `_entity`, `_edgePoints`, `_samplesFor` (drawing.ts writes SVG with them);
-  `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `draft.ts`:
+  `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `molding.ts`:
   `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`,
   `_dropBrep`, `_underDeadline` (surfaces.ts and shapes.ts free with the one, the tests hold a step
   with the other), `_smb` (surfaces.ts blends surfaces in it), `_smbOf`, `_isolated` and

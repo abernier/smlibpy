@@ -30,7 +30,7 @@ def to_rgb(color: Any) -> tuple[float, float, float]:
         c = c.lstrip("#")
         if len(c) == 3:
             c = "".join(ch * 2 for ch in c)
-        if len(c) != 6:
+        if len(c) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in c):
             raise ValueError(f"unknown color {color!r}")
         return (int(c[0:2], 16) / 255, int(c[2:4], 16) / 255, int(c[4:6], 16) / 255)
     r, g, b = (float(x) for x in list(color)[:3])

@@ -697,6 +697,21 @@ def test_spiral():
     assert groove.is_valid() and groove.volume == approx(0.5 * s.length, rel=1e-3)
     with pytest.raises(ValueError, match="must differ"):
         Spiral(5, 5, 3)
+    with pytest.raises(KernelError, match="fit_curve through points of the spiral makes it"):
+        Spiral(2, 20, 0.5)  # (less than a turn with a large change of radius)
+
+
+def test_a_wire_rounds_one_corner_given_alone():
+    w = Polyline((0, 0), (20, 0), (20, 20))
+    one = w.fillet(2, (20, 0))
+    assert len(one.edges()) == 3 and one.length == approx(36 + math.pi)
+    assert w.fillet(2, w.vertices()[1]).length == approx(one.length) == approx(w.fillet(2, [(20, 0)]).length)
+
+
+def test_a_wire_offset_that_collapses_says_so():
+    # (the inside of a strip 2 wide, moved 2 inward: its short sides shrink to nothing)
+    with pytest.raises(ModelingError, match="moved by 2, a side of it shrinks to nothing"):
+        Polyline((0, 0), (40, 0), (40, 2), (0, 2), close=True).offset(-2)
 
 
 # -- C15: fillets of wires and sketches at arcs, splines and ellipses --------------------------------

@@ -1,4 +1,4 @@
-// The software renderer (src/render.ts): views, line style, drawings and the other options,
+// The software renderer (src/pictures.ts): views, line style, drawings and the other options,
 // checked on the pixels they produce; and the viewer's page (src/viewer.ts).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { ImageDiff, Picture, _Camera, _FONT, _LABEL, _Scene, _curvatureSpec, _pngDecode, _text, _valueText, diffImages, render, type RenderOptions } from '../src/render.ts'
+import { ImageDiff, Picture, _Camera, _FONT, _LABEL, _Scene, _curvatureSpec, _pngDecode, _text, _valueText, diffImages, render, type RenderOptions } from '../src/pictures.ts'
 import { htmlPage, show } from '../src/viewer.ts'
 import { Box, Cylinder, Sphere } from '../src/parts.ts'
 import { Circle } from '../src/sketches.ts'

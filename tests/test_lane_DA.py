@@ -307,8 +307,8 @@ def test_continuity_of_fillet_borders():
     seam = Cylinder(5, 10).edges(seams=True).filter(lambda e: e.is_seam)[0].continuity()
     assert seam.level == "G2" and seam.angle <= 1e-9
     # other tolerances, by keyword
-    assert borders[0].continuity(angle_tol=1e-12).level == "G1"
-    assert borders[0].continuity(curvature_tol=10).level == "G2"
+    assert borders[0].continuity(angle_tolerance=1e-12).level == "G1"
+    assert borders[0].continuity(curvature_tolerance=10).level == "G2"
     with pytest.raises(ValueError, match="free curve"):
         Line((0, 0, 0), (1, 0, 0)).continuity()
     with pytest.raises(ValueError, match="between two faces"):
@@ -463,14 +463,14 @@ def _kinds(shapes) -> dict:
 
 
 def _deviation(plan, result) -> float:
-    from smlibpy import deform as D
+    from smlibpy import deformations as D
     from smlibpy._kernel import k
 
     return max(k.deform.deviation(plan.shape._brep, result._brep, dict(plan.spec, max_degree=D.MAX_DEGREE), 9).values())
 
 
 def test_a_bent_plate_has_exact_cylinders_and_circles():
-    from smlibpy import deform as D
+    from smlibpy import deformations as D
 
     plate = Box(200, 40, 10)
     bent = plate.bend(90, radius=25)
@@ -562,7 +562,7 @@ def test_bent_parts_write_cylinders_to_step(tmp_path):
 
 
 def test_the_kernel_report_counts_analytic_faces_and_can_leave_them_out():
-    from smlibpy import deform as D
+    from smlibpy import deformations as D
     from smlibpy._kernel import k
 
     plan = D._plan_bend(Box(200, 40, 10), 90.0, 25, Plane.XZ, None, None, 1e-6)

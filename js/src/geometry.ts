@@ -24,8 +24,11 @@ export type Matrix = Float64Array
  * iterate over their coordinates.
  */
 export class Vector {
+  /** The x coordinate. */
   readonly x: number
+  /** The y coordinate. */
   readonly y: number
+  /** The z coordinate. */
   readonly z: number
 
   constructor(x?: number | VectorLike, y?: number, z?: number) {
@@ -66,11 +69,13 @@ export class Vector {
   }
 
   // -- arithmetic ---------------------------------------------------------------------------
+  /** The sum of the two vectors (Python's `+`). */
   add(other: VectorLike): Vector {
     const o = _vec(other)
     return new Vector(this.x + o.x, this.y + o.y, this.z + o.z)
   }
 
+  /** The difference of the two vectors (Python's `-`). */
   sub(other: VectorLike): Vector {
     const o = _vec(other)
     return new Vector(this.x - o.x, this.y - o.y, this.z - o.z)
@@ -82,10 +87,12 @@ export class Vector {
     return new Vector(this.x * s, this.y * s, this.z * s)
   }
 
+  /** The vector divided by a number (Python's `/`). */
   div(s: number): Vector {
     return new Vector(this.x / s, this.y / s, this.z / s)
   }
 
+  /** The vector pointing the other way (Python's unary `-`). */
   neg(): Vector {
     return new Vector(-this.x, -this.y, -this.z)
   }
@@ -115,26 +122,31 @@ export class Vector {
   }
 
   // -- vector algebra -----------------------------------------------------------------------
+  /** The length (for a point: its distance from the origin). */
   get length(): number {
     return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z)
   }
 
+  /** The dot product with another vector. */
   dot(other: VectorLike): number {
     const o = _vec(other)
     return this.x * o.x + this.y * o.y + this.z * o.z
   }
 
+  /** The cross product with another vector: at right angles to both (right-handed). */
   cross(other: VectorLike): Vector {
     const o = _vec(other)
     return new Vector(this.y * o.z - this.z * o.y, this.z * o.x - this.x * o.z, this.x * o.y - this.y * o.x)
   }
 
+  /** The vector scaled to length 1; RangeError for a zero-length vector. */
   normalized(): Vector {
     const n = this.length
     if (n < 1e-300) throw new RangeError('cannot normalize a zero-length vector')
     return this.div(n)
   }
 
+  /** The distance to another point. */
   distanceTo(other: VectorLike): number {
     return this.sub(other).length
   }
@@ -148,18 +160,20 @@ export class Vector {
     return _degrees(Math.acos(c))
   }
 
-  isClose(other: VectorLike, tol: number = TOLERANCE): boolean {
-    return this.sub(other).length <= tol
+  /** True if the two points are at most `tolerance` apart (mm). */
+  isClose(other: VectorLike, tolerance: number = TOLERANCE): boolean {
+    return this.sub(other).length <= tolerance
   }
 
-  /** True if both vectors point along the same line (either sense). */
-  isParallel(other: VectorLike, angleTol = 1e-4): boolean {
+  /** True if both vectors point along the same line (either sense), within `angleTolerance` degrees. */
+  isParallel(other: VectorLike, angleTolerance = 1e-4): boolean {
     const a = this.angleTo(other)
-    return a <= angleTol || a >= 180 - angleTol
+    return a <= angleTolerance || a >= 180 - angleTolerance
   }
 
-  isPerpendicular(other: VectorLike, angleTol = 1e-4): boolean {
-    return Math.abs(this.angleTo(other) - 90) <= angleTol
+  /** True if the vectors are at right angles, within `angleTolerance` degrees. */
+  isPerpendicular(other: VectorLike, angleTolerance = 1e-4): boolean {
+    return Math.abs(this.angleTo(other) - 90) <= angleTolerance
   }
 
   /** Rotate this point about an axis (through the origin for a plain vector). */
@@ -256,11 +270,16 @@ export function _isPointLike(v: unknown): v is VectorLike {
  * used to rotate, revolve, mirror, and to sort or filter shapes.
  */
 export class Axis {
+  /** The world X axis, through the origin. */
   static X: Axis
+  /** The world Y axis, through the origin. */
   static Y: Axis
+  /** The world Z axis, through the origin. */
   static Z: Axis
 
+  /** A point of the axis (the one it was made with). */
   readonly origin: Vector
+  /** The axis's direction, of length 1. */
   readonly direction: Vector
 
   constructor(origin: VectorLike = [0, 0, 0], direction: VectorLike = [0, 0, 1]) {
@@ -268,16 +287,19 @@ export class Axis {
     this.direction = _vec(direction).normalized()
   }
 
+  /** The axis pointing the other way (Python's unary `-`), the same as `reversed()`. */
   neg(): Axis {
     return this.reversed()
   }
 
+  /** The axis through the same point, pointing the other way. */
   reversed(): Axis {
     return new Axis(this.origin, this.direction.neg())
   }
 
-  moved(loc: Location): Axis {
-    return new Axis(loc.mul(this.origin), loc.rotateVector(this.direction))
+  /** The axis moved by a location: its origin moved, its direction turned. */
+  moved(location: Location): Axis {
+    return new Axis(location.mul(this.origin), location.rotateVector(this.direction))
   }
 
   /** The same direction through another point. */
@@ -285,16 +307,20 @@ export class Axis {
     return new Axis(origin, this.direction)
   }
 
-  isParallel(other: Axis | VectorLike, angleTol = 1e-4): boolean {
+  /** True if the axis runs along another axis or a direction (either sense), within
+   * `angleTolerance` degrees. */
+  isParallel(other: Axis | VectorLike, angleTolerance = 1e-4): boolean {
     const d = other instanceof Axis ? other.direction : _vec(other)
-    return this.direction.isParallel(d, angleTol)
+    return this.direction.isParallel(d, angleTolerance)
   }
 
+  /** The distance of a point from the axis (the whole line). */
   distanceTo(point: VectorLike): number {
     const p = _vec(point).sub(this.origin)
     return p.sub(this.direction.mul(p.dot(this.direction))).length
   }
 
+  /** The point of the axis (the whole line) nearest to a point. */
   project(point: VectorLike): Vector {
     const p = _vec(point)
     return this.origin.add(this.direction.mul(p.sub(this.origin).dot(this.direction)))
@@ -471,6 +497,7 @@ export class Location {
     return [0, 1, 2, 3].map((r) => [m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]])
   }
 
+  /** Where the location moves the origin to. */
   get position(): Vector {
     return new Vector(this._m[3], this._m[7], this._m[11])
   }
@@ -494,14 +521,17 @@ export class Location {
     return new Vector(_degrees(x), _degrees(y), _degrees(z))
   }
 
+  /** Where the location turns the X direction to. */
   get xDir(): Vector {
     return new Vector(this._m[0], this._m[4], this._m[8])
   }
 
+  /** Where the location turns the Y direction to. */
   get yDir(): Vector {
     return new Vector(this._m[1], this._m[5], this._m[9])
   }
 
+  /** Where the location turns the Z direction to. */
   get zDir(): Vector {
     return new Vector(this._m[2], this._m[6], this._m[10])
   }
@@ -511,6 +541,7 @@ export class Location {
     return new Plane(this.position, this.xDir, this.zDir)
   }
 
+  /** The location that undoes this one. */
   inverse(): Location {
     const a = this._m
     const m = _identity()
@@ -520,6 +551,7 @@ export class Location {
     return new Location(m)
   }
 
+  /** A direction turned by the location's rotation (its translation left out). */
   rotateVector(v: VectorLike): Vector {
     return _applyVector(this._m, _vec(v))
   }
@@ -605,21 +637,36 @@ interface HasFacePlane {
  * `face.plane`.
  */
 export class Plane {
+  /** Through the origin, X direction [1, 0, 0], normal [0, 0, 1]. */
   static XY: Plane
+  /** Through the origin, X direction [0, 1, 0], normal [1, 0, 0]. */
   static YZ: Plane
+  /** Through the origin, X direction [0, 0, 1], normal [0, 1, 0]. */
   static ZX: Plane
+  /** Through the origin, X direction [1, 0, 0], normal [0, -1, 0]. */
   static XZ: Plane
+  /** Through the origin, X direction [0, 1, 0], normal [0, 0, -1]. */
   static YX: Plane
+  /** Through the origin, X direction [0, 0, 1], normal [-1, 0, 0]. */
   static ZY: Plane
+  /** Through the origin, X direction [1, 0, 0], normal [0, 0, 1]. */
   static top: Plane
+  /** Through the origin, X direction [1, 0, 0], normal [0, 0, -1]. */
   static bottom: Plane
+  /** Through the origin, X direction [1, 0, 0], normal [0, -1, 0]. */
   static front: Plane
+  /** Through the origin, X direction [-1, 0, 0], normal [0, 1, 0]. */
   static back: Plane
+  /** Through the origin, X direction [0, -1, 0], normal [-1, 0, 0]. */
   static left: Plane
+  /** Through the origin, X direction [0, 1, 0], normal [1, 0, 0]. */
   static right: Plane
 
+  /** The plane's origin. */
   readonly origin: Vector
+  /** The plane's X direction, of length 1. */
   readonly xDir: Vector
+  /** The plane's Y direction, of length 1: `zDir.cross(xDir)`. */
   readonly yDir: Vector
   /** The plane normal. */
   readonly zDir: Vector
@@ -688,8 +735,9 @@ export class Plane {
     return new Plane(this.location.mul(Rot(x, y, z)))
   }
 
-  moved(loc: Location): Plane {
-    return new Plane(loc.mul(this.origin), loc.rotateVector(this.xDir), loc.rotateVector(this.zDir))
+  /** The plane moved by a location: its origin moved, its axes turned. */
+  moved(location: Location): Plane {
+    return new Plane(location.mul(this.origin), location.rotateVector(this.xDir), location.rotateVector(this.zDir))
   }
 
   /** The same orientation through another origin. */
@@ -698,18 +746,21 @@ export class Plane {
   }
 
   // -- coordinates --------------------------------------------------------------------------
+  /** A point in the plane's coordinates: along its X and Y directions, and its height above it. */
   toLocal(point: VectorLike): Vector {
     const d = _vec(point).sub(this.origin)
     return new Vector(d.dot(this.xDir), d.dot(this.yDir), d.dot(this.zDir))
   }
 
+  /** The world coordinates of a point given in the plane's coordinates (see `toLocal`). */
   fromLocal(point: VectorLike): Vector {
     const p = _vec(point)
     return this.origin.add(this.xDir.mul(p.x)).add(this.yDir.mul(p.y)).add(this.zDir.mul(p.z))
   }
 
-  contains(point: VectorLike, tol: number = TOLERANCE): boolean {
-    return Math.abs(this.toLocal(point).z) <= tol
+  /** True if the point lies in the plane, at most `tolerance` (mm) off it. */
+  contains(point: VectorLike, tolerance: number = TOLERANCE): boolean {
+    return Math.abs(this.toLocal(point).z) <= tolerance
   }
 
   /** Signed distance of a point above the plane. */
@@ -717,12 +768,15 @@ export class Plane {
     return this.toLocal(point).z
   }
 
+  /** The point of the plane nearest to a point (straight along the normal). */
   project(point: VectorLike): Vector {
     return _vec(point).projectTo(this)
   }
 
-  isCoplanar(other: Plane, tol: number = TOLERANCE): boolean {
-    return this.zDir.isParallel(other.zDir) && Math.abs(this.distanceTo(other.origin)) <= tol
+  /** True if the other plane is the same plane (either facing), its origin at most `tolerance` (mm)
+   * off this one. */
+  isCoplanar(other: Plane, tolerance: number = TOLERANCE): boolean {
+    return this.zDir.isParallel(other.zDir) && Math.abs(this.distanceTo(other.origin)) <= tolerance
   }
 
   // -- placement ----------------------------------------------------------------------------
@@ -792,11 +846,15 @@ Plane.left = new Plane([0, 0, 0], [0, -1, 0], [-1, 0, 0])
  * - `triangle`: the index of the triangle that was hit (meshes), or `null`.
  */
 export class Hit<F extends Face | null = Face | null> {
+  /** The point where the ray meets the surface. */
   readonly point: Vector
+  /** How far along the ray, from its start. */
   readonly distance: number
+  /** The outward unit normal of the surface there (of the face, or the triangle). */
   readonly normal: Vector
   /** The face hit (null for a mesh's triangle: `Hit<null>`; a body's hits are `Hit<Face>`). */
   readonly face: F
+  /** The index of the triangle that was hit (meshes), or `null`. */
   readonly triangle: number | null
 
   constructor(point: Vector, distance: number, normal: Vector, face: F = null as F, triangle: number | null = null) {
@@ -814,9 +872,13 @@ export class Hit<F extends Face | null = Face | null> {
  * (`null` for a non-rational curve).
  */
 export class Nurbs {
+  /** The degree of the curve. */
   readonly degree: number
+  /** The knot vector, every knot as often as its multiplicity (`points.length + degree + 1` of them). */
   readonly knots: number[]
+  /** The control points. */
   readonly points: Vector[]
+  /** The weight of each control point, or `null` for a non-rational curve. */
   readonly weights: number[] | null
 
   constructor(degree: number, knots: number[], points: Vector[], weights: number[] | null = null) {
@@ -834,9 +896,13 @@ export class Nurbs {
  * for a non-rational surface).
  */
 export class NurbsSurface {
+  /** The degrees `[u, v]`. */
   readonly degrees: [number, number]
+  /** The knot vectors `[uKnots, vKnots]`, every knot as often as its multiplicity. */
   readonly knots: [number[], number[]]
+  /** The control points, one row per u index: `points[i][j]` is the point `i` along u and `j` along v. */
   readonly points: Vector[][]
+  /** The weights in the same rows, or `null` for a non-rational surface. */
   readonly weights: number[][] | null
 
   constructor(degrees: [number, number], knots: [number[], number[]], points: Vector[][], weights: number[][] | null = null) {
@@ -857,11 +923,18 @@ export class NurbsSurface {
  * - `normal`: the outward unit normal; `point`: the point on the face.
  */
 export class Curvature {
+  /** The larger principal curvature (1/mm): positive where the face bends away from its outward normal (convex,
+   * a ball seen from outside), negative where it bends towards it (a bore). */
   readonly k1: number
+  /** The smaller principal curvature. */
   readonly k2: number
+  /** The unit direction of `k1`, tangent to the face. */
   readonly dir1: Vector
+  /** The unit direction of `k2`, square to `dir1`. */
   readonly dir2: Vector
+  /** The outward unit normal. */
   readonly normal: Vector
+  /** The point on the face. */
   readonly point: Vector
 
   constructor(k1: number, k2: number, dir1: Vector, dir2: Vector, normal: Vector, point: Vector) {
@@ -898,10 +971,18 @@ export class Curvature {
  *   largest angle for "G0", the largest curvature jump for "G1" and "G2".
  */
 export class Continuity {
+  /** `"G2"` (curvature continuous), `"G1"` (tangent), `"G0"` (they meet at an angle) or `null` (they do not
+   * meet: a gap above the tolerance). */
   readonly level: string | null
+  /** The largest distance between the two sides. */
   readonly gap: number
+  /** The largest angle between the two sides' normals (faces) or tangents (wires), in degrees. */
   readonly angle: number
+  /** The largest difference of the curvatures on the two sides (1/mm): across the edge for faces, of the
+   * curvature vectors for wires. NaN where it cannot be had. */
   readonly curvatureJump: number
+  /** Where the sides differ most in what decides the level: the largest gap for `null`, the largest angle for
+   * `"G0"`, the largest curvature jump for `"G1"` and `"G2"`. */
   readonly point: Vector
 
   constructor(level: string | null, gap: number, angle: number, curvatureJump: number, point: Vector) {
@@ -922,10 +1003,15 @@ export class Continuity {
  * - `otherFace`: the face of the other shape, or `null` when it is an edge or a wire.
  */
 export class ClosestPoints {
+  /** The point on the body the method was called on. */
   readonly point: Vector
+  /** The point on the other shape. */
   readonly otherPoint: Vector
+  /** Their distance. */
   readonly distance: number
+  /** The face of the body the point lies on (at an edge or a corner, one of the faces there). */
   readonly face: Face | null
+  /** The face of the other shape, or `null` when it is an edge or a wire. */
   readonly otherFace: Face | null
 
   constructor(point: Vector, otherPoint: Vector, distance: number, face: Face | null = null, otherFace: Face | null = null) {
@@ -938,7 +1024,9 @@ export class ClosestPoints {
 }
 
 export class BoundBox {
+  /** The corner with the smallest x, y and z. */
   min: Vector
+  /** The corner with the largest x, y and z. */
   max: Vector
 
   constructor(min: VectorLike, max: VectorLike) {
@@ -946,6 +1034,7 @@ export class BoundBox {
     this.max = _vec(max)
   }
 
+  /** The smallest box along the axes around the points. */
   static ofPoints(points: Iterable<VectorLike>): BoundBox {
     let lo = [Infinity, Infinity, Infinity]
     let hi = [-Infinity, -Infinity, -Infinity]
@@ -960,18 +1049,22 @@ export class BoundBox {
     return new BoundBox(lo, hi)
   }
 
+  /** The box's extent along X, Y and Z, as a vector. */
   get size(): Vector {
     return this.max.sub(this.min)
   }
 
+  /** The middle of the box. */
   get center(): Vector {
     return this.min.add(this.max).mul(0.5)
   }
 
+  /** The length of the box's diagonal. */
   get diagonal(): number {
     return this.size.length
   }
 
+  /** The smallest box around both boxes. */
   union(other: BoundBox): BoundBox {
     return new BoundBox(
       [Math.min(this.min.x, other.min.x), Math.min(this.min.y, other.min.y), Math.min(this.min.z, other.min.z)],
@@ -979,11 +1072,13 @@ export class BoundBox {
     )
   }
 
-  contains(point: VectorLike, tol: number = TOLERANCE): boolean {
+  /** True if the point lies in the box or on its sides, or at most `tolerance` (mm) outside. */
+  contains(point: VectorLike, tolerance: number = TOLERANCE): boolean {
     const p = _vec(point)
     const lo = this.min
     const hi = this.max
-    return lo.x - tol <= p.x && p.x <= hi.x + tol && lo.y - tol <= p.y && p.y <= hi.y + tol && lo.z - tol <= p.z && p.z <= hi.z + tol
+    const t = tolerance
+    return lo.x - t <= p.x && p.x <= hi.x + t && lo.y - t <= p.y && p.y <= hi.y + t && lo.z - t <= p.z && p.z <= hi.z + t
   }
 
   *[Symbol.iterator](): IterableIterator<Vector> {

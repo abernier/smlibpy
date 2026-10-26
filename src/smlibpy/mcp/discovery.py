@@ -34,8 +34,56 @@ GUIDE_NAMES = {
     "sources": "features/cells", "g1": "analysis/continuity", "g2": "analysis/continuity",
     "from_mesh": "files/to_part", "raycast_many": "analysis/raycast", "Sketch.flipped": "surfaces/Shell",
     "min_radius_at": "curves/min_radius", "param_at_point": "curves/split", "from_nurbs": "curves/from_nurbs",
+    # the function split cuts parts; the methods of curves split at a parameter
+    "split": "features/split", "Edge.split": "curves/split", "Wire.split": "curves/split", "Face.split": "selection/Face",
+    "Edge.trim": "curves/split", "Wire.trim": "curves/split",
+    "Sketch.extend": "surfaces/extend", "Sketch.from_nurbs": "surfaces/nurbs_surface",
+    "Shell": "surfaces/Shell", "deform": "deform/Lattice", "Part.deform": "deform/Lattice", "Bend": "sheetmetal/bends",
     "Shell.from_nurbs": "surfaces/nurbs_surface", "Face.min_radius": "analysis/curvature_at",
+    # the classes the API hands back, and the functions whose guide has another name
+    "Part": "parts/generic", "Sketch": "sketches/generic", "ShapeList": "selection/generic",
+    "Shape": "selection/topology",
+    "Hit": "analysis/raycast", "ClosestPoints": "analysis/closest_points", "Curvature": "analysis/curvature_at",
+    "MassProperties": "analysis/mass_properties", "SectionProperties": "analysis/section_properties",
+    "Problem": "analysis/check", "NurbsSurface": "surfaces/nurbs_surface", "FitReport": "surfaces/surface",
+    "StitchReport": "surfaces/stitch", "RepairReport": "files/repaired", "FlatPattern": "sheetmetal/flat_pattern",
+    "StepModel": "files/read_step", "StepFrame": "files/read_step", "StepCurve": "files/read_step",
+    "StepPoint": "files/read_step", "DrawingView": "files/drawing_views", "FontError": "sketches/Text",
+    "ModelingError": "SKILL", "KernelError": "SKILL",
+    "fuse": "parts/booleans", "cut": "parts/booleans", "intersect": "parts/booleans", "xor": "sketches/generic",
+    "fillet_preview": "features/fillet", "tessellate": "files/Mesh", "export_gltf": "files/export_glb",
+    "save": "files/save_load", "load": "files/save_load", "to_svg": "files/export_svg",
+    "bend_deduction": "sheetmetal/bend_allowance", "developed_length": "sheetmetal/bend_allowance",
+    "Sketch.fuse": "sketches/generic", "Sketch.cut": "sketches/generic", "Sketch.intersect": "sketches/generic",
+    "Sketch.xor": "sketches/generic", "Shell.fuse": "surfaces/Shell", "Shell.cut": "surfaces/Shell",
+    "Shell.intersect": "surfaces/Shell", "Mesh.dispose": "files/Mesh", "MassProperties.inertia_about":
+    "analysis/mass_properties", "MassProperties.moment_about": "analysis/mass_properties", "StepModel.frame":
+    "files/read_step",
 }
+#: What every body (Part, Shell, Sketch) has, and the guide that describes it.
+_BODY_GUIDES = {"bbox": "analysis/measures", "center": "analysis/measures", "info": "analysis/generic",
+                "closest_point": "analysis/closest_points", "closest_points": "analysis/closest_points",
+                "raycast": "analysis/raycast", "compact": "analysis/compact", "contains": "analysis/classify",
+                "cell_at": "analysis/classify", "colored": "files/face_colors", "named": "files/face_colors",
+                "solids": "selection/shells", "faces": "selection/topology", "edges": "selection/topology",
+                "wires": "selection/topology", "vertices": "selection/topology"}
+#: A ShapeList's selections, and their guides.
+_SELECTION_GUIDES = {"top": "selection/positional", "bottom": "selection/positional", "left": "selection/positional",
+                     "right": "selection/positional", "front": "selection/positional", "back": "selection/positional",
+                     "at": "selection/generic", "one": "selection/generic", "circles": "selection/types",
+                     "lines": "selection/types", "planar": "selection/types", "cylinders": "selection/types",
+                     "of_type": "selection/types", "concave": "selection/convexity", "convex": "selection/convexity",
+                     "smooth": "selection/convexity", "facing": "selection/spatial", "nearest": "selection/spatial",
+                     "within": "selection/spatial", "filter": "selection/filter_by", "group_by": "selection/sort_by",
+                     "sort_by_distance": "selection/sort_by", "largest": "selection/extremes",
+                     "smallest": "selection/extremes", "max_by": "selection/extremes", "min_by": "selection/extremes",
+                     "perpendicular_to": "selection/parallel_to", "bbox": "analysis/measures",
+                     "center": "analysis/measures", "faces": "selection/topology", "edges": "selection/topology",
+                     "wires": "selection/topology", "vertices": "selection/topology"}
+GUIDE_NAMES.update({f"{cls}.{name}": key for cls in ("Part", "Shell", "Sketch") for name, key in _BODY_GUIDES.items()})
+GUIDE_NAMES.update({f"{cls}.{name}": "selection/topology" for cls in ("Face", "Edge", "Wire", "Vertex")
+                    for name in ("faces", "edges", "wires", "vertices")})
+GUIDE_NAMES.update({f"ShapeList.{name}": key for name, key in _SELECTION_GUIDES.items()})
 
 #: Words people use for a thing, and the words the API uses.
 SYNONYMS = {
@@ -197,8 +245,19 @@ def _default(v: Any) -> str:
     return text if len(text) <= 40 else type(v).__name__
 
 
+def _choices(annotation: Any) -> str | None:
+    """``'a' | 'b'`` for a parameter typed as a ``Literal`` of strings (or of strings and None)."""
+    text = (annotation if isinstance(annotation, str) else repr(annotation)).replace("typing.", "")
+    found = re.fullmatch(r"Literal\[([^\]]*)\]( \| None)?", text.strip())
+    if not found:
+        return None
+    values = [v.strip().replace('"', "'") for v in found.group(1).split(",")]
+    return " | ".join(values) + (" | None" if found.group(2) else "")
+
+
 def _signature(name: str, obj: Any) -> str:
-    """``name(a, b=1, *, c=None)``: parameters and defaults, without type annotations."""
+    """``name(a, b=1, *, c=None)``: parameters and defaults, without type annotations, but for the
+    choices of a parameter that takes one of some strings (``corners: 'round' | 'sharp' = 'round'``)."""
     try:
         sig = inspect.signature(obj)
     except (TypeError, ValueError):
@@ -217,7 +276,11 @@ def _signature(name: str, obj: Any) -> str:
             if p.kind == p.KEYWORD_ONLY and not star:
                 parts.append("*")
                 star = True
-            parts.append(p.name if p.default is p.empty else f"{p.name}={_default(p.default)}")
+            choices = _choices(p.annotation)
+            if choices:
+                parts.append(f"{p.name}: {choices}" + ("" if p.default is p.empty else f" = {_default(p.default)}"))
+            else:
+                parts.append(p.name if p.default is p.empty else f"{p.name}={_default(p.default)}")
     return f"{name}({', '.join(parts)})"
 
 
@@ -247,6 +310,9 @@ def methods() -> list[Entry]:
         for mname, member in inspect.getmembers(cls):
             if mname.startswith("_"):
                 continue
+            if any(mname in base.__dict__ for base in cls.__mro__ if base.__module__ == "builtins") and not any(
+                    mname in base.__dict__ for base in cls.__mro__ if base.__module__ != "builtins"):
+                continue  # (what ShapeList has from list: append, sort, ...: Python's, not the API's)
             raw = inspect.getattr_static(cls, mname)
             if isinstance(raw, property):
                 kind, line = "property", f"{cname}.{mname}"
@@ -302,7 +368,12 @@ def search(query: str | list[str], limit: int = 25) -> list[tuple[float, Entry]]
         for s in SYNONYMS.get(w, []):
             for t in _tokens(s):
                 wanted[t] = max(wanted.get(t, 0.0), 0.8)
-    entries = methods() + guides()
+    index = methods()
+    # (a function that is another form of a body's method, draft of Part.draft, is left to the
+    # method, which says more: describe_method finds either)
+    of_bodies = {e.key.split(".", 1)[1] for e in index
+                 if e.kind == "method" and e.key.split(".")[0] in ("Part", "Shell", "Sketch")}
+    entries = [e for e in index if not (e.kind == "function" and e.key in of_bodies)] + guides()
     df: dict[str, int] = {}
     docs_tokens = []
     for e in entries:
@@ -356,19 +427,26 @@ def guide_for(entry: Entry) -> Entry | None:
     if cls in CLASS_GUIDES and own:
         return own[0]
     domain = CLASS_DOMAINS.get(cls or "")
+    tail = entry.key.split(".")[-1]
     for g in matches:
         if domain and g.key.startswith(domain + "/"):
             return g
+    # The class's guide where it describes the method; else the guide of the method's name, the one
+    # of any shape (geometry/mirror for Face.mirror) first.
     for g in own:
-        if domain and g.key.startswith(domain + "/"):
+        if domain and g.key.startswith(domain + "/") and tail in g.text:
+            return g
+    for g in matches:
+        if g.key.startswith("geometry/"):
             return g
     if matches:
         return matches[0]
     if own:
         return own[0]
-    tail = entry.key.split(".")[-1]
     if (tail.startswith("to_") or tail.startswith("from_")) and "files/in_memory" in by_key:
         return by_key["files/in_memory"]  # (the files in memory)
+    if cls in GUIDE_NAMES and GUIDE_NAMES[cls] in by_key:
+        return by_key[GUIDE_NAMES[cls]]  # (the guide of its class: MassProperties.principal_axes)
     return None
 
 
