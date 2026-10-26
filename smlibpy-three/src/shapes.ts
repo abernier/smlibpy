@@ -210,6 +210,16 @@ function cloneOf<T extends THREE.Object3D>(o: T, recursive?: boolean): T {
 
 // ---------------------------------------------------------------------------------- the kernel
 /** @internal
+ * The material an object of the package shows because it was given one (or took one over from the
+ * object an operation was called on); null where it shows its own default. Other objects: their
+ * material. (Files write the colors of these only.) */
+export function assignedMaterial(o: THREE.Object3D): THREE.Material | THREE.Material[] | null {
+  const s = (o as { [STATE]?: State })[STATE]
+  if (s === undefined) return (o as { material?: THREE.Material | THREE.Material[] }).material ?? null
+  return s.material
+}
+
+/** @internal
  * The kernel value of a body. */
 export function kernelOf(body: Body): SmBody {
   const s = state(body)
@@ -2937,7 +2947,10 @@ accessors(
     }
     return s.ownGeometry
   },
-  () => new THREE.PointsMaterial({ color: HIGHLIGHT, size: 8, sizeAttenuation: false, depthTest: false }),
+  (v: Vertex) =>
+    state(v).owner === null
+      ? new THREE.PointsMaterial({ color: 0x20242c, size: 6, sizeAttenuation: false })
+      : new THREE.PointsMaterial({ color: HIGHLIGHT, size: 8, sizeAttenuation: false, depthTest: false }),
 )
 
 // ----------------------------------------------------------------------------------- selections

@@ -212,4 +212,32 @@ export {
   type RenderView,
   type RenderViewName,
 } from './render.ts'
-export { STEPExporter, STEPLoader, type STEPExporterOptions } from './files.ts'
+export {
+  BREPExporter,
+  BREPLoader,
+  DXFExporter,
+  DXFLoader,
+  IGESLoader,
+  SMBExporter,
+  SMBLoader,
+  SMPExporter,
+  SMPLoader,
+  STEPExporter,
+  STEPLoader,
+  SVGExporter,
+  USDExporter,
+  USDLoader,
+  type BREPExporterOptions,
+  type BREPLoaderOptions,
+  type DXFExporterOptions,
+  type DXFLoaderOptions,
+  type DXFUnit,
+  type IGESLoaderOptions,
+  type SMLibExporterOptions,
+  type STEPExporterOptions,
+  type STEPLoaderOptions,
+  type SVGExporterOptions,
+  type USDExporterOptions,
+  type USDLoaderOptions,
+} from './files.ts'
+export { DrawingView, drawingViews, type DrawingViewsOptions, type ViewName } from './drawing.ts'
