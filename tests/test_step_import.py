@@ -938,9 +938,14 @@ def heap():
         _fields_ = [(name, ctypes.c_size_t) for name in ("arena", "ordblks", "smblks", "hblks", "hblkhd",
                                                          "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
     libc = ctypes.CDLL(None)
+    if not hasattr(libc, "mallinfo2"):  # (glibc before 2.33: manylinux_2_28, where the wheels are tested)
+        return None
     libc.mallinfo2.restype = Info
     info = libc.mallinfo2()
     return (info.uordblks + info.hblkhd) / 1048576
+if heap() is None:
+    print("none")
+    sys.exit()
 ring = Torus(10, 2) + Cylinder(3, 30)
 for _ in range(50):
     ext.seam_problems(ring._brep)
@@ -955,5 +960,7 @@ print(heap() - before)
 """
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr
+    if run.stdout.strip() == "none":
+        pytest.skip("no allocator statistics here")
     kept = float(run.stdout.strip())
     assert kept < 2, f"1000 seam checks and 100 imports kept {kept:.1f} MB"  # was 16 MB

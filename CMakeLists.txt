@@ -13,6 +13,14 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+# GCC fuses a * b + c into one rounding wherever the target has the instruction (always on aarch64,
+# on x86_64 only with -march), which moves the kernel's results on borderline cases: the Linux
+# arm64 wheels failed eleven tests that x86_64 and macOS pass. Compiled as on x86_64, without it.
+# (Clang fuses only within an expression, as the macOS arm64 build does: tests/test_lane_WN.py.)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-ffp-contract=off)
+endif()
+
 # NVIDIA's open-source SMLib distribution (Apache-2.0), pulled in as a submodule.
 set(USD_BREP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/usd-brep" CACHE PATH "usd-brep checkout")
 if(NOT EXISTS "${USD_BREP_DIR}/source/SMLib/src/SmBrep.cpp")
