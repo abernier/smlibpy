@@ -1,4 +1,4 @@
-# smlibpy-three (draft)
+# smlibpy-three
 
 smlibpy's CAD modeling API for three.js. Parts, sketches, faces, edges and curves are three.js
 objects: a part is a `THREE.Mesh`, an edge a `THREE.Line`. They take and give three's types
@@ -35,12 +35,18 @@ hit.brep // the BrepFace that was hit (a THREE.Mesh); on part.edgeLines, the Bre
 
 ![The example page: hovering the top face of the boss](example/hover.jpg)
 
-Status: a draft, not published. It wraps all of smlibwasm's public API as `next` has it (0.6.0:
-what is left out, and why, is listed below, and `test/forms.test.ts` checks it name by name), with
+It is released with smlibpy and smlibwasm, at their version, and wraps all of smlibwasm's public API
+(what is left out, and why, is listed below, and `test/forms.test.ts` checks it name by name), with
 194 tests (`npm test`) and an example page (`npm run example`). [API.md](API.md) is the API
 reference; [WRAPPING.md](WRAPPING.md) says how a feature is wrapped.
 
 ## Using it
+
+```bash
+npm install @classcad/smlibpy-three three
+```
+
+In this repository:
 
 ```bash
 npm install
@@ -50,9 +56,10 @@ npm run api        # API.md, the API reference, from the declarations (after a b
 npm run example    # the example page (Vite)
 ```
 
-`@classcad/smlibwasm` is a dependency (here `file:../js`; build it first: `npm run wasm` and
-`npm run build` in `js/`), `three` a peer (developed on 0.186.1). Importing the package loads the
-kernel (a top-level await, 2.8 MB with brotli), and after that every call is synchronous.
+`@classcad/smlibwasm` is a dependency, at the same version (in this repository `file:../js`: build it
+first, `npm run wasm` and `npm run build` in `js/`), `three` a peer (developed on 0.186.1). Importing
+the package loads the kernel (a top-level await, 2.9 MB with brotli), and after that every call is
+synchronous.
 `@classcad/smlibpy-three/init` loads the kernel from elsewhere (`init({ locateFile })`), and
 `@classcad/smlibpy-three/worker` runs modeling functions in a worker (below). Vite's dev server must
 leave smlibwasm out of its prebundling (`optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`, see
@@ -262,7 +269,7 @@ from `@classcad/smlibwasm` on this branch.
 
 ## Decisions
 
-The draft's open questions, as they were decided:
+The design's open questions, as they were decided:
 
 1. **The name**: `@classcad/smlibpy-three`.
 2. **three's coordinates and arguments**: no axis change (it was three's (x, y, z) = the kernel's

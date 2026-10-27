@@ -1,6 +1,6 @@
 name: Release
 
-# Wheels, the sdist and the npm package are built for every run. Run it by hand
+# Wheels, the sdist and the npm packages are built for every run. Run it by hand
 # (workflow_dispatch) to try the build without publishing. Publishing a GitHub release uploads
 # to PyPI and npm through trusted publishing (OIDC, environments "pypi" and "npm"); no API
 # token is involved.
@@ -174,7 +174,8 @@ jobs:
 
   # @classcad/smlibwasm: the WebAssembly module and the TypeScript port (js/), published to npm
   # through trusted publishing (OIDC, environment "npm"; no token is involved) and attached to
-  # the GitHub release with the module's two files
+  # the GitHub release with the module's two files; then @classcad/smlibpy-three
+  # (smlibpy-three/), smlibwasm's API for three.js, at the same version and depending on it
   npm:
     name: npm package
     if: github.event_name == 'release' || inputs.only == 'all' || inputs.only == 'npm'
@@ -201,6 +202,12 @@ jobs:
           version=$(node -p "require('./js/package.json').version")
           test "${GITHUB_REF_NAME}" = "v${version}" || { echo "tag ${GITHUB_REF_NAME} but version ${version}"; exit 1; }
           grep -q "export const version = '${version}'" js/src/index.ts || { echo "js/src/index.ts does not say version ${version}"; exit 1; }
+      - name: smlibpy-three's version is smlibwasm's
+        run: |
+          version=$(node -p "require('./js/package.json').version")
+          three=$(node -p "require('./smlibpy-three/package.json').version")
+          test "${three}" = "${version}" || { echo "smlibpy-three is ${three} but smlibwasm ${version}"; exit 1; }
+          grep -q "export const version = '${version}'" smlibpy-three/src/index.ts || { echo "smlibpy-three/src/index.ts does not say version ${version}"; exit 1; }
       - uses: actions/cache@v6.1.0
         with:
           path: ~/emsdk
@@ -222,6 +229,20 @@ jobs:
       - name: Pack
         working-directory: js
         run: npm pack
+      # smlibpy-three on the smlibwasm built above (js/ by path, as in the repository)
+      - name: smlibpy-three, install and test
+        working-directory: smlibpy-three
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+      # the packed package depends on this release's smlibwasm, not on js/ (prepack refuses the
+      # path), and holds dist compiled afresh and the license text
+      - name: smlibpy-three, pack
+        working-directory: smlibpy-three
+        run: |
+          npm pkg set "dependencies.@classcad/smlibwasm=^$(node -p "require('../js/package.json').version")"
+          npm pack
       # trusted publishing needs npm 11.5.1 or later; publishing the packed file runs no scripts
       - name: Publish to npm
         if: github.event_name == 'release' && github.event.action == 'published'
@@ -236,11 +257,26 @@ jobs:
           else
             npm publish ./classcad-smlibwasm-*.tgz
           fi
+      # trusted publishing only takes a package npm has: smlibpy-three's first version is published
+      # by hand (the file attached to the release below), and its trusted publisher is then this
+      # workflow, as smlibwasm's is
+      - name: Publish smlibpy-three to npm
+        if: github.event_name == 'release' && github.event.action == 'published'
+        working-directory: smlibpy-three
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if ! npm view @classcad/smlibpy-three name >/dev/null 2>&1; then
+            echo "::warning::@classcad/smlibpy-three is not on npm yet: publish classcad-smlibpy-three-${version}.tgz of this release by hand, then make this workflow its trusted publisher"
+          elif npm view "@classcad/smlibpy-three@${version}" version >/dev/null 2>&1; then
+            echo "@classcad/smlibpy-three ${version} is on npm already: not published again"
+          else
+            npm publish ./classcad-smlibpy-three-*.tgz
+          fi
       - name: The package and the module as files of the release
         if: github.event_name == 'release' && github.event.action == 'published'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload --clobber "$GITHUB_REF_NAME" js/classcad-smlibwasm-*.tgz js/wasm/smlibwasm.wasm js/wasm/smlibwasm.mjs
+        run: gh release upload --clobber "$GITHUB_REF_NAME" js/classcad-smlibwasm-*.tgz js/wasm/smlibwasm.wasm js/wasm/smlibwasm.mjs smlibpy-three/classcad-smlibpy-three-*.tgz
 
   publish-windows:
     name: publish the Windows wheels to PyPI

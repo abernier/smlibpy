@@ -2,7 +2,8 @@
 
 smlibpy is Python CAD on SMLib, the open-source NURBS solid modeling kernel: exact solids, sheets
 and sketches built by scripts. smlibwasm (`@classcad/smlibwasm`, under `js/`) is the same API in
-TypeScript on the same kernel compiled to WebAssembly. Agents use smlibpy through its MCP server
+TypeScript on the same kernel compiled to WebAssembly, and smlibpy-three (`@classcad/smlibpy-three`,
+under `smlibpy-three/`) is smlibwasm's API for three.js. Agents use smlibpy through its MCP server
 (`smlibpy[mcp]`), which serves a skill of guides, and through a Claude Code plugin
 (`plugins/smlibpy`). One feature is all of these at once: the library, its port, its guide, its docs.
 
@@ -12,6 +13,7 @@ TypeScript on the same kernel compiled to WebAssembly. Agents use smlibpy throug
 | `src/cpp/` | smlibpy's C++: the bindings (`_core`) and the steps that need the kernel's internals. Shared with smlibwasm. |
 | `third_party/` | `usd-brep` (submodule: NVIDIA's usd-brep, with SMLib's sources), `patches/` (the kernel files smlibpy patches, and why). |
 | `js/` | smlibwasm: `src/*.ts` (one module per Python module, same names), `test/*.test.ts`, `PORTING.md` (the porting rules), `scripts/build-wasm.sh`. |
+| `smlibpy-three/` | smlibpy-three: smlibwasm's API for three.js, its shapes three.js objects in three's coordinates. `WRAPPING.md` (how a feature is wrapped), `test/forms.test.ts` (every export and member of smlibwasm wrapped or left out for a reason), `API.md` (`npm run api`). |
 | `tests/` | pytest. `test_api_forms.py`, `test_guides.py`, `test_docs.py` hold the rules below. |
 | `docs/` | The user docs (MkDocs, `mkdocs.yml`); the website's docs are made from them. |
 | `plugins/smlibpy/` | The Claude Code plugin: the MCP server pinned to a release, and the plugin's skill. |
@@ -28,12 +30,14 @@ TypeScript on the same kernel compiled to WebAssembly. Agents use smlibpy throug
   writes `_core` into `src/smlibpy`; put `src` on `PYTHONPATH` (docs/getting-started.md). The extras
   `test`, `mcp` and `docs` hold what the tests, the MCP server and the docs need. smlibwasm, in
   `js/`: `npm ci`, `npm run wasm` (the Emscripten SDK in `~/emsdk`), `npm run typecheck`,
-  `npm run build`.
-- **Tests.** `pytest -q` (about 6 minutes), `npm test` in `js/` (about a minute and a half),
-  `mkdocs build --strict`. CI (`ci.yml`) runs the three on pull requests and on `main`, not on
-  `next`: run them yourself before you push. `checks.yml` runs the fuzzer, AddressSanitizer and the
-  kernel's own tests, nightly and on pull requests that touch the kernel. After a change to a public
-  name or signature run `python tools/gen_js_options.py` (the tests fail while its files are behind).
+  `npm run build`. smlibpy-three, in `smlibpy-three/` after that: `npm ci`, `npm run typecheck`,
+  `npm test`, `npm run build`.
+- **Tests.** `pytest -q` (about 6 minutes), `npm test` in `js/` (about a minute and a half) and in
+  `smlibpy-three/` (seconds), `mkdocs build --strict`. CI (`ci.yml`) runs them on pull requests and
+  on `main`, not on `next`: run them yourself before you push. `checks.yml` runs the fuzzer,
+  AddressSanitizer and the kernel's own tests, nightly and on pull requests that touch the kernel.
+  After a change to a public name or signature run `python tools/gen_js_options.py` (the tests fail
+  while its files are behind).
 - **Commits and PRs.** A subject that says what changed and why, in plain words
   (`Area: what changed, and why`). No attribution lines: no "Generated with Claude Code", no
   Co-Authored-By.
@@ -134,6 +138,9 @@ fallbacks. A feature lands in both, in the same change. `js/PORTING.md` has the 
   `tools/parity.py` writes golden files (what the file writers make, numbers of modeling steps)
   that `js/test/lane_WN.test.ts` compares smlibwasm with, and keeps the known divergences of the
   two builds.
+- smlibpy-three wraps smlibwasm for three.js: a new export or member of smlibwasm fails
+  `smlibpy-three/test/forms.test.ts` until it is wrapped or left out for a reason
+  (`smlibpy-three/WRAPPING.md`).
 
 ## The kernel
 
@@ -149,7 +156,8 @@ fallbacks. A feature lands in both, in the same change. `js/PORTING.md` has the 
 ## Releasing
 
 1. `next` is green. `release/<version>` from it, the version raised in `pyproject.toml`,
-   `src/smlibpy/__init__.py`, `js/package.json` and `js/src/index.ts`; the release notes written.
+   `src/smlibpy/__init__.py`, `js/package.json`, `js/src/index.ts`, `smlibpy-three/package.json`,
+   `smlibpy-three/src/index.ts` and the two `package-lock.json`; the release notes written.
    A patch (0.5.1) only when code written for the last release still runs, old forms with a
    warning; otherwise a minor version (0.6.0), and the notes say what to change. Diff the public
    API against the last release's tag to know, rather than recalling the changes.
@@ -157,7 +165,9 @@ fallbacks. A feature lands in both, in the same change. `js/PORTING.md` has the 
    on Linux x86_64 and arm64, macOS arm64 and x86_64, Windows), the sdist and the npm package. All
    green, or no release.
 3. The release branch merged into `main` by PR; a GitHub release `v<version>` with the notes
-   publishes to PyPI and npm (trusted publishing).
+   publishes to PyPI and npm (trusted publishing), smlibpy-three depending on the smlibwasm of its
+   release. npm's trusted publishing only takes a package npm has: a new one is published once by
+   hand (the file attached to the release), then given the workflow as its trusted publisher.
 4. The plugin pinned to the release (`plugins/smlibpy/.mcp.json`: `smlibpy[mcp]==<version>`) in
    `main` and `next`; its skill's description current. `next` synced with `main`.
 5. The website (`websites` repo, `packages/smlibpy.classcad.ch`): its docs made again from `docs/`
