@@ -11,7 +11,7 @@
 // (first: in a browser it starts defeature's probe worker while the kernel loads, see there)
 import './_guard.ts'
 
-export const version = '0.6.0'
+export const version = '0.6.1'
 
 // geometry
 export {
@@ -37,7 +37,7 @@ export {
 export { Align, type AlignLike } from './align.ts'
 // shapes
 export { ACCURACY, Edge, Face, MassProperties, Part, Problem, SectionProperties, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
-export { Mesh, RepairReport, tessellate } from './mesh.ts'
+export { Mesh, RepairReport, faceMeshes, tessellate } from './mesh.ts'
 // curves
 export {
   Bezier,

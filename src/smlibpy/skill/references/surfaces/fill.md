@@ -46,7 +46,10 @@ a closed curve cut into four, about 50 ms.
   rim comes in pieces at other places: 4136.7 to 4144.9 in five turns tried, tangent to 0.03
   degrees.
 - Paraboloid sheet with a rectangular hole: tangent to 0.001 degrees; round hole (one closed
-  edge): 0.003 degrees. Pentagon and hexagon holes (N-sided): 1.34 and 1.19 degrees halfway between
+  edge): 0.003 degrees. Round holes whose rim touches the sheet's knot lines where the patch's
+  corners are (knots every 5; radius 5 at x 0, 5 and 7, radius 2.5 at x 2.5): 0.0014 to 0.0086
+  degrees; before the kernel's tangent field was patched, they were refused up to 20.6 degrees
+  off. Pentagon and hexagon holes (N-sided): 1.34 and 1.19 degrees halfway between
   a side's middle and its ends, 0 at the corners and the middles: the kernel's N-sided fill
   approximates the tangency, whatever tolerance it is given. Checked: at most 2 degrees for five
   sides and more, 0.5 for three and four, else `ModelingError`.

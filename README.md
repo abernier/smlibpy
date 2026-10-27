@@ -6,7 +6,7 @@ A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/
 
 It comes with an MCP server, so your agent can build parts too. And it runs in the browser:
 [smlibwasm](#in-javascript) is the same library for JavaScript and TypeScript, on the kernel compiled
-to WebAssembly.
+to WebAssembly, and [smlibpy-three](#in-threejs) is it for three.js.
 
 **[Website](https://smlibpy.classcad.ch)** · **[Documentation](https://smlibpy.classcad.ch/docs/)** ·
 **[Getting started](https://smlibpy.classcad.ch/docs/getting-started)** · **[API reference](https://smlibpy.classcad.ch/docs/api)** ·
@@ -226,6 +226,19 @@ uncompressed) and 0.6 MB for the library, its font and the dictionary of WOFF2 f
 [JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes, examples for the browser and the whole API in
 TypeScript; the source is in [`js/`](js).
 
+## In three.js
+
+smlibpy-three (`@classcad/smlibpy-three` on npm) is smlibwasm's API for three.js: parts, sketches,
+faces, edges and curves are three.js objects (a part is a `THREE.Mesh`), in three's coordinates and
+with three's geometry arguments (`new Box(80, 10, 60)` is `BoxGeometry(80, 10, 60)`), and three's
+Raycaster picks the exact faces and edges.
+
+```bash
+npm install @classcad/smlibpy-three three
+```
+
+Its README has the API and how it maps to three; the source is in [`smlibpy-three/`](smlibpy-three).
+
 ## A short tour
 
 ### [Sketches](https://smlibpy.classcad.ch/docs/sketches)
@@ -314,13 +327,13 @@ The documentation is on [smlibpy.classcad.ch](https://smlibpy.classcad.ch/docs/)
 
 ## Status
 
-smlibpy is new (version 0.5). It covers solid and surface modeling, text, and reads and writes
+smlibpy is new (version 0.6). It covers solid and surface modeling, text, and reads and writes
 STEP, USD, OpenCASCADE `.brep` and DXF with the exact geometry (IGES it reads); smlibwasm has all of
-it in JavaScript. Assembly trees beyond a product per body, and dimensions on 2D drawings, are not
+it in JavaScript, and smlibpy-three in three.js. Assembly trees beyond a product per body, and dimensions on 2D drawings, are not
 there yet.
 
 ## License
 
-smlibpy and smlibwasm are MIT licensed. They build and bundle the SMLib kernel from
+smlibpy, smlibwasm and smlibpy-three are MIT licensed. smlibpy and smlibwasm build and bundle the SMLib kernel from
 [NVIDIA-Omniverse/usd-brep](https://github.com/NVIDIA-Omniverse/usd-brep), © NVIDIA, under
 the Apache License 2.0; see [NOTICE](NOTICE).

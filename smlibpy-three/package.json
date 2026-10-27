@@ -1,0 +1,73 @@
+{
+  "name": "@classcad/smlibpy-three",
+  "version": "0.6.1",
+  "description": "smlibpy's CAD modeling API for three.js: exact B-rep parts, sketches and curves that are three.js objects, on the SMLib kernel (smlibwasm)",
+  "license": "MIT",
+  "homepage": "https://github.com/awv-informatik/smlibpy/tree/main/smlibpy-three#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/awv-informatik/smlibpy.git",
+    "directory": "smlibpy-three"
+  },
+  "bugs": "https://github.com/awv-informatik/smlibpy/issues",
+  "keywords": [
+    "cad",
+    "brep",
+    "nurbs",
+    "solid-modeling",
+    "step",
+    "three",
+    "threejs",
+    "webassembly"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./init": {
+      "types": "./dist/init.d.ts",
+      "default": "./dist/init.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/declarations.mjs",
+    "api": "node scripts/api.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p example",
+    "test": "node --test 'test/*.test.ts'",
+    "example": "vite example",
+    "example:build": "vite build example",
+    "prepack": "node scripts/prepack.mjs"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "three": ">=0.170"
+  },
+  "dependencies": {
+    "@classcad/smlibwasm": "file:../js"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "@types/three": "0.186.0",
+    "three": "0.186.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.7"
+  }
+}
