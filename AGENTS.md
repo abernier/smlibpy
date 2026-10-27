@@ -79,7 +79,10 @@ fails, decide the form, do not work around the test.
    lists them. Every public function, method and property has a docstring: `describe_method`
    shows it. Overloads where the result's type depends on the input's. A parameter that is
    renamed keeps its old name working for a release, with a DeprecationWarning
-   (`@renamed`, `src/smlibpy/_renamed.py`). Millimeters and degrees, Z up; primitives centered
+   (`@renamed`, `src/smlibpy/_renamed.py`), and a flag made keyword-only its positional use
+   (`@keyword_only`); smlibwasm takes both old forms too (`js/src/_renamed.ts`,
+   `js/test/options.test.ts` calls each). A change that breaks a call anyway (a name that now
+   means something else) waits for a minor version. Millimeters and degrees, Z up; primitives centered
    unless `align=` says otherwise. `tests/test_api_forms.py` checks these.
 7. **Results are checked.** A wrong result is never returned: check what the kernel gives (valid,
    closed, the volume or area it must have) and raise `ModelingError` with a hint that says what to
@@ -147,6 +150,9 @@ fallbacks. A feature lands in both, in the same change. `js/PORTING.md` has the 
 
 1. `next` is green. `release/<version>` from it, the version raised in `pyproject.toml`,
    `src/smlibpy/__init__.py`, `js/package.json` and `js/src/index.ts`; the release notes written.
+   A patch (0.5.1) only when code written for the last release still runs, old forms with a
+   warning; otherwise a minor version (0.6.0), and the notes say what to change. Diff the public
+   API against the last release's tag to know, rather than recalling the changes.
 2. The Release workflow dispatched on the release branch builds and tests every wheel (5 Pythons
    on Linux x86_64 and arm64, macOS arm64 and x86_64, Windows), the sdist and the npm package. All
    green, or no release.

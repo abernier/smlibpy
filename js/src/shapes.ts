@@ -7,6 +7,7 @@
 
 import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _crashOf, _isCrash, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import { _traced } from './_errors.ts'
+import { _keywordOnly, _renamed } from './_renamed.ts'
 import {
   TOLERANCE,
   Axis,
@@ -1576,6 +1577,7 @@ export class Edge extends Shape {
    * that does not lie between two faces.
    */
   continuity(samples = 16, options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
+    options = _renamed('Edge.continuity', options, '0.6.0', { angleTol: 'angleTolerance', curvatureTol: 'curvatureTolerance' })
     _opts('Edge.continuity', options)
     const { angleTolerance = 0.5, curvatureTolerance = 0.01 } = options
     if (!this._e) throw new RangeError('continuity: the edge does not lie between two faces (it is a free curve)')
@@ -2825,6 +2827,7 @@ export class Wire extends Shape {
    * `1e-3 / length`). RangeError for a wire of one open edge, which has no joint.
    */
   continuity(options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
+    options = _renamed('Wire.continuity', options, '0.6.0', { angleTol: 'angleTolerance', curvatureTol: 'curvatureTolerance' })
     _opts('Wire.continuity', options)
     const { angleTolerance = 0.5, curvatureTolerance = 0.01 } = options
     const edges = this._edges
@@ -3387,6 +3390,7 @@ export class Face extends Shape {
 
   /** The face's edges (seam edges only with `seams`). */
   edges(options: { seams?: boolean } = {}): ShapeList<Edge> {
+    options = _keywordOnly('Face.edges', options, '0.6.0', 'seams')
     _opts('Face.edges', options)
     const seams = options.seams ?? false
     const out = new ShapeList<Edge>()
@@ -3686,6 +3690,7 @@ export class _Body extends Shape {
   /** All edges. Seam edges (where a closed surface such as a cylinder meets itself) are left out
    * unless `seams` is true. */
   edges(options: { seams?: boolean } = {}): ShapeList<Edge> {
+    options = _keywordOnly('_Body.edges', options, '0.6.0', 'seams')
     _opts('_Body.edges', options)
     const seams = options.seams ?? false
     const all: number[] = k.brep_edges(this._brep)
@@ -10353,6 +10358,7 @@ export class Sketch extends Shell {
    * region throws ModelingError. `round: false` is the older spelling of `corners: "sharp"`.
    */
   override offset(distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer' } = {}): Sketch {
+    options = _renamed('Sketch.offset', options, '0.6.0', { round: ['corners', (round) => (round ? 'round' : 'sharp')] })
     _opts('Sketch.offset', options)
     const corners: string = options.corners ?? 'round'
     if (!CORNER_STYLES.includes(corners)) throw new RangeError(`offset: corners is 'round', 'sharp' or 'chamfer', not '${corners}'`)

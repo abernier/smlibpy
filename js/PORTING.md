@@ -68,9 +68,13 @@ the Python code works around a kernel defect, so does the TypeScript.
   sketches and patterns pass `arguments.length` too. An options object is a plain object, also
   one of another realm (an iframe, `node:vm`); an instance of a class is not.
 - **Choices.** An option Python types as `Literal["round", "sharp"]` is a union of the same
-  strings (`corners?: 'round' | 'sharp'`), checked at run time as well. A parameter Python
-  renamed with `@renamed` (the old name still works there, with a DeprecationWarning) has only
-  its new name here: `_opts` names it for a caller who passes the old one.
+  strings (`corners?: 'round' | 'sharp'`), checked at run time as well.
+- **Old forms.** Where Python keeps an old call working for a release, with a DeprecationWarning
+  (`@renamed` for a renamed keyword, `@keyword_only` for a flag that was positional), smlibwasm
+  does too, with a warning (`_warn`): `_renamed` and `_keywordOnly` of `_renamed.ts`, called before
+  `_opts`. The declarations show the new form only, as Python's signatures do.
+  `tools/gen_js_options.py` lists Python's old forms in `js/test/_python_api.json`, and
+  js/test/options.test.ts calls each one.
 - **Operations** are methods and functions in both (AGENTS.md, "The API"): the function form
   checks that it got a body with that method (`_subject`) and calls it, `draft(part, faces, 3,
   Plane.XY)` being `part.draft(faces, 3, Plane.XY)`. js/test/api_forms.test.ts checks that

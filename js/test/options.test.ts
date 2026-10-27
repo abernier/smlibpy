@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import ts from 'typescript'
 import { runInNewContext } from 'node:vm'
+import { readFileSync } from 'node:fs'
 import * as api from '../src/index.ts'
 import { Align, Axis, Box, Lattice, Line, Polyline, Profile, Rectangle, fold, offset } from '../src/index.ts'
 import { OPTIONS } from '../src/_options.ts'
@@ -119,4 +120,37 @@ test("the options' types are the table's keys, and every entry is checked", () =
   }
   assert.deepEqual(problems, [])
   assert.deepEqual(Object.keys(OPTIONS).filter((name) => !checked.has(name)), [])
+})
+
+test('the old forms smlibpy still takes for a release, smlibwasm takes too, with a warning', () => {
+  // (tools/gen_js_options.py lists them from smlibpy's @renamed and @keyword_only: options that
+  // were renamed, and options that were positional parameters; js/src/_renamed.ts takes them)
+  const old: { renamed: Record<string, Record<string, string>>; positional: Record<string, string[]> } = JSON.parse(
+    readFileSync(new URL('./_python_api.json', import.meta.url), 'utf8'),
+  )
+  assert.ok(Object.keys(old.renamed).length && Object.keys(old.positional).length)
+  const said: string[] = []
+  api.setWarningHandler((m) => said.push(m))
+  const missing: string[] = []
+  try {
+    for (const [name, options] of Object.entries(old.renamed)) {
+      for (const [was, is] of Object.entries(options)) {
+        said.length = 0
+        try {
+          call(name, { [was]: 1 })
+        } catch (e) {
+          if (String(e).includes('unexpected option')) missing.push(`${name} { ${was} }: ${e}`)
+        }
+        if (!said.some((m) => m.startsWith(`${name}: ${was} is ${is} since smlibwasm `))) missing.push(`${name} { ${was} }: no warning`)
+      }
+    }
+    for (const [name, [option]] of Object.entries(old.positional)) {
+      said.length = 0
+      call(name, true as Any)
+      if (!said.some((m) => m.startsWith(`${name}: pass ${option} as an option`))) missing.push(`${name}(true): no warning`)
+    }
+  } finally {
+    api.setWarningHandler((m) => console.warn(m))
+  }
+  assert.deepEqual(missing, [])
 })

@@ -145,7 +145,10 @@ applies. The differences come from the language:
   as Python checks keywords: an unknown one is a `TypeError` that names the right one
   (`{ k_factor: 0.3 }` copied from Python: "did you mean 'kFactor'?"), and so is a number where
   the options go (`Rectangle(20, 10, 3)`). Choices are string unions, as Python's `Literal`s:
-  `{ corners: 'round' }`, where a misspelled choice does not compile.
+  `{ corners: 'round' }`, where a misspelled choice does not compile. An option renamed in a
+  release keeps working under its old name until the next one, with a warning (Python's
+  `DeprecationWarning`; `setWarningHandler` says where warnings go): `{ angleTol: 1 }` is
+  `{ angleTolerance: 1 }` since 0.6.0. The declarations have the new names only.
 - **Methods and functions**: every operation is both, as in Python (`part.draft(faces, 3,
   Plane.XY)` is `draft(part, faces, 3, Plane.XY)`; see [Concepts](concepts.md#methods-and-functions)).
 - **Operators** become methods: `a.fuse(b)`, `a.cut(b)` and `a.intersect(b)` for Python's `+`,
