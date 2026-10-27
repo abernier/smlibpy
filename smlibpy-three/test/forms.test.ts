@@ -3,8 +3,11 @@
 // smlibwasm's API is here entire: each of its exports and each member of its classes is the
 // package's, by the same name or a name listed here, or left out for a reason listed here (the
 // README's "Left out"). A new export or member of smlibwasm fails here until it is wrapped or listed.
+// smlibwasm's old forms, which it takes for a release with a warning, were never the package's:
+// each is refused here, as an option it does not have.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
 import * as three from '../src/index.ts'
@@ -247,4 +250,44 @@ test('scale is a function: the shape scaled in its frame, with its transform, wh
   close(three.scale(new TriangleMesh(box), 2).volume, 8 * 6000, 1e-6)
   assert.throws(() => three.scale(new THREE.Mesh() as never, 2), { name: 'TypeError', message: /scale takes a Part, Shell, Sketch, BrepEdge, Wire or TriangleMesh first/ })
   void BrepFace
+})
+
+/** smlibwasm's old forms (an option it renamed, a flag it took by position), called on the
+ * package: smlibwasm takes them for a release, with a warning; js/test/_python_api.json lists them. */
+const OLD_FORMS: Record<string, (options: unknown) => unknown> = {
+  'Edge.continuity': (options) => new Box(10, 10, 10).edges()[0].continuity(16, options as never),
+  'Wire.continuity': (options) =>
+    new Wire([new Segment(new THREE.Vector3(), new THREE.Vector3(10, 0, 0)), new Segment(new THREE.Vector3(10, 0, 0), new THREE.Vector3(10, 10, 0))]).continuity(options as never),
+  'Sketch.offset': (options) => new Rectangle(20, 10).offset(1, options as never),
+  'Face.edges': (options) => new Box(10, 10, 10).faces()[0].edges(options as never),
+  '_Body.edges': (options) => new Box(10, 10, 10).edges(options as never),
+}
+
+/** smlibwasm's `Class.method` as the package names it. */
+const ours = (name: string) => name.replace(/^_Body\b/, 'Body').replace(/^\w+/, (cls) => RENAMED[cls] ?? cls)
+
+test("smlibwasm's old forms are not the package's: refused as options it does not have, with no warning", () => {
+  const old: { renamed: Record<string, Record<string, string>>; positional: Record<string, string[]> } = JSON.parse(
+    readFileSync(new URL('../test/_python_api.json', import.meta.resolve('@classcad/smlibwasm')), 'utf8'),
+  )
+  // (each one, so that a new one fails here until the package refuses it too)
+  assert.deepEqual([...Object.keys(old.renamed), ...Object.keys(old.positional)].filter((name) => !(name in OLD_FORMS)), [])
+  const said: string[] = []
+  three.setWarningHandler((message) => said.push(message))
+  try {
+    for (const [name, options] of Object.entries(old.renamed)) {
+      for (const [was, is] of Object.entries(options)) {
+        assert.throws(() => OLD_FORMS[name]({ [was]: 1 }), { name: 'TypeError', message: `${ours(name)}() got an unexpected option '${was}'; did you mean '${is}'?` })
+      }
+    }
+    for (const [name, [option]] of Object.entries(old.positional)) {
+      assert.throws(() => OLD_FORMS[name](true), {
+        name: 'TypeError',
+        message: `${ours(name)}() takes 0 positional arguments but 1 was given (${option} is an option: ${name.split('.')[1]}({ ${option}: true }))`,
+      })
+    }
+  } finally {
+    three.setWarningHandler(null)
+  }
+  assert.deepEqual(said, [])
 })

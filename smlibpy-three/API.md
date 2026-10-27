@@ -52,8 +52,11 @@ export abstract class Body extends THREE.Mesh {
     set angle(value: number);
     /** The faces, in the kernel's order. The same objects every time. */
     faces(): ShapeList<BrepFace>;
-    /** The edges (seams, where a closed surface meets itself, left out), in the kernel's order. */
-    edges(): ShapeList<BrepEdge>;
+    /** The edges, in the kernel's order: seams, where a closed surface meets itself, only with
+     * `seams` (they are not in its tessellation's edges, and their `index` is -1). */
+    edges(options?: {
+        seams?: boolean;
+    }): ShapeList<BrepEdge>;
     vertices(): ShapeList<BrepVertex>;
     /** The faces' boundary loops. */
     wires(): ShapeList<Wire>;
@@ -609,7 +612,10 @@ export class BrepEdge extends THREE.Line {
     /** An edge along one of three's curves (LineCurve3, CubicBezierCurve3, CatmullRomCurve3,
      * CurvePath, ...) in its own frame. Without a curve, an empty edge. */
     constructor(curve?: THREE.Curve<THREE.Vector3> | null, material?: THREE.Material | null);
+    /** The body the edge belongs to (null for a curve of its own). */
     get owner(): Body | null;
+    /** Its place in `owner.edges()`; -1 for a seam (in `owner.edges({ seams: true })` only) and for
+     * a curve of its own. */
     get index(): number;
     /** "line", "circle" (also arcs), "ellipse", "bspline" or "other". */
     get geomType(): string;

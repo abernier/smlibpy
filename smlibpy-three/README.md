@@ -35,9 +35,9 @@ hit.brep // the BrepFace that was hit (a THREE.Mesh); on part.edgeLines, the Bre
 
 ![The example page: hovering the top face of the boss](example/hover.jpg)
 
-Status: a draft, not published. It wraps all of smlibwasm's public API as `next` has it (0.5.1:
+Status: a draft, not published. It wraps all of smlibwasm's public API as `next` has it (0.6.0:
 what is left out, and why, is listed below, and `test/forms.test.ts` checks it name by name), with
-191 tests (`npm test`) and an example page (`npm run example`). [API.md](API.md) is the API
+194 tests (`npm test`) and an example page (`npm run example`). [API.md](API.md) is the API
 reference; [WRAPPING.md](WRAPPING.md) says how a feature is wrapped.
 
 ## Using it
@@ -193,6 +193,10 @@ The package follows the repository's rules for the API (AGENTS.md), as smlibpy a
 - **Parameters are named in full** (`tolerance`, `angleTolerance`), **choices are typed**
   (`corners: 'round' | 'sharp'`), every export has a doc comment, and modules are named as
   smlibwasm's (`deformations`, `pictures`), never after a function they hold.
+- **smlibwasm's old forms are not the package's.** smlibwasm keeps an option it renamed
+  (`angleTol`) and a flag it took by position (`edges(true)`) working for a release, with a
+  warning; the package never had them, so it refuses them as an option it does not have ("did you
+  mean 'angleTolerance'?"), and `test/forms.test.ts` calls each one smlibwasm lists.
 
 ### Values and objects
 
@@ -234,8 +238,8 @@ and its result does not hold.
 
 Kernel calls are synchronous. `@classcad/smlibpy-three/worker` runs modeling functions in a worker
 (`expose` there, `new KernelWorker(...)` here), on smlibwasm's transport: bodies cross as their exact
-kernel bodies with their transform, name and settings, faces and edges as their body and index,
-curves, meshes, groups and three's math types as themselves; materials stay on their thread (their
+kernel bodies with their transform, name and settings, faces and edges as their body and index
+(a seam as its place among the edges with the seams), curves, meshes, groups and three's math types as themselves; materials stay on their thread (their
 color and name cross). A body coming back brings its tessellation, made in the worker, so the page
 only uploads it to the GPU: tessellating is the slow step of drawing a large part. A call can time
 out or be aborted; a crash or a timeout ends the worker, and the next call starts a new one.

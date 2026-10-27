@@ -510,6 +510,11 @@ class Packer {
       if (v.isBrepFace === true || v.isBrepVertex === true || v.isBrepEdge === true) {
         const shape = v as unknown as BrepFace | BrepEdge | BrepVertex
         if (shape.owner !== null && shape.index >= 0) return { [TAG]: v.isBrepFace === true ? 'BrepFace' : v.isBrepEdge === true ? 'BrepEdge' : 'BrepVertex', body: this.#body(shape.owner), index: shape.index }
+        if (shape.owner !== null && v.isBrepEdge === true) {
+          // (a seam: its place among its body's edges with the seams)
+          const index = shape.owner.edges({ seams: true }).indexOf(shape as BrepEdge)
+          if (index >= 0) return { [TAG]: 'BrepEdge', body: this.#body(shape.owner), index, seams: true }
+        }
         if (v.isBrepVertex === true) return this.#point(v as unknown as BrepVertex, top)
       }
       if (v.isBrepEdge === true || v.isWire === true) return this.#curve(v as unknown as BrepEdge | Wire, top)
@@ -716,7 +721,7 @@ class Unpacker {
       case 'BrepFace':
         return this.#sub(this.#bodies[r.body].faces(), r.index, 'face')
       case 'BrepEdge':
-        return this.#sub(this.#bodies[r.body].edges(), r.index, 'edge')
+        return this.#sub(this.#bodies[r.body].edges({ seams: r.seams === true }), r.index, 'edge')
       case 'BrepVertex':
         return this.#sub(this.#bodies[r.body].vertices(), r.index, 'vertex')
       case 'EdgeLines':

@@ -53,7 +53,7 @@ or names smlibwasm's API).
 | `toThree(value, like)` | any result of an operation of `like`: bodies wrapped and adopted, faces/edges/vertices of `like`'s body as its objects, other curves placed where `like` is, kernel math values as three's |
 | `shapeFor(body, k)` | the BrepFace, BrepEdge or BrepVertex object of `body` for a kernel face, edge or vertex |
 | `curveOf(value, owner?)`, `placedCurve(value, like)` | a BrepEdge or Wire for a kernel curve: a body's, or one of its own |
-| `sub(cls, owner, index, k)` | a BrepFace, BrepEdge or BrepVertex object (owner null: a vertex of its own) |
+| `sub(cls, owner, index, k)` | a BrepFace, BrepEdge or BrepVertex object (owner null: a vertex of its own; index -1 with an owner: a seam, in `edges({ seams: true })` only) |
 | `drawnData(body)`, `takeDrawn(body, data)` | a body's tessellation as plain arrays, for another thread, and back |
 | `frameOf(obj)` | the object whose frame a shape is in (a face's body, else itself) |
 | `itemsOf(items)` | `(T or Iterable<T>)[]` to `T[]` |
@@ -74,7 +74,11 @@ or names smlibwasm's API).
    object's transform, so smlibpy's `translate`, `rotate` and `moved` are not wrapped, and `scale`
    is a function only). Parameters are whole words (`tolerance`, not `tol`), choices are typed as
    their literals (`corners?: 'round' | 'sharp'`), and modules are named as smlibwasm's, never after
-   a function they hold (`deformations.ts`, `pictures.ts`).
+   a function they hold (`deformations.ts`, `pictures.ts`). smlibwasm's old forms, which it takes
+   for a release with a warning that names it (an option it renamed, a flag it took by position),
+   are refused before the call, as an option the package does not have (`refuseRenamed`,
+   `refusePositional` in `kernel.ts`); `test/forms.test.ts` calls each one smlibwasm's
+   `js/test/_python_api.json` lists.
 4. **Methods and functions.** Every operation of a body (it makes a new body, or new geometry, from
    one) is a method and a function, as the repository's AGENTS.md has it for smlibpy and smlibwasm:
    the method does the work; the function in `operations.ts` (or its domain's module) has the same

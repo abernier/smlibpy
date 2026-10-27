@@ -32,6 +32,12 @@ export const extrude = (sketch: Sketch, amount: number): Part => sketch.extrude(
  * its center (in its body's frame). */
 export const faceInfo = (part: Part, face: BrepFace) => ({ same: face.owner === part, index: face.index, center: face.center(), area: face.area })
 
+/** A part's seam over there, with its part. */
+export const seam = (part: Part) => ({ part, seam: part.edges({ seams: true }).filter((e) => e.isSeam)[0] })
+
+/** What a seam is over there. */
+export const seamInfo = (part: Part, edge: BrepEdge) => ({ same: edge.owner === part, isSeam: edge.isSeam, index: edge.index, length: edge.length })
+
 /** What a vertex and an edge are over there. */
 export const subInfo = (part: Part, vertex: BrepVertex, edge: BrepEdge) => ({
   same: vertex.owner === part && edge.owner === part,

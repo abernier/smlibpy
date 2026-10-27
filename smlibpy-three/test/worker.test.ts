@@ -139,6 +139,20 @@ test('an edge picked here is rounded there; a face and a vertex cross as their b
   close(rim.volume, part.fillet(loop, 1).volume, 1e-9 * part.volume, 'loop')
 })
 
+test('a seam crosses as its body and its place among the edges with the seams', async () => {
+  const pipe = new Cylinder(5, 5, 10)
+  const seam = pipe.edges({ seams: true }).filter((e) => e.isSeam)[0]
+  const there = await cad.call('seamInfo', [pipe, seam])
+  assert.equal(there.same, true)
+  assert.equal(there.isSeam, true)
+  assert.equal(there.index, -1)
+  close(there.length, 10, 1e-9)
+  const back = await cad.call('seam', [pipe])
+  assert.equal(back.seam.owner, back.part)
+  assert.ok(back.seam.isSeam)
+  assert.ok(back.part.edges({ seams: true }).includes(back.seam))
+})
+
 test('operands are taken where they are in the world: a tool in another group cuts there as here', async () => {
   const a = new THREE.Group()
   a.position.set(50, 0, 0)

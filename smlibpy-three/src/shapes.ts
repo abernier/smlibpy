@@ -33,6 +33,8 @@ import {
   plane as toPlane,
   radians,
   ray,
+  refusePositional,
+  refuseRenamed,
   sm,
   threePlane,
   vec,
@@ -98,6 +100,7 @@ interface State {
   angle: number
   faces: ShapeList<BrepFace> | null
   edges: ShapeList<BrepEdge> | null
+  withSeams: ShapeList<BrepEdge> | null
   vertices: ShapeList<BrepVertex> | null
   // faces, edges, wires, vertices
   owner: Body | null
@@ -123,6 +126,7 @@ function state(o: object): State {
       angle: DEFAULT_ANGLE,
       faces: null,
       edges: null,
+      withSeams: null,
       vertices: null,
       owner: null,
       index: -1,
@@ -235,7 +239,7 @@ export function setKernel(body: Body, value: SmBody): void {
   const s = state(body)
   releaseTessellation(body)
   s.held = { value, refs: 1, tessellations: new Map() }
-  s.faces = s.edges = s.vertices = null
+  s.faces = s.edges = s.withSeams = s.vertices = null
 }
 
 function hold(s: State, held: HeldBody | null): void {
@@ -245,7 +249,7 @@ function hold(s: State, held: HeldBody | null): void {
   if (s.held !== null) s.held.refs--
   s.held = held
   if (held !== null) held.refs++
-  s.faces = s.edges = s.vertices = null
+  s.faces = s.edges = s.withSeams = s.vertices = null
 }
 
 /** @internal
@@ -407,9 +411,10 @@ export function toThree(value: unknown, like: THREE.Object3D | null, made: Map<u
 }
 
 /** @internal
- * The face, edge or vertex object of `body` for a kernel face, edge or vertex of its body. */
+ * The face, edge or vertex object of `body` for a kernel face, edge (a seam too) or vertex of its
+ * body. */
 export function shapeFor(body: Body, k: sm.Face | sm.Edge | sm.Vertex): BrepFace | BrepEdge | BrepVertex | undefined {
-  const list: readonly (BrepFace | BrepEdge | BrepVertex)[] = k instanceof sm.Face ? body.faces() : k instanceof sm.Edge ? body.edges() : body.vertices()
+  const list: readonly (BrepFace | BrepEdge | BrepVertex)[] = k instanceof sm.Face ? body.faces() : k instanceof sm.Edge ? body.edges({ seams: true }) : body.vertices()
   return find(list, k)
 }
 
@@ -490,14 +495,29 @@ export abstract class Body extends THREE.Mesh {
     return ShapeList.from(s.faces) as ShapeList<BrepFace>
   }
 
-  /** The edges (seams, where a closed surface meets itself, left out), in the kernel's order. */
-  edges(): ShapeList<BrepEdge> {
+  /** The edges, in the kernel's order: seams, where a closed surface meets itself, only with
+   * `seams` (they are not in its tessellation's edges, and their `index` is -1). */
+  edges(options: { seams?: boolean } = {}): ShapeList<BrepEdge> {
+    refusePositional('Body.edges', options, 'seams')
     const s = state(this)
+    if (options != null && Object.keys(options).some((key) => key !== 'seams')) {
+      const value = kernelOf(this)
+      call(() => value.edges(options)) // (an option it does not have: the kernel says which)
+    }
     if (s.edges === null) {
       const value = kernelOf(this)
       s.edges = ShapeList.from([...call(() => value.edges())].map((e, i) => sub(BrepEdge, this, i, e))) as ShapeList<BrepEdge>
     }
-    return ShapeList.from(s.edges) as ShapeList<BrepEdge>
+    if (!options?.seams) return ShapeList.from(s.edges) as ShapeList<BrepEdge>
+    if (s.withSeams === null) {
+      // (the kernel's edges with the seams: the others come in the same order, as the same objects)
+      const value = kernelOf(this)
+      const edges = s.edges
+      let i = 0
+      const all = [...call(() => value.edges({ seams: true }))]
+      s.withSeams = ShapeList.from(all.map((e) => (i < edges.length && (state(edges[i]).sub as sm.Edge).equals(e) ? edges[i++] : sub(BrepEdge, this, -1, e)))) as ShapeList<BrepEdge>
+    }
+    return ShapeList.from(s.withSeams) as ShapeList<BrepEdge>
   }
 
   vertices(): ShapeList<BrepVertex> {
@@ -728,13 +748,14 @@ export abstract class Body extends THREE.Mesh {
     s.ownMaterial = null
     this.edgeLines.dispose()
     for (const list of [s.faces, s.edges, s.vertices]) for (const x of list ?? []) x.dispose()
+    for (const x of s.withSeams ?? []) if (x.index < 0) x.dispose() // (its seams: the others are its edges)
     if (s.held !== null) {
       s.held.refs--
       if (s.held.refs <= 0) s.held.value.dispose()
       s.held = null
     }
     s.disposed = true
-    s.faces = s.edges = s.vertices = null
+    s.faces = s.edges = s.withSeams = s.vertices = null
     super.dispose?.()
   }
 }
@@ -1687,6 +1708,7 @@ export class Sketch extends Shell {
   /** The region grown (shrunk, negative) by `distance` all round; `corners` 'round' (the default),
    * 'sharp' or 'chamfer'. */
   override offset(distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer' } = {}): Sketch {
+    refuseRenamed('Sketch.offset', options, { round: 'corners' })
     return same<Sketch>(this, (v: sm.Sketch) => v.offset(distance, options))
   }
 
@@ -1973,6 +1995,7 @@ export class BrepFace extends THREE.Mesh {
 
   /** The face's edges: its body's (with `seams`, also the seams where its surface meets itself). */
   edges(options: { seams?: boolean } = {}): ShapeList<BrepEdge> {
+    refusePositional('BrepFace.edges', options, 'seams')
     return ownList(this, 'edges', (f) => (f as sm.Face).edges(options))
   }
 
@@ -2215,7 +2238,8 @@ function ownList<T extends BrepFace | BrepEdge | BrepVertex>(x: BrepFace | BrepE
     if (kind === 'vertices') return ShapeList.from(items.map((v) => sub(BrepVertex, null, -1, v as sm.Vertex))) as ShapeList<T>
     return new ShapeList<T>()
   }
-  const all = (owner[kind] as () => ShapeList<T>).call(owner)
+  // (edges among the edges with the seams: the kernel's call says whether it gives seams)
+  const all = kind === 'edges' ? (owner.edges({ seams: true }) as ShapeList<T>) : (owner[kind] as () => ShapeList<T>).call(owner)
   return ShapeList.from(items.map((k) => find(all, k)).filter((x): x is T => x !== undefined)) as ShapeList<T>
 }
 
@@ -2245,10 +2269,13 @@ export class BrepEdge extends THREE.Line {
     setCurve(this, edges[0])
   }
 
+  /** The body the edge belongs to (null for a curve of its own). */
   get owner(): Body | null {
     return state(this).owner
   }
 
+  /** Its place in `owner.edges()`; -1 for a seam (in `owner.edges({ seams: true })` only) and for
+   * a curve of its own. */
   get index(): number {
     return state(this).index
   }
@@ -2384,6 +2411,7 @@ export class BrepEdge extends THREE.Line {
 
   /** How smoothly the edge's faces meet along it; `angleTolerance` in radians. */
   continuity(samples = 16, options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
+    refuseRenamed('BrepEdge.continuity', options, { angleTol: 'angleTolerance', curvatureTol: 'curvatureTolerance' })
     const e = this.edge
     return continuityOf(call(() => e.continuity(samples, { ...options, angleTolerance: options.angleTolerance === undefined ? undefined : degrees(options.angleTolerance) })))
   }
@@ -2586,9 +2614,14 @@ accessors(
   (e: BrepEdge) => {
     const s = state(e)
     if (s.ownGeometry === null) {
-      const tess = ownerTessellation(e)
-      if (s.owner !== null) s.ownGeometry = tess === null ? PLACEHOLDER : lineGeometry(tess.edgePoints[s.index].slice())
-      else s.ownGeometry = s.curve === null ? PLACEHOLDER : lineGeometry(curvePolyline(s.curve.value))
+      if (s.owner !== null && s.index >= 0) {
+        const tess = ownerTessellation(e)
+        s.ownGeometry = tess === null ? PLACEHOLDER : lineGeometry(tess.edgePoints[s.index].slice())
+      } else {
+        // (a curve of its own, and a seam, which its body's tessellation leaves out: along the curve)
+        const curve = s.curve?.value ?? (s.sub as sm.Edge | null)
+        s.ownGeometry = curve === null ? PLACEHOLDER : lineGeometry(curvePolyline(curve))
+      }
     }
     return s.ownGeometry
   },
@@ -2800,6 +2833,7 @@ export class Wire extends THREE.Line {
 
   /** How smoothly the wire's edges meet (the worst joint); `angleTolerance` in radians. */
   continuity(options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
+    refuseRenamed('Wire.continuity', options, { angleTol: 'angleTolerance', curvatureTol: 'curvatureTolerance' })
     const w = this.wire
     return continuityOf(call(() => w.continuity({ ...options, angleTolerance: options.angleTolerance === undefined ? undefined : degrees(options.angleTolerance) })))
   }

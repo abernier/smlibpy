@@ -164,6 +164,35 @@ test('faces, edges and vertices are one object each, and draw in place as childr
   closeVector({ x: Math.abs(corner.x), y: Math.abs(corner.y), z: Math.abs(corner.z) }, { x: 10, y: 10, z: 10 })
 })
 
+test('seams, where a closed surface meets itself, come with { seams: true }, drawn along their curve', () => {
+  const pipe = new Cylinder(5, 5, 10) // (along y: its two circles, and the seam of its side)
+  const edges = pipe.edges()
+  const all = pipe.edges({ seams: true })
+  assert.equal(edges.length, 2)
+  assert.equal(all.length, 3)
+  assert.ok(edges.every((e) => all.includes(e))) // (the same objects)
+  assert.equal(pipe.edges({ seams: true })[0], all[0]) // (one object each, as the others)
+  const seams = all.filter((e) => e.isSeam)
+  assert.equal(seams.length, 1)
+  const seam = seams[0]
+  assert.equal(seam.owner, pipe)
+  assert.equal(seam.index, -1) // (not in edges(), nor in the edge lines)
+  close(seam.length, 10, 1e-9)
+  // a face's seam: the body's
+  const side = pipe.faces().cylinders().one()
+  assert.equal(side.edges().length, 2)
+  assert.ok(side.edges({ seams: true }).includes(seam))
+  assert.equal(seam.faces().one(), side)
+  assert.ok(seam.vertices()[0].edges().includes(seam)) // (a vertex's edges, as the kernel gives them: the seam too)
+  // drawn on the cylinder, along y, in the body's frame
+  const p = seam.geometry.getAttribute('position')
+  for (let i = 0; i < p.count; i++) close(Math.hypot(p.getX(i), p.getZ(i)), 5, 1e-6)
+  close(Math.abs(p.getY(p.count - 1) - p.getY(0)), 10, 1e-9)
+  // smlibwasm's old form, seams by position, is not the package's
+  assert.throws(() => pipe.edges(true as never), { name: 'TypeError', message: /^Body\.edges\(\) takes 0 positional arguments/ })
+  assert.throws(() => pipe.edges({ seam: true } as never), { name: 'TypeError', message: "Body.edges() got an unexpected option 'seam'; did you mean 'seams'?" })
+})
+
 test('selectors work in three axes: top is +y, front is +z', () => {
   const part = new Box(30, 10, 20) // 30 along x, 10 high (y), 20 along z
   closeVector(part.faces().top().one().normalAt(), Y)

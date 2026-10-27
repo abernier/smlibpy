@@ -27,6 +27,7 @@ test("the kernel's classes and placements are named as the package names them", 
   })
   assert.equal(words('give a Part, Face or Edge; a Line is an Edge'), 'give a Part, BrepFace or BrepEdge; a Segment is a BrepEdge')
   assert.equal(words('a Sphere, a Triangle, a Font, a Vertex'), 'a Ball, a TriangleSketch, an OpenTypeFont, a BrepVertex')
+  assert.equal(words("_Body.project() got an unexpected option 'mode'"), "Body.project() got an unexpected option 'mode'")
   assert.equal(words('unroll: axis must be an Axis'), 'unroll: axis must be a THREE.Ray')
   assert.equal(words("draw it with 2D points and place it with .on(plane)"), 'draw it with 2D points and place it with its transform or on()')
   assert.equal(words('for a plate on XY from z = 0 to t: new Axis([x, 0, t], [0, 1, 0])'), 'for a plate on XY from z = 0 to t: new THREE.Ray(new THREE.Vector3(x, 0, t), new THREE.Vector3(0, 1, 0))')

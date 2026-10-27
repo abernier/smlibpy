@@ -152,6 +152,29 @@ export function translate(e: unknown): unknown {
 }
 
 /**
+ * An option smlibwasm renamed is not the package's (smlibwasm takes the old name for a release,
+ * with a warning that names smlibwasm): a TypeError, as for an option it does not have. `renamed`
+ * maps the old names to the new.
+ */
+export function refuseRenamed(name: string, options: unknown, renamed: Record<string, string>): void {
+  if (options == null || typeof options !== 'object') return
+  for (const [old, now] of Object.entries(renamed)) {
+    if (Object.prototype.hasOwnProperty.call(options, old)) throw new TypeError(`${name}() got an unexpected option '${old}'; did you mean '${now}'?`)
+  }
+}
+
+/**
+ * The option `option` given where the options go is not the package's (smlibwasm takes it by
+ * position for a release, with a warning that names smlibwasm): a TypeError, as for an argument
+ * too many.
+ */
+export function refusePositional(name: string, options: unknown, option: string): void {
+  if (options == null || (typeof options === 'object' && !Array.isArray(options))) return
+  const method = name.slice(name.indexOf('.') + 1)
+  throw new TypeError(`${name}() takes 0 positional arguments but 1 was given (${option} is an option: ${method}({ ${option}: ${JSON.stringify(options)} }))`)
+}
+
+/**
  * A message of the kernel's in the package's terms: its classes by the package's names (BrepFace,
  * Segment, Ball, ...) and three's types for its values, `on()` for its planes, and its angles in
  * radians. (Coordinates and axes need nothing: the kernel's are three's.)
@@ -180,6 +203,7 @@ const NAMES: readonly [RegExp, string][] = [
   [/(?<!THREE\.)\bSphere\b/g, 'Ball'],
   [/(?<!THREE\.)\bTriangle\b/g, 'TriangleSketch'],
   [/(?<!THREE\.)\bFont\b/g, 'OpenTypeFont'],
+  [/\b_Body\b/g, 'Body'],
   [/\ban Axis\b/g, 'a THREE.Ray'],
   [/\ba Plane\b/g, 'a THREE.Plane'],
   [/\ba Location\b/g, 'a THREE.Matrix4'],
