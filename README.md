@@ -162,7 +162,7 @@ pip install smlibpy
 ```
 
 There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for Python
-3.10 to 3.14, with the kernel compiled in. They are 8 to 11 MB, and numpy is the only
+3.10 to 3.15, with the kernel compiled in. They are 8 to 11 MB, and numpy is the only
 dependency. For agents, `pip install "smlibpy[mcp]"` adds the MCP server; see
 [AI agents](https://smlibpy.classcad.ch/docs/mcp).
 

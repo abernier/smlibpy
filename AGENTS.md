@@ -161,7 +161,7 @@ fallbacks. A feature lands in both, in the same change. `js/PORTING.md` has the 
    A patch (0.5.1) only when code written for the last release still runs, old forms with a
    warning; otherwise a minor version (0.6.0), and the notes say what to change. Diff the public
    API against the last release's tag to know, rather than recalling the changes.
-2. The Release workflow dispatched on the release branch builds and tests every wheel (5 Pythons
+2. The Release workflow dispatched on the release branch builds and tests every wheel (6 Pythons
    on Linux x86_64 and arm64, macOS arm64 and x86_64, Windows), the sdist and the npm package. All
    green, or no release.
 3. The release branch merged into `main` by PR; a GitHub release `v<version>` with the notes

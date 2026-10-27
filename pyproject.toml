@@ -44,7 +44,7 @@ sdist.include = ["src/smlibpy/mcp/app", "third_party/usd-brep/source/SMLib", "th
 sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests", "third_party/usd-brep/tools", "third_party/usd-brep/Examples", "out", "build", ".venv*"]
 
 [tool.cibuildwheel]
-build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
 skip = "*-musllinux_* *_i686 *-win32"
 build-verbosity = 1
 test-requires = ["pytest>=8", "websockets>=13"]  # (websockets: the live view, of the mcp extra)
