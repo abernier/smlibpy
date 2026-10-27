@@ -56,7 +56,7 @@ test('boxes, centers, normals and mass properties are three types', () => {
   const part = new Box(40, 10, 20)
   assert.ok(part.bbox() instanceof THREE.Box3)
   closeBox(part.bbox(), box([-20, -5, -10], [20, 5, 10]))
-  assert.ok(part.center() instanceof THREE.Vector3)
+  assert.ok(part.getCenter() instanceof THREE.Vector3)
   const top = part.faces().top().one()
   assert.ok(top.normalAt() instanceof THREE.Vector3)
   closeVector(top.normalAt(), Y)
@@ -191,7 +191,7 @@ test('nothing of smlibwasm comes out of the package', () => {
     edge,
     part.vertices().first,
     part.bbox(),
-    part.center(),
+    part.getCenter(),
     part.massProperties(),
     part.split(new THREE.Plane(Y, 0), 'both'),
     part.section(new THREE.Plane(Y, 0)),

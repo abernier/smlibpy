@@ -71,12 +71,12 @@ test('a ray beside an edge hits the edge lines, with the edge', () => {
   // (the ray passes beside the bottom front edge too, further on)
   assert.equal(hits.length, 2)
   const [hit, below] = hits
-  closeVector((below.brep as BrepEdge).center(), { x: 0, y: -5, z: 15 }, 1e-9)
+  closeVector((below.brep as BrepEdge).getCenter(), { x: 0, y: -5, z: 15 }, 1e-9)
   assert.equal(hit.object, part.edgeLines)
   assert.ok(hit.brep instanceof BrepEdge)
   assert.equal(hit.brep.owner, part)
   assert.ok(part.edges().includes(hit.brep))
-  closeVector(hit.brep.center(), { x: 0, y: 5, z: 15 }, 1e-9)
+  closeVector(hit.brep.getCenter(), { x: 0, y: 5, z: 15 }, 1e-9)
   // three's threshold: further than it, nothing
   assert.equal(ray([0, 100, 16], [0, -1, 0], 0.5).intersectObject(part).length, 0)
   // a face hit and an edge hit near each other: three sorts them by distance

@@ -5,7 +5,7 @@
 //
 // The rules:
 // - Coordinates are three's, in the object's own frame, as a geometry's are: what a query
-//   gives (center(), bbox(), pointAt()) and what a method takes (a point, a direction, a
+//   gives (getCenter(), bbox(), pointAt()) and what a method takes (a point, a direction, a
 //   THREE.Plane, a THREE.Curve) is in the frame of the object it is called on.
 // - Objects given to an operation are taken where they are in the world (their matrixWorld): a
 //   tool moved with `tool.position.x = 10` cuts there. The result is in the frame of the object
@@ -270,7 +270,7 @@ export function wrap(value: SmBody): Part | Shell | Sketch {
 export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): BrepEdge | Wire {
   incomingSub = { owner, index: -1, sub: value }
   try {
-    return value instanceof sm.Wire ? new Wire() : new BrepEdge()
+    return highlight(value instanceof sm.Wire ? new Wire() : new BrepEdge(), owner)
   } finally {
     incomingSub = null
   }
@@ -281,10 +281,18 @@ export function curveOf(value: sm.Edge | sm.Wire, owner: Body | null = null): Br
 export function sub<T extends BrepFace | BrepEdge | BrepVertex>(cls: new () => T, owner: Body | null, index: number, value: sm.Face | sm.Edge | sm.Vertex): T {
   incomingSub = { owner, index, sub: value }
   try {
-    return new cls()
+    return highlight(new cls(), owner)
   } finally {
     incomingSub = null
   }
+}
+
+/** A body's face, edge, wire or vertex draws as a highlight: after the body's edge lines, which lie
+ * at its depth (three's renderers draw a higher renderOrder later; WebGPURenderer drew the lines
+ * over an edge otherwise). */
+function highlight<T extends { renderOrder: number }>(x: T, owner: Body | null): T {
+  if (owner !== null) x.renderOrder = 1
+  return x
 }
 
 /** @internal
@@ -542,8 +550,9 @@ export abstract class Body extends THREE.Mesh {
     return call(() => value.area)
   }
 
-  /** The center of mass (of the area, for sheets). */
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  /** The center of mass (of the area, for sheets): smlibpy's `center()`, under three's name for it
+   * (`Box3.getCenter`), since three's renderers read any object's `center` as a Sprite's. */
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     const value = kernelOf(this)
     return vector3(call(() => value.center()), target)
   }
@@ -1963,7 +1972,9 @@ export class BrepFace extends THREE.Mesh {
     return ray(call(() => f.axis))
   }
 
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  /** The centroid of its area, in its body's frame (on a curved face it may lie off the face: see
+   * `interiorPoint`). */
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     const f = this.face
     return vector3(call(() => f.center()), target)
   }
@@ -2334,8 +2345,8 @@ export class BrepEdge extends THREE.Line {
     return vector3(call(() => e.tangentAt(t)), target)
   }
 
-  /** The point halfway along it. */
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  /** The point halfway along it (`arcCenter` is a circle's center). */
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     return this.pointAt(0.5, target)
   }
 
@@ -2751,8 +2762,8 @@ export class Wire extends THREE.Line {
     return vector3(call(() => w.end))
   }
 
-  /** The point halfway along it. */
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  /** The average of its edges' midpoints, weighted by their lengths. */
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     const w = this.wire
     return vector3(call(() => w.center()), target)
   }
@@ -2955,7 +2966,8 @@ export class BrepVertex extends THREE.Points {
     return call(() => v.convexity)
   }
 
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  /** Its point, as `point` gives it. */
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     return target.copy(this.point)
   }
 
@@ -3271,7 +3283,7 @@ export class ShapeList<T = Item> extends Array<T> {
   }
 
   /** The average of the items' centers (in the body's frame). */
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     return target.copy(select<T, THREE.Vector3>(this, 'center', []))
   }
 
