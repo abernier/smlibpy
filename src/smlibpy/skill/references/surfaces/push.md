@@ -7,6 +7,7 @@ given outline use `warp`; for a flat area on a curved face, `flatten`.
 ## Signature
 `part.push(face, at, *, by=None, to=None, normal=None, radius=None, continuity="G1")`
 `sheet.push(face, at, *, by=None, to=None, normal=None, radius=None, continuity="G1")`
+`push(part_or_sheet, face, at, *, by=None, ...)`: the same, as a function
 
 - `face`: a face of the part or sheet (a face of an earlier version of it is found by its place).
 - `at`: the point of the face that moves; a point off the face is taken to the face's nearest point.

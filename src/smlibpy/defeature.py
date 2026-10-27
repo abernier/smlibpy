@@ -15,11 +15,9 @@ fillets or holes were taken out, down for concave fillets and bosses).
 from __future__ import annotations
 
 import math
-import os
-import warnings
-from typing import TYPE_CHECKING, Any, Callable, Iterable, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
-from ._guard import _KernelFault, _how, _wait, here, isolated
+from ._guard import _KernelFault, _how, here, isolated
 from ._kernel import KernelError, ModelingError, k
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -59,35 +57,7 @@ GUARD_PROCESS = "auto"
 GUARD_BOOLEANS = False
 
 _D = k.defeature
-R = TypeVar("R")
 _VOLUMES: dict[int, tuple[Any, float]] = {}  # id of a body's handle -> (handle, volume)
-
-
-def _guarded(what: str, work: Callable[[], R]) -> R:
-    """``work()``, after a forked copy of the process has run it to the end (see GUARD_SECONDS).
-    The kernel is deterministic, and the copy starts from the same memory, so it does what
-    this process will do; not always where the kernel reads memory it has freed, since the two
-    processes reuse freed memory differently (ai/todo/features.md, 37). Superseded by
-    ``smlibpy._guard.isolated``, which brings the copy's result back instead of running the step
-    again here."""
-    limit = float(GUARD_SECONDS)
-    if not limit > 0 or not hasattr(os, "fork"):
-        return work()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
-        pid = os.fork()
-    if pid == 0:  # pragma: no cover - the child
-        from ._guard import _quiet_crashes
-
-        _quiet_crashes()
-        code = 0
-        try:
-            work()
-        except BaseException:  # the parent raises it again when it does the work
-            code = 3
-        os._exit(code)
-    _wait(what, pid, limit)
-    return work()
 
 
 def _isolated(what: str, work: Callable[[], Any]) -> Any:

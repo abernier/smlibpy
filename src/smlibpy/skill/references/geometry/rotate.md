@@ -32,7 +32,7 @@ origin swings around it. To turn a part in place, rotate about an axis through i
 - A rotated sketch turns its plane too; `Rectangle(10, 2).rotate(X, 90)` has normal -Y and
   extrudes toward -Y.
 - Angles above 360 wrap. Rotating 36 times by 10° returns to the start without visible
-  drift (centers within 2e-7).
+  drift (the center within 1.3e-14).
 
 ## Example
 ```python

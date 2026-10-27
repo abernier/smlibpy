@@ -34,7 +34,7 @@ One `Part` that holds every cell:
   its shared faces: `import_usd` gives the merged part. For glTF, STL or OBJ per cell, export
   `part.cells()`.
 - Fast: a plate with nine pins through it (28 cells) takes about 25 ms, with the check of the
-  volume; its `cells()` about 80 ms (35 of them to find the parts each cell lies in).
+  volume; its `cells()` about 100 ms.
 
 ## Errors
 - `TypeError: merge takes parts, not a Sketch` (also for sheets: only solids are merged).

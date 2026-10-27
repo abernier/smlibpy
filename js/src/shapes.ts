@@ -7,6 +7,7 @@
 
 import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _crashOf, _isCrash, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import { _traced } from './_errors.ts'
+import { _keywordOnly, _renamed } from './_renamed.ts'
 import {
   TOLERANCE,
   Axis,
@@ -64,11 +65,12 @@ import {
   type TwistOptions,
   type UnrollOptions,
   bend as _bend,
+  deform as _deform,
   taper as _taper,
   twist as _twist,
   unroll as _unroll,
-} from './deform.ts'
-import { type DraftAnalysis, _contour, _joinedArcs, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
+} from './deformations.ts'
+import { type DraftAnalysis, _contour, _joinedArcs, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './molding.ts'
 import { _wallThicknesses, moveFaces as _moveFaces, offsetFaces as _offsetFaces, shellWalls } from './face_edit.ts'
 import { sweep as _sweep, swing as _swing } from './operations.ts'
 import { Box } from './parts.ts'
@@ -311,6 +313,7 @@ export abstract class Shape {
 
   /** Show the shape in the viewer (see `show`); returns the path of the page. */
   show(options: ShowOptions = {}): string {
+    _opts('Shape.show', options)
     return show(this, options)
   }
 
@@ -414,6 +417,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     return this[0]
   }
 
+  /** The first shape; RangeError for an empty list. */
   get first(): T {
     if (!this.length) throw new RangeError('empty selection')
     return this[0]
@@ -426,6 +430,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     return super.at(index)
   }
 
+  /** The last shape; RangeError for an empty list. */
   get last(): T {
     if (!this.length) throw new RangeError('empty selection')
     return this[this.length - 1]
@@ -445,19 +450,21 @@ export class ShapeList<T = Shape> extends Array<T> {
     return this.filter((s) => criterion(s))
   }
 
+  /** The shapes by the distance of their centers from a point, nearest first (farthest first with `reverse`).
+   * The shapes by the distance of their centers from a point, nearest first (farthest first with `reverse`). */
   sortByDistance(point: VectorLike, reverse = false): ShapeList<T> {
     const p = _vec(point)
     return _sorted(this, (s) => (s as Any).center().distanceTo(p), reverse)
   }
 
-  /** Group shapes with equal key (within `tol`), groups in ascending key order. */
-  groupBy(key: SortKey = Z, tol = 1e-4): ShapeList<T>[] {
+  /** Group shapes with equal key (within `tolerance`), groups in ascending key order. */
+  groupBy(key: SortKey = Z, tolerance = 1e-4): ShapeList<T>[] {
     const f = _keyFn(key)
     const pairs = Array.from(this, (s) => [f(s), s] as [number, T]).sort((a, b) => a[0] - b[0])
     const groups: ShapeList<T>[] = []
     let last: number | null = null
     for (const [v, s] of pairs) {
-      if (last === null || Math.abs(v - last) > tol) {
+      if (last === null || Math.abs(v - last) > tolerance) {
         groups.push(new ShapeList<T>())
         last = v
       }
@@ -466,15 +473,15 @@ export class ShapeList<T = Shape> extends Array<T> {
     return groups
   }
 
-  /** The shapes with the largest key (all of them, if several tie). */
-  maxBy(key: SortKey = Z, tol = 1e-4): ShapeList<T> {
-    const groups = this.groupBy(key, tol)
+  /** The shapes with the largest key (all of them, if several tie within `tolerance`). */
+  maxBy(key: SortKey = Z, tolerance = 1e-4): ShapeList<T> {
+    const groups = this.groupBy(key, tolerance)
     return groups.length ? groups[groups.length - 1] : new ShapeList<T>()
   }
 
-  /** The shapes with the smallest key (all of them, if several tie). */
-  minBy(key: SortKey = Z, tol = 1e-4): ShapeList<T> {
-    const groups = this.groupBy(key, tol)
+  /** The shapes with the smallest key (all of them, if several tie within `tolerance`). */
+  minBy(key: SortKey = Z, tolerance = 1e-4): ShapeList<T> {
+    const groups = this.groupBy(key, tolerance)
     return groups.length ? groups[0] : new ShapeList<T>()
   }
 
@@ -730,11 +737,11 @@ export class ShapeList<T = Shape> extends Array<T> {
     })
   }
 
-  /** Shapes passing through `point` (vertices at, edges/faces touching it). (Python's `at`;
-   * Array has an `at` of its own.) */
-  atPoint(point: VectorLike, tol = 1e-4): ShapeList<T> {
+  /** Shapes passing through `point` (vertices at, edges/faces touching it), at most `tolerance`
+   * (mm) from it. (Python's `at`; Array has an `at` of its own.) */
+  atPoint(point: VectorLike, tolerance = 1e-4): ShapeList<T> {
     const p = _vec(point)
-    return this.filter((s) => (s as Any).distanceTo(p) <= tol)
+    return this.filter((s) => (s as Any).distanceTo(p) <= tolerance)
   }
 
   // -- history ------------------------------------------------------------------------------
@@ -834,18 +841,22 @@ export class ShapeList<T = Shape> extends Array<T> {
     return this.filter((s) => o.some((x) => _eq(x, s)))
   }
 
+  /** The vertices of all the shapes, each once. */
   vertices(): ShapeList<Vertex> {
     return _unique(this.flatMap((s) => [...(s as Any).vertices()]) as Vertex[])
   }
 
+  /** The edges of all the shapes, each once. */
   edges(): ShapeList<Edge> {
     return _unique(this.flatMap((s) => [...(s as Any).edges()]) as Edge[])
   }
 
+  /** The faces of all the shapes, each once. */
   faces(): ShapeList<Face> {
     return _unique(this.flatMap((s) => [...(s as Any).faces()]) as Face[])
   }
 
+  /** The wires of all the shapes. */
   wires(): ShapeList<Wire> {
     return _list(this.flatMap((s) => [...(s as Any).wires()]) as Wire[])
   }
@@ -858,6 +869,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     return c.div(this.length)
   }
 
+  /** The box around all the shapes; RangeError for an empty list. */
   bbox(): BoundBox {
     if (!this.length) throw new RangeError('empty selection')
     let b = (this[0] as Any).bbox() as BoundBox
@@ -866,6 +878,7 @@ export class ShapeList<T = Shape> extends Array<T> {
   }
 
   // -- placement of the whole list ----------------------------------------------------------
+  /** Each shape moved by a location. */
   moved(location: Location): ShapeList<T> {
     return _list(this.map((s) => (s as Any).moved(location) as T))
   }
@@ -876,10 +889,12 @@ export class ShapeList<T = Shape> extends Array<T> {
     return _list(this.map((s) => (s as Any).moved(loc) as T))
   }
 
+  /** Each shape moved by `(x, y, z)`. */
   translate(x: number | VectorLike = 0, y = 0, z = 0): ShapeList<T> {
     return _list(this.map((s) => (s as Any).translate(x, y, z) as T))
   }
 
+  /** Each shape rotated about an axis by `angle` degrees. */
   rotate(axis: Axis = Z, angle = 0): ShapeList<T> {
     return _list(this.map((s) => (s as Any).rotate(axis, angle) as T))
   }
@@ -1180,18 +1195,22 @@ export class Vertex extends Shape {
     return this._kv
   }
 
+  /** Where the vertex is. */
   get point(): Vector {
     return this._p
   }
 
+  /** The vertex's x coordinate. */
   get x(): number {
     return this._p.x
   }
 
+  /** The vertex's y coordinate. */
   get y(): number {
     return this._p.y
   }
 
+  /** The vertex's z coordinate. */
   get z(): number {
     return this._p.z
   }
@@ -1204,28 +1223,34 @@ export class Vertex extends Shape {
     return Number(ext.vertex_tolerance(this._v))
   }
 
+  /** Where the vertex is (as `point`). */
   center(): Vector {
     return this._p
   }
 
+  /** A box of size 0 at the vertex. */
   bbox(): BoundBox {
     return new BoundBox(this._p, this._p)
   }
 
+  /** This vertex, in a list. */
   vertices(): ShapeList<Vertex> {
     return new ShapeList<Vertex>(this)
   }
 
+  /** The edges of the body that meet at this vertex (none for a vertex of no body). */
   edges(): ShapeList<Edge> {
     if (!this._v) return new ShapeList<Edge>()
     return _list((k.vertex_edges(this._v) as number[]).map((e) => Edge._of(this._owner, e)))
   }
 
+  /** The faces of the body that meet at this vertex (none for a vertex of no body). */
   override faces(): ShapeList<Face> {
     if (!this._v) return new ShapeList<Face>()
     return _list((k.vertex_faces(this._v) as number[]).map((f) => new Face(this._owner, f)))
   }
 
+  /** The distance to a point or to a shape. */
   override distanceTo(other: VectorLike | Shape): number {
     if (other instanceof Shape) return other.distanceTo(this._p)
     return this._p.distanceTo(other)
@@ -1279,10 +1304,10 @@ export class Edge extends Shape {
   _rev = false
   _cache: [number, number, number | null] | null = null
 
-  /** (create edges with Line(), ThreePointArc(), Spline(), ... or take them from a shape) */
+  /** (create edges with Line(), CenterArc(), Spline(), ... or take them from a shape) */
   constructor(token?: symbol) {
     super()
-    if (token !== INTERNAL) throw new TypeError('create edges with Line(), ThreePointArc(), Spline(), ... or take them from a shape')
+    if (token !== INTERNAL) throw new TypeError('create edges with Line(), CenterArc(), Spline(), ... or take them from a shape')
   }
 
   static _of(owner: _Body | null, kedge: number, reversed = false): Edge {
@@ -1371,20 +1396,24 @@ export class Edge extends Shape {
     return Number(ext.edge_tolerance(this._e))
   }
 
+  /** The edge's length. */
   get length(): number {
     return this._length()
   }
 
+  /** The point where the edge starts (in its direction). */
   get start(): Vector {
     const [t0, t1] = this._range()
     return new Vector(k.curve_evaluate(this._curve(), this._rev ? t1 : t0))
   }
 
+  /** The point where the edge ends (in its direction). */
   get end(): Vector {
     const [t0, t1] = this._range()
     return new Vector(k.curve_evaluate(this._curve(), this._rev ? t0 : t1))
   }
 
+  /** True if the edge ends where it starts (a circle, a closed spline). */
   get isClosed(): boolean {
     return this.start.isClose(this.end, 1e-7)
   }
@@ -1510,6 +1539,7 @@ export class Edge extends Shape {
     return this.pointAt(0.5)
   }
 
+  /** The box along the axes around the edge. */
   bbox(): BoundBox {
     if (this._e) {
       const [lo, hi] = k.edge_bounding_box(this._e, true)
@@ -1541,19 +1571,20 @@ export class Edge extends Shape {
    * circular fillet's border), "G0" at a crease, `null` where they leave a gap wider than the edge's
    * tolerance.
    *
-   * `angleTol` is the largest angle (degrees) between the faces' normals for G1; `curvatureTol` the
+   * `angleTolerance` is the largest angle (degrees) between the faces' normals for G1; `curvatureTolerance` the
    * largest difference of their curvatures across the edge for G2, relative to the larger of them
    * (and at least `1e-3 / length`, so that nearly flat faces count as G2). RangeError for an edge
    * that does not lie between two faces.
    */
-  continuity(samples = 16, options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+  continuity(samples = 16, options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
+    options = _renamed('Edge.continuity', options, '0.6.0', { angleTol: 'angleTolerance', curvatureTol: 'curvatureTolerance' })
     _opts('Edge.continuity', options)
-    const { angleTol = 0.5, curvatureTol = 0.01 } = options
+    const { angleTolerance = 0.5, curvatureTolerance = 0.01 } = options
     if (!this._e) throw new RangeError('continuity: the edge does not lie between two faces (it is a free curve)')
     if (!(Math.trunc(samples) >= 1)) throw new RangeError('continuity: samples must be at least 1')
     const r = kernelCall('continuity', () => ext.edge_continuity(this._e, Math.trunc(samples)))
-    const level = _continuityLevel(r.gap, Math.max(Number(r.tolerance), 1e-7), r.angle, angleTol, r.jump, r.curvature,
-      curvatureTol, r.length)
+    const level = _continuityLevel(r.gap, Math.max(Number(r.tolerance), 1e-7), r.angle, angleTolerance, r.jump,
+      r.curvature, curvatureTolerance, r.length)
     const at = level === null ? r.gap_at : level === 'G0' ? r.angle_at : r.jump_at
     return new Continuity(level, Number(r.gap), Number(r.angle), Number(r.jump), new Vector(at))
   }
@@ -1667,7 +1698,7 @@ export class Edge extends Shape {
    *
    *     const groovePath = Spline([0, 0], [20, 8], [40, 0]).extend(5, { end: 'both' })
    */
-  extend(distance: number, options: { end?: string; continuity?: string } = {}): Edge {
+  extend(distance: number, options: { end?: 'start' | 'end' | 'both'; continuity?: 'G1' | 'G2' | 'natural' } = {}): Edge {
     _opts('Edge.extend', options)
     const { end = 'end', continuity = 'G1' } = options
     if (!(typeof distance === 'number' && Number.isFinite(distance) && distance > 0)) {
@@ -2132,6 +2163,7 @@ export class Edge extends Shape {
   }
 
   // -- topology -----------------------------------------------------------------------------
+  /** The vertices at the edge's ends, start first (one for a closed edge). */
   vertices(): ShapeList<Vertex> {
     if (this._e) {
       const [a, b] = k.edge_vertices(this._e)
@@ -2142,10 +2174,12 @@ export class Edge extends Shape {
     return _unique([new Vertex(this.start), new Vertex(this.end)])
   }
 
+  /** This edge, in a list. */
   edges(): ShapeList<Edge> {
     return new ShapeList<Edge>(this)
   }
 
+  /** The faces of the body that meet at this edge (none for an edge of no body). */
   override faces(): ShapeList<Face> {
     if (!this._e) return new ShapeList<Face>()
     return _list((k.edge_faces(this._e) as number[]).map((f) => new Face(this._owner, f)))
@@ -2516,30 +2550,37 @@ export class Wire extends Shape {
     this.dispose()
   }
 
+  /** The wire's edges, in order. */
   edges(): ShapeList<Edge> {
     return _list(this._edges)
   }
 
+  /** The vertices of the wire's edges, each once. */
   vertices(): ShapeList<Vertex> {
     return _unique(this._edges.flatMap((e) => [...e.vertices()]))
   }
 
+  /** This wire, in a list. */
   override wires(): ShapeList<Wire> {
     return new ShapeList<Wire>(this)
   }
 
+  /** True if the wire ends where it starts. */
   get isClosed(): boolean {
     return this.start.isClose(this.end, 1e-6)
   }
 
+  /** The point where the wire's first edge starts. */
   get start(): Vector {
     return this._edges[0].start
   }
 
+  /** The point where the wire's last edge ends. */
   get end(): Vector {
     return this._edges[this._edges.length - 1].end
   }
 
+  /** The sum of the edges' lengths. */
   get length(): number {
     let s = 0
     for (const e of this._edges) s += e.length
@@ -2558,6 +2599,7 @@ export class Wire extends Shape {
     return total ? c.div(total) : this._edges[0].start
   }
 
+  /** The box along the axes around the wire. */
   bbox(): BoundBox {
     let b = this._edges[0].bbox()
     for (const e of this._edges.slice(1)) b = b.union(e.bbox())
@@ -2578,6 +2620,7 @@ export class Wire extends Shape {
     return this.end
   }
 
+  /** The direction of the wire (length 1) at `t`, a fraction of its length from its start. */
   tangentAt(t = 0.5): Vector {
     const lengths = this._edges.map((e) => e.length)
     let s = Math.max(0, Math.min(1, t)) * lengths.reduce((a, b) => a + b, 0)
@@ -2724,7 +2767,7 @@ export class Wire extends Shape {
    *
    *     const wall = Polyline([0, 0], [40, 0], [40, 30]).offset(2, { corners: 'sharp' })
    */
-  offset(distance: number, options: { corners?: string; plane?: Plane | null } = {}): Wire {
+  offset(distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer'; plane?: Plane | null } = {}): Wire {
     _opts('Wire.offset', options)
     const { corners = 'round' } = options
     if (!CORNER_STYLES.includes(corners)) throw new RangeError(`offset: corners is 'round', 'sharp' or 'chamfer', not '${corners}'`)
@@ -2779,13 +2822,14 @@ export class Wire extends Shape {
   /**
    * How the edges of the wire meet at its joints (and where a closed wire closes) (`Continuity`):
    * "G2" where their curvature vectors agree as well, "G1" where they meet tangentially (within
-   * `angleTol` degrees), "G0" at a corner, `null` where an edge does not start where the one before
-   * ends (within 1e-6). `curvatureTol` is relative to the larger curvature (and at least
+   * `angleTolerance` degrees), "G0" at a corner, `null` where an edge does not start where the one before
+   * ends (within 1e-6). `curvatureTolerance` is relative to the larger curvature (and at least
    * `1e-3 / length`). RangeError for a wire of one open edge, which has no joint.
    */
-  continuity(options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+  continuity(options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
+    options = _renamed('Wire.continuity', options, '0.6.0', { angleTol: 'angleTolerance', curvatureTol: 'curvatureTolerance' })
     _opts('Wire.continuity', options)
-    const { angleTol = 0.5, curvatureTol = 0.01 } = options
+    const { angleTolerance = 0.5, curvatureTolerance = 0.01 } = options
     const edges = this._edges
     const pairs: [Edge, Edge][] = []
     for (let i = 0; i + 1 < edges.length; i++) pairs.push([edges[i], edges[i + 1]])
@@ -2810,8 +2854,8 @@ export class Wire extends Shape {
     const angle = worst.get('angle')![0]
     const jump = worst.get('jump')![0]
     const length = this.length
-    const level = _continuityLevel(gap, Math.max(1e-6, 1e-9 * length), angle, angleTol, jump, Math.max(...curvatures),
-      curvatureTol, length)
+    const level = _continuityLevel(gap, Math.max(1e-6, 1e-9 * length), angle, angleTolerance, jump,
+      Math.max(...curvatures), curvatureTolerance, length)
     const at = worst.get(level === null ? 'gap' : level === 'G0' ? 'angle' : 'jump')![1]
     return new Continuity(level, gap, angle, jump, at)
   }
@@ -2822,6 +2866,7 @@ export class Wire extends Shape {
     return Wire._raw([...this._edges, Line(this.end, this.start)])
   }
 
+  /** The wire run the other way: its edges reversed, in reverse order. */
   reversed(): Wire {
     return Wire._raw(this._edges.map((e) => e.reversed()).reverse())
   }
@@ -2855,7 +2900,7 @@ export class Wire extends Shape {
    * smooth corner that is named and a point that is not a corner throw a ModelingError; a radius that
    * does not fit throws a RangeError. Open wires keep their ends.
    */
-  fillet(radius: number, vertices: Iterable<VectorLike | Vertex> | null = null): Wire {
+  fillet(radius: number, vertices: VectorLike | Vertex | Iterable<VectorLike | Vertex> | null = null): Wire {
     return _filletWire(this, radius, vertices)
   }
 
@@ -3032,6 +3077,7 @@ export class Face extends Shape {
     return this._m
   }
 
+  /** The face's area. */
   get area(): number {
     return Number(this._measure().area)
   }
@@ -3126,6 +3172,7 @@ export class Face extends Shape {
     return new Axis(pl.origin, pl.z_dir)
   }
 
+  /** The box along the axes around the face. */
   bbox(): BoundBox {
     const [lo, hi] = k.face_bounding_box(this._f, true)
     return new BoundBox(lo, hi)
@@ -3326,20 +3373,26 @@ export class Face extends Shape {
     return loops.map((loop) => Wire._raw(loop.map(([e, fwd]) => Edge._of(this._owner, e, !fwd))))
   }
 
+  /** The face's outer boundary. */
   outerWire(): Wire {
     return this._loops()[0]
   }
 
+  /** The boundaries of the face's holes. */
   innerWires(): ShapeList<Wire> {
     return _list(this._loops().slice(1))
   }
 
+  /** The face's boundaries: the outer one first, then those of its holes. */
   override wires(): ShapeList<Wire> {
     return _list(this._loops())
   }
 
   /** The face's edges (seam edges only with `seams`). */
-  edges(seams = false): ShapeList<Edge> {
+  edges(options: { seams?: boolean } = {}): ShapeList<Edge> {
+    options = _keywordOnly('Face.edges', options, '0.6.0', 'seams')
+    _opts('Face.edges', options)
+    const seams = options.seams ?? false
     const out = new ShapeList<Edge>()
     const counts = new Map<number, number>()
     const loops: [number, boolean][][] = k.face_boundary_loops(this._f)
@@ -3355,10 +3408,12 @@ export class Face extends Shape {
     return out
   }
 
+  /** The face's vertices. */
   vertices(): ShapeList<Vertex> {
     return _list((k.face_vertices(this._f) as number[]).map((v) => Vertex._of(this._owner, v)))
   }
 
+  /** This face, in a list. */
   override faces(): ShapeList<Face> {
     return new ShapeList<Face>(this)
   }
@@ -3441,13 +3496,14 @@ export class Face extends Shape {
    *
    * @returns A sheet of one face, its normal following this face's (`normalAt`).
    */
-  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: 'natural' | 'G1' | 'G2' } = {}): Shell {
     _opts('Face.extend', options)
     return Shell._wrap(_extendedFace(this, distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
   }
 
   /** Extrude a planar face along its normal (see `Sketch.extrude`). */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
+    _opts('Face.extrude', options)
     return scope(() => this.toSketch().extrude(amount, options))
   }
 
@@ -3465,7 +3521,8 @@ export class Face extends Shape {
 
   override toString(): string {
     const c = this.center()
-    const f = (v: number) => _formatG(v, 4)
+    const tiny = 1e-9 * Math.max(1, Math.sqrt(Math.abs(this.area))) // (the integration's noise about a coordinate of 0)
+    const f = (v: number) => _formatG(Math.abs(v) < tiny ? 0 : v, 4)
     return `Face(${this.geomType}, area=${_formatG(this.area)}, center=(${f(c.x)}, ${f(c.y)}, ${f(c.z)}))`
   }
 }
@@ -3484,7 +3541,9 @@ function _made<T extends _Body>(body: T, record: Record<string, string>): T {
 /** A shape backed by one kernel Brep: a Part, a Shell or a Sketch. */
 export class _Body extends Shape {
   _h!: BrepHandle
+  /** The body's name (`named`), or null. */
   name: string | null = null
+  /** The body's color (`colored`), or null. */
   color: ColorLike | null = null
   /** (tells bodies apart: two can share a Brep, kernel plan T8) */
   _key: number = ++_bodyCount
@@ -3623,28 +3682,35 @@ export class _Body extends Shape {
   }
 
   // -- topology -----------------------------------------------------------------------------
+  /** The body's faces. */
   override faces(): ShapeList<Face> {
     return _list((k.brep_faces(this._brep) as number[]).map((f) => new Face(this, f)))
   }
 
   /** All edges. Seam edges (where a closed surface such as a cylinder meets itself) are left out
    * unless `seams` is true. */
-  edges(seams = false): ShapeList<Edge> {
+  edges(options: { seams?: boolean } = {}): ShapeList<Edge> {
+    options = _keywordOnly('_Body.edges', options, '0.6.0', 'seams')
+    _opts('_Body.edges', options)
+    const seams = options.seams ?? false
     const all: number[] = k.brep_edges(this._brep)
     if (seams) return _list(all.map((e) => Edge._of(this, e)))
     const skip = new Set<number>(ext.seam_edges(this._brep))
     return _list(all.filter((_, i) => !skip.has(i)).map((e) => Edge._of(this, e)))
   }
 
+  /** The body's vertices. */
   vertices(): ShapeList<Vertex> {
     return _list((k.brep_vertices(this._brep) as number[]).map((v) => Vertex._of(this, v)))
   }
 
+  /** The boundaries of all the body's faces. */
   override wires(): ShapeList<Wire> {
     return _list(this.faces().flatMap((f) => [...f.wires()]))
   }
 
   // -- geometry -----------------------------------------------------------------------------
+  /** The box along the axes around the body. */
   bbox(): BoundBox {
     const [lo, hi] = k.brep_bounding_box(this._brep, true)
     return new BoundBox(lo, hi)
@@ -3657,6 +3723,7 @@ export class _Body extends Shape {
     return new BoundBox(lo, hi)
   }
 
+  /** Center of mass (centroid) of the shape. */
   center(): Vector {
     throw new TypeError(`a ${_typeName(this)} has no center`)
   }
@@ -3696,6 +3763,7 @@ export class _Body extends Shape {
     throw new TypeError(`closestPoints takes a body, a face, an edge or a wire, not a ${_typeName(other)}`)
   }
 
+  /** The point of the body's surface nearest to a point (also from inside a part). */
   closestPoint(point: VectorLike): Vector {
     return new Vector(kernelCall('closest point', () => ext.nearest_point(this._brep, _vec(point).toArray())).point)
   }
@@ -3770,8 +3838,8 @@ export class _Body extends Shape {
    * change, nor do its faces and edges; a later query builds what it needs again.
    *
    * The kernel keeps these caches as long as the body lives, and they can outweigh the body: on a
-   * holed, filleted box of 129 KB, `bbox()` left 41 KB, `mesh()` 754 KB and `distanceTo()` 799 KB
-   * (smlibpy, natively). A query that finds them is about 1.2 times as fast (twice for
+   * holed, filleted box of about 150 KB, `bbox()` left 42 KB, `mesh()` 770 KB and `distanceTo()` 820 KB
+   * (smlibpy, natively). A query that finds them is about 1.2 times as fast (11 times for
    * `closestPoint()` after `distanceTo()`); Booleans gain nothing from them. Compact bodies that
    * are kept but no longer queried, such as the copies of a large pattern after they were
    * measured or exported: the module's memory (4 GB at most) is shared by all of them.
@@ -3897,6 +3965,7 @@ export class _Body extends Shape {
   outline(plane?: Plane, options?: { hidden?: boolean; tangentEdges?: boolean }): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>]
   outline(plane: Plane = Plane.XY, options: { hidden?: boolean; tangentEdges?: boolean } = {}): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] {
     _opts('_Body.outline', options)
+    plane = _asPlane(plane)
     const { hidden = false, tangentEdges = false } = options
     const tol = 1e-7 * Math.max(this.bbox().diagonal, 1)
     // (in a scope: the projected pieces rebuilt as lines and arcs, repeated or left out are freed at
@@ -3970,9 +4039,9 @@ export class _Body extends Shape {
    * it measured. An empty list: nothing found.
    *
    * `level` 0 checks the structure (how faces, loops, edges and vertices connect, the pointers
-   * between them) and the gaps between vertices, edges and faces against their tolerances; 1 also
-   * the geometry; 2 (the default) everything, the slow tests too. That takes some milliseconds on
-   * parts smlibwasm makes, about 0.1 s on an imported part of 170 faces.
+   * between them); 1 also the geometry; 2 (the default) everything, the slow tests too, among them
+   * the gaps between vertices and faces against their tolerances. That takes about 0.1 s on a plate
+   * with 24 holes and on an imported part of 170 faces (smlibpy, natively).
    *
    * The tests look at each face, edge and vertex and its neighbours (SmBrep::AssertValid): they do
    * not see a body that runs through itself. Use them where `isValid` cannot tell what is wrong:
@@ -5015,12 +5084,20 @@ function _rayMeetsBox(o: Vector, d: Vector, reach: number, box: [number[], numbe
  * the test compared with (`other`, or null).
  */
 export class Problem {
+  /** The face, edge or vertex the problem is about, or the body itself. */
   readonly shape: Face | Edge | Vertex | Part | Shell
+  /** What is wrong, with the value measured and the tolerance where there are. */
   readonly message: string
+  /** The value measured (a gap, a distance, an angle), or `null`. */
   readonly value: number | null
+  /** The tolerance it was held against, or `null`. */
   readonly tolerance: number | null
+  /** The kind of test: `"gap"`, `"geometric"`, `"topological"`, `"values"`, `"degenerate"`, ... (the kernel's
+   * SmAssertType). */
   readonly category: string
+  /** The test's short name (`"Bad Gap"`, `"Bad Loop Connection Vertex"`). */
   readonly test: string
+  /** A second face, edge or vertex the test compared with, or `null`. */
   readonly other: Face | Edge | Vertex | Part | Shell | null
 
   constructor(
@@ -5051,11 +5128,17 @@ export class Problem {
 }
 
 export class MassProperties {
+  /** The mass: the volume times the density. */
   readonly mass: number
+  /** The volume (mm³). */
   readonly volume: number
+  /** The surface area (mm²). */
   readonly area: number
+  /** The center of mass. */
   readonly center: Vector
+  /** The inertia tensor about the center of mass, axes parallel to the world axes (3 × 3). */
   readonly inertia: number[][]
+  /** The density the mass was computed with. */
   readonly density: number
 
   constructor(mass: number, volume: number, area: number, center: Vector, inertia: number[][], density: number) {
@@ -5067,10 +5150,12 @@ export class MassProperties {
     this.density = density
   }
 
+  /** The principal moments of inertia, smallest first. */
   get principalMoments(): [number, number, number] {
     return eigh3(this.inertia.flat()).values
   }
 
+  /** The principal axes of inertia (directions), in the order of `principalMoments`. */
   get principalAxes(): [Vector, Vector, Vector] {
     const [a, b, c] = eigh3(this.inertia.flat()).vectors
     return [new Vector(a), new Vector(b), new Vector(c)]
@@ -5129,11 +5214,17 @@ export class MassProperties {
  * `ixy = ∫ x y dA`, in mm⁴.
  */
 export class SectionProperties {
+  /** The region's area (mm²). */
   readonly area: number
+  /** The centroid of the region. */
   readonly centroid: Vector
+  /** The sketch plane moved to the centroid: the axes of the moments. */
   readonly plane: Plane
+  /** The second moment of area about the plane's x axis, ∫ y² dA (mm⁴). */
   readonly ixx: number
+  /** The second moment of area about the plane's y axis, ∫ x² dA (mm⁴). */
   readonly iyy: number
+  /** The product of area, ∫ x y dA (mm⁴). */
   readonly ixy: number
   readonly _extent: [number, number, number, number] // min x, max x, min y, max y about the centroid
 
@@ -5224,7 +5315,7 @@ export interface FilletOptions {
    * along mitre lines without a patch (the look of a machined part). Mitred are the corners where
    * three rounded convex edges meet and no other edge; a selection without such a corner throws a
    * RangeError. */
-  corners?: string
+  corners?: 'patch' | 'mitre' | 'miter'
   /** Set the corners back: the rounds stop `setback` from the corner along each of its edges, and one
    * larger patch joins them there (a softer corner than the ball corner, as on molded and consumer
    * parts). Set back are the corners where three or more rounded edges meet and no other edge (every
@@ -5256,7 +5347,7 @@ export interface ChamferOptions {
   /** The corners where three bevelled edges meet, as for `fillet`: "patch" (the default) cuts them off
    * with a corner face, "mitre" runs the bevels on until they meet (the corners of three bevelled
    * convex edges and no other edge). */
-  corners?: string
+  corners?: 'patch' | 'mitre' | 'miter'
 }
 
 /**
@@ -5353,6 +5444,7 @@ export class Part extends _Body {
     return Number(this._kernelProps(accuracy).volume)
   }
 
+  /** The part's volume (mm³). */
   get volume(): number {
     return Number(this._measured().volume)
   }
@@ -5595,8 +5687,8 @@ export class Part extends _Body {
    * last of them that has one; the merged part's own name and color where none of them has one. The
    * kernel keeps no record of the parts: smlibwasm classifies a point inside each cell against them.
    *
-   * The kernel's stitcher runs in the probe worker (see GUARD_SECONDS): it crashed on some merges
-   * (a null polar box, patched in 0.5.0); a crash there throws a KernelError.
+   * The kernel's stitcher runs in the probe worker (see GUARD_SECONDS): a crash there throws a
+   * KernelError, and this process goes on.
    */
   cells(): ShapeList<Part> {
     return scope(() => {
@@ -5666,32 +5758,32 @@ export class Part extends _Body {
   // -- points -------------------------------------------------------------------------------
   /**
    * Where a point lies: `['inside', null]` in the material, `['outside', null]` (also in a cavity),
-   * or `['on', shape]` on the surface within `tol` (default: the part's own tolerance, 1e-5 for most
+   * or `['on', shape]` on the surface within `tolerance` (default: the part's own tolerance, 1e-5 for most
    * parts), with the vertex, edge or face it lies on (the vertex rather than its edges, an edge
    * rather than its faces).
    *
    * The kernel classifies the point exactly (SmBrep::Point3DClassify), also where a ray from it
    * would graze a face or pass through an edge, which the parity of `raycast` hits gets wrong.
    */
-  classify(point: VectorLike, tol: number | null = null): [string, Face | Edge | Vertex | null] {
-    const [where, index] = this._classify([point], tol)[0]
+  classify(point: VectorLike, tolerance: number | null = null): [string, Face | Edge | Vertex | null] {
+    const [where, index] = this._classify([point], tolerance)[0]
     if (where === 'face') return ['on', new Face(this, k.brep_faces(this._brep)[index])]
     if (where === 'edge') return ['on', Edge._of(this, k.brep_edges(this._brep)[index])]
     if (where === 'vertex') return ['on', Vertex._of(this, k.brep_vertices(this._brep)[index])]
     return [where, null]
   }
 
-  /** True if the point lies in the material of this part or on its surface (within `tol`, see
+  /** True if the point lies in the material of this part or on its surface (within `tolerance`, see
    * `classify`); false outside and in a cavity. */
-  contains(point: VectorLike, tol: number | null = null): boolean {
-    return this._classify([point], tol)[0][0] !== 'outside'
+  contains(point: VectorLike, tolerance: number | null = null): boolean {
+    return this._classify([point], tolerance)[0][0] !== 'outside'
   }
 
   /** The cell of a merged part (see `merge`) that holds the point, as in `cells`; null outside, in a
    * cavity and on a face (also one between two cells). For a part that is one solid: the part
    * itself or null. */
-  cellAt(point: VectorLike, tol: number | null = null): Part | null {
-    const cell = this._classify([point], tol)[0][2]
+  cellAt(point: VectorLike, tolerance: number | null = null): Part | null {
+    const cell = this._classify([point], tolerance)[0][2]
     return cell < 0 ? null : this.cells()[cell]
   }
 
@@ -5736,7 +5828,7 @@ export class Part extends _Body {
         if (op === k.BooleanOp.INTERSECTION && tools.length === 1) return (tools[0] as Shell).intersect(this) as Any // the piece of the sheet inside the part
         const kind = _typeName(tools.find((t) => !(t instanceof Part)))
         throw new TypeError(
-          `cannot ${name} a ${kind} with a Part: a sheet encloses no volume; to split the part along it use part.split(sheet), ` +
+          `cannot ${name} a Part with a ${kind}: a sheet encloses no volume; to split the part along it use part.split(sheet), ` +
             `to cut its outline into the part's faces part.imprint(sheet), to trim the sheet sheet - part or sheet & part`,
         )
       }
@@ -6921,7 +7013,7 @@ export class Part extends _Body {
    * ModelingError too, and it is stopped after `GUARD_SECONDS` (20 s; `setGuardSeconds(seconds)`
    * raises it for large parts).
    */
-  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: WallsLike | null } = {}): Part {
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: 'round' | 'sharp' | null; walls?: WallsLike | null } = {}): Part {
     _opts('Part.shell', options)
     const outward = options.outward ?? false
     const corners = options.corners ?? null
@@ -7310,7 +7402,7 @@ export class Part extends _Body {
    * Results the kernel gets wrong (faces that do not meet, a change of the wrong sign) throw a
    * ModelingError. The kernel step runs in the probe worker and is stopped after `GUARD_SECONDS`
    * (20 s), as for `shell`. */
-  offset(distance: number, options: { corners?: string } = {}): Part {
+  offset(distance: number, options: { corners?: 'sharp' | 'round' } = {}): Part {
     _opts('Part.offset', options)
     const { corners = 'sharp' } = options
     if (corners !== 'sharp' && corners !== 'round') throw new RangeError(`offset: corners must be "sharp" or "round" for a part, not '${corners}'`)
@@ -7917,31 +8009,36 @@ export class Part extends _Body {
     return mesh.toPart(maxFaces)
   }
 
-  // -- deformations (the deform module) -----------------------------------------------------
+  // -- deformations (the deformations module) ------------------------------------------------
   /** Twist about an axis (default Z) by `angle` degrees over the part; see `twist`. */
   twist(angle: number, options: TwistOptions = {}): Part {
+    _opts('Part.twist', options)
     return _twist(this, angle, options)
   }
 
   /** Scale cross-sections toward an axis (default Z) from 1 to `scale`; see `taper`. */
   taper(scale: number, options: TaperOptions = {}): Part {
+    _opts('Part.taper', options)
     return _taper(this, scale, options)
   }
 
   /** Bend around an axis by `angle` degrees (default: along X, toward +Z); see `bend`. */
   bend(angle: number, options: BendOptions = {}): Part {
+    _opts('Part.bend', options)
     return _bend(this, angle, options)
   }
 
   /** Unroll this part from around an axis (default Z) into a flat one, the layer at `radius`
    * keeping its length; see `unroll`. */
   unroll(options: UnrollOptions): Part {
+    _opts('Part.unroll', options)
     return _unroll(this, options)
   }
 
-  /** Deform with a `Lattice` (same as `lattice.apply(part)`). */
+  /** Deform with a `Lattice` (same as `lattice.apply(part)`); see `deform`. */
   deform(lattice: Lattice, options: { tolerance?: number | null } = {}): Part {
-    return lattice.apply(this, options)
+    _opts('Part.deform', options)
+    return _deform(this, lattice, options)
   }
 
   /** The part with fillets taken out and their edges sharp again: `faces` (fillet faces of this
@@ -7968,7 +8065,7 @@ export class Part extends _Body {
   }
 
   /** The closed lines where the part's surface turns from facing `direction` to facing away from
-   * it (see `partingLine`). */
+   * it: where the halves of a mold part (see `partingLine`). */
   partingLine(direction: Axis | VectorLike): ShapeList<Wire> {
     return scope(() => {
       return _partingLine(this, direction)
@@ -8094,7 +8191,7 @@ export class Part extends _Body {
    *   `'G2'` (default; curvature continuous), `'G1'` (tangent) or `'crease'` (a sharp border).
    * @returns A new part (this one does not change).
    */
-  warp(face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: string } = {}): Part {
+  warp(face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part {
     _opts('Part.warp', options)
     return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
   }
@@ -8117,7 +8214,7 @@ export class Part extends _Body {
    *   `'G1'` or `'crease'`.
    * @returns A new part (this one does not change).
    */
-  flatten(face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: string } = {}): Part {
+  flatten(face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part {
     _opts('Part.flatten', options)
     return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
   }
@@ -9207,7 +9304,7 @@ function _extendedFace(face: Face, distance: number, sides: Edge | Iterable<Edge
   if (sides !== null) {
     edges = sides instanceof Edge ? [sides] : Array.from(sides as Iterable<Edge>)
     if (!edges.length || !edges.every((e) => e instanceof Edge)) throw new TypeError(`${what}: sides are edges of the face`)
-    const own = new Set(face.edges(true).map((e) => e._identity()))
+    const own = new Set(face.edges({ seams: true }).map((e) => e._identity()))
     if (edges.some((e) => !own.has(e._identity()))) throw new RangeError(`${what}: an edge in sides does not bound the face`)
   }
   try {
@@ -9349,12 +9446,14 @@ export class Shell extends _Body {
     return nurbsSurface(nurbs.points, nurbs.knots, nurbs.degrees, nurbs.weights ?? null)
   }
 
+  /** The total area of the faces. */
   get area(): number {
     let a = 0
     for (const f of this.faces()) a += f.area
     return a
   }
 
+  /** The center of the faces' area (each face weighted by its area). */
   override center(): Vector {
     let total = 0
     let c = new Vector()
@@ -9392,7 +9491,12 @@ export class Shell extends _Body {
       // memory layout: it runs in the probe worker, smlibpy: in a copy of its process)
       const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: opts, faces: [] })
       const b = _isolated('thicken', work, job, hint)
-      return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
+      const part = _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
+      // measured, as isValid() measures: the coarse volume took a closed grid tube's body of no
+      // volume (-1e-12) for a solid
+      const problem = part._solidProblem(null, true)
+      if (problem !== null) throw new ModelingError(`thicken: the kernel returned a body that is ${problem}; ${hint}`)
+      return part
     }
     try {
       return attempt(true)
@@ -9529,7 +9633,7 @@ export class Shell extends _Body {
    * @returns A new sheet; this one does not change. For a sheet of several faces, extend one of its
    *   faces (`sheet.faces()[i].extend(...)`).
    */
-  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): this {
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: 'natural' | 'G1' | 'G2' } = {}): this {
     _opts('Shell.extend', options)
     const faces = this.faces()
     if (faces.length !== 1) {
@@ -9554,7 +9658,7 @@ export class Shell extends _Body {
    * Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next to it
    * bend near those ends, and the faces on the other side of those edges follow them the same way, but
    * meet the matched face with a crease near the matched edge (no tangent is kept across those side
-   * edges: 10 to 20 degrees in a sheet of two faces; merge faces first with `mergeFaces` to keep a
+   * edges: 20 to 34 degrees in a sheet of two faces; merge faces first with `mergeFaces` to keep a
    * sheet smooth). Every face that changes must be bounded by the four sides of its surface (as
    * `surface`, `loft`,
    * `ruled`, `fill` and `network` make them; no holes, no trimmed borders) and the edge a whole side
@@ -9600,14 +9704,14 @@ export class Shell extends _Body {
 
   /** Raise or sink a region of a face of the sheet: see `Part.warp`. Returns a new sheet; a Sketch's
    * comes back as a Shell. */
-  warp(face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: string } = {}): Shell {
+  warp(face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Shell {
     _opts('Shell.warp', options)
     return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
   }
 
   /** Press a region of a face of the sheet onto a plane: see `Part.flatten`. Returns a new sheet; a
    * Sketch's comes back as a Shell. */
-  flatten(face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: string } = {}): Shell {
+  flatten(face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Shell {
     _opts('Shell.flatten', options)
     return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
   }
@@ -9684,7 +9788,7 @@ export interface PushOptions {
   /** How far from the point the face changes (default: up to the face's nearest edge). */
   radius?: number | null
   /** `'G0'`, `'G1'` (default) or `'G2'`: how the face stays joined to its neighbours. */
-  continuity?: string
+  continuity?: 'G0' | 'G1' | 'G2'
 }
 
 /** How a sketch is extruded. */
@@ -10253,11 +10357,10 @@ export class Sketch extends Shell {
    * that grow into each other merge, parts that get too thin vanish; shrinking away the whole
    * region throws ModelingError. `round: false` is the older spelling of `corners: "sharp"`.
    */
-  override offset(distance: number, options: { corners?: string; round?: boolean | null } = {}): Sketch {
+  override offset(distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer' } = {}): Sketch {
+    options = _renamed('Sketch.offset', options, '0.6.0', { round: ['corners', (round) => (round ? 'round' : 'sharp')] })
     _opts('Sketch.offset', options)
-    let corners = options.corners ?? 'round'
-    const round = options.round ?? null
-    if (round !== null) corners = round ? 'round' : 'sharp'
+    const corners: string = options.corners ?? 'round'
     if (!CORNER_STYLES.includes(corners)) throw new RangeError(`offset: corners is 'round', 'sharp' or 'chamfer', not '${corners}'`)
     if (distance === 0) return this
     const result = offsetRegion(this, distance, corners)
@@ -10317,7 +10420,7 @@ export class Sketch extends Shell {
    * both curves (where their offsets meet), and the curves are cut where it touches them. A corner
    * that does not fit, a point that is not a corner, or a smooth corner throws ModelingError.
    */
-  fillet(radius: number, vertices: Iterable<VectorLike | Vertex> | null = null): Sketch {
+  fillet(radius: number, vertices: VectorLike | Vertex | Iterable<VectorLike | Vertex> | null = null): Sketch {
     if (!(radius > 0)) throw new RangeError('fillet: the radius must be positive')
     return roundCorners(this, Number(radius), vertices, 'fillet')
   }
@@ -10325,7 +10428,7 @@ export class Sketch extends Shell {
   /** Bevel corners of the region: cut back `length` along both edges of each corner (measured
    * along the edge) and join the two points with a line. `vertices` as for `fillet`; null bevels
    * every sharp corner. */
-  chamfer(length: number, vertices: Iterable<VectorLike | Vertex> | null = null): Sketch {
+  chamfer(length: number, vertices: VectorLike | Vertex | Iterable<VectorLike | Vertex> | null = null): Sketch {
     if (!(length > 0)) throw new RangeError('chamfer: the length must be positive')
     return roundCorners(this, Number(length), vertices, 'chamfer')
   }
@@ -10642,6 +10745,8 @@ export class Sketch extends Shell {
   sweep(
     path: Edge | Wire,
     options: {
+      orient?: boolean
+      translational?: boolean
       sharpCorners?: boolean | null
       up?: Axis | VectorLike | string | null
       twist?: number | ((s: number) => number)
@@ -10651,6 +10756,8 @@ export class Sketch extends Shell {
   ): Part {
     _opts('Sketch.sweep', options)
     return _sweep(this, path, {
+      orient: options.orient ?? true,
+      translational: options.translational ?? false,
       sharpCorners: options.sharpCorners ?? null,
       up: options.up ?? null,
       twist: options.twist ?? 0,

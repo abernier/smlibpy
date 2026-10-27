@@ -180,7 +180,7 @@ def test_dense_free_form_body():
     """A surface through 105 x 105 points, thickened: its offset face has about 200 x 230 knot
     spans, where the integration spends its time (0.6 s and 7 million surface points; with 15
     points a span and the kernel's evaluation it took 4.9 s). The kernel takes 0.4 s at 1e-7 and
-    is 2e-8 off there, 39 s at 1e-11 and 7e-10 off."""
+    is 8e-8 off there, 39 s at 1e-11 and 7e-10 off."""
     pts = [[(x, y, 3 * np.sin(x / 7) * np.cos(y / 9)) for x in np.linspace(0, 100, 105)]
            for y in np.linspace(0, 100, 105)]
     body = surface(pts).thicken(2)

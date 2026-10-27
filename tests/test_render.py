@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from smlibpy import *
-from smlibpy.render import Picture
+from smlibpy.pictures import Picture
 
 
 @pytest.fixture(scope="module")
@@ -369,7 +369,7 @@ def test_markers(bored):
 
 # -- annotate -------------------------------------------------------------------------
 def test_annotate_writes_the_extents_and_orients_the_axes():
-    from smlibpy.render import _LABEL, _text
+    from smlibpy.pictures import _LABEL, _text
 
     part = Box(60, 54, 34)
     pic = render(part, size=(800, 600), annotate=True)
@@ -455,7 +455,7 @@ def test_png_reader_handles_every_filter():
     import struct
     import zlib
 
-    from smlibpy.render import _png_decode
+    from smlibpy.pictures import _png_decode
 
     rng = np.random.default_rng(1)
     img = rng.integers(0, 256, size=(5, 4, 3), dtype=np.uint8)
@@ -486,7 +486,7 @@ def test_png_reader_handles_every_filter():
 
 # -- text -----------------------------------------------------------------------------
 def test_font_covers_the_labels():
-    from smlibpy.render import _FONT, _text
+    from smlibpy.pictures import _FONT, _text
 
     for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;-+=/()[]<>_'\"!?#%*&@|°Ø×±":
         assert ch in _FONT and _FONT[ch].shape == (7, 5)
@@ -523,7 +523,7 @@ def _stripe_edges(row):
 def _stripe_slopes(part):
     """Follow stripe edges from the cylinder down across its joint with the fillet; for each,
     the slope (dx/dy) just above and just below the joint."""
-    from smlibpy.render import _Camera
+    from smlibpy.pictures import _Camera
 
     zb = [f for f in part.faces() if f.geom_type == "cylinder"][0].bbox().min.z  # the joint
     view = {"azimuth": 0, "elevation": 20}
@@ -590,7 +590,7 @@ def test_zebra_options(bosses):
 
 def test_curvature_of_a_sphere_and_a_cylinder():
     from smlibpy._kernel import ext
-    from smlibpy.render import _Scene
+    from smlibpy.pictures import _Scene
 
     def at(face):
         (u0, v0), (u1, v1) = face._f.uv_domain()
@@ -612,7 +612,7 @@ def test_curvature_of_a_sphere_and_a_cylinder():
     k1, k2 = can.bodies[0].curvature("max"), can.bodies[0].curvature("min")
     assert np.isin(np.round(k1, 9), [0.0, 0.1]).all() and np.abs(k2).max() < 1e-9
     assert can.curvature_range("max", None) == pytest.approx((0, 0.1))
-    from smlibpy.render import _curvature_spec
+    from smlibpy.pictures import _curvature_spec
 
     assert _curvature_spec({"kind": "max", "range": 0.5}) == ("max", (-0.5, 0.5))
     assert can.curvature_range("max", (0.02, 0.5)) == (0.0, 0.5)  # a range always holds zero
@@ -622,7 +622,7 @@ def test_curvature_of_a_sphere_and_a_cylinder():
 
 
 def test_curvature_maps_color_and_legend():
-    from smlibpy.render import _value_text
+    from smlibpy.pictures import _value_text
 
     ball = render(Sphere(10), size=(400, 300), curvature="mean").pixels.astype(int)
     lit = ball[100:200, 120:240]

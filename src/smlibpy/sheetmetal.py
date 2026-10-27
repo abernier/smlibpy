@@ -975,7 +975,7 @@ def _strip(g: _BendGeom, nr: float) -> float:
 
 def _deformed(part: Part, spec: dict, ratio: tuple[float, float], what: str, hint: str) -> Part:
     """``part`` sent through a deformation (deform.py), with this module's hint on failure."""
-    from .deform import _Plan, _run
+    from .deformations import _Plan, _run
 
     try:
         return _run(_Plan(part, spec, ratio), what, part)
@@ -1004,7 +1004,7 @@ def _unroll_bend(work: Part, g: _BendGeom, nr: float, anchor: Any, ends: tuple[l
     Returns the unrolled part, its fixed face, and the bend line's start and inside normal."""
     import numpy as np
 
-    from .deform import _imprint
+    from .deformations import _imprint
 
     half = math.radians(g.angle) / 2
     m, z = g.mid, g.axis

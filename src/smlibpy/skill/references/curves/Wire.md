@@ -43,6 +43,9 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
 | `to_arcs(tolerance=0.01)` | lines and circular arcs within the tolerance (`to_arcs`) |
 | `min_radius()`, `min_radius_at()` | the smallest radius of curvature of its edges, and where (`min_radius`) |
 
+`trim` and `offset` are also functions that take the wire first: `trim(w, 0.25, 0.75)`,
+`offset(w, 2, corners="sharp")`.
+
 ## fillet
 - Rounds every sharp corner with tangent arcs of `radius`, as `Sketch.fillet` rounds a region's:
   in the wire's plane, between lines and arcs exactly, next to splines and ellipses with the arc
@@ -50,7 +53,8 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
   keep their two end points; only inner corners are rounded. Smooth (tangent) corners stay.
 - A wire that is not planar: corners between lines, each in the plane of its two lines; a corner
   there next to another curve raises `ModelingError`.
-- `vertices=[...]`: only the corners at these points (tuples or `Vertex`). A point that is not a
+- `vertices=[...]`: only the corners at these points (tuples or `Vertex`), a list also for one
+  corner (a bare point raises `TypeError: 'int' object is not iterable`). A point that is not a
   corner raises `ModelingError: fillet: (55, 55) is not a corner of the wire; its corners are at
   ...` (an end of an open wire: `... is an end of the open wire, not a corner`); a named smooth
   corner raises `... is smooth ...`; an empty list raises `ValueError`.

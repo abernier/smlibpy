@@ -39,7 +39,7 @@ Orthographic, Z up, never mirrored.
 | `"sheet"` | the same as `drawing="first-angle"` |
 
 A name and a camera aimed the same way give identical pictures: `"right"` = `{"azimuth": 90}`,
-`"iso"` = `{"azimuth": 45, "elevation": 35.264}` = `(1, -1, 1)`, `"front"` =
+`"iso"` = `{"azimuth": 45, "elevation": 35.26439}` = `(1, -1, 1)`, `"front"` =
 `{"direction": (0, 1, 0)}` = `(0, -1, 0)`. Up to smlibpy 0.1.2 `"iso"` looked from
 (1, -1.25, 0.75); pass that tuple for the old view.
 

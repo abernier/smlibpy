@@ -8,8 +8,8 @@ next to splines and ellipses; on the outline and on holes.
 `sketch.fillet(radius, vertices=None)` (and `fillet(vertices, radius)` as a function)
 - `radius`: the arc radius, positive.
 - `vertices`: `None` rounds every sharp corner. Otherwise the corners to round: vertices of
-  the sketch, usually a selection, or points in **world coordinates** (`[(20, 10)]`; a single
-  point must still be inside a list).
+  the sketch, usually a selection, or points in **world coordinates** (`[(20, 10)]`; one point
+  or one vertex may also be given alone).
 
 ## Choosing corners
 `s.vertices()` is a `ShapeList`; its selectors pick corners:

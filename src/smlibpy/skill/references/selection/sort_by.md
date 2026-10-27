@@ -5,7 +5,7 @@ Order a selection, or split it into groups of equal key.
 ## Signature
 - `sl.sort_by(key=Z, reverse=False)` → ShapeList, ascending.
 - `sl.sort_by_distance(point, reverse=False)` → ShapeList, nearest center first.
-- `sl.group_by(key=Z, tol=1e-4)` → a plain `list` of ShapeLists, lowest key first.
+- `sl.group_by(key=Z, tolerance=1e-4)` → a plain `list` of ShapeLists, lowest key first.
 - Operators: `sl > key` = `sort_by(key)`, `sl < key` = `sort_by(key, reverse=True)`,
   `sl >> key` = `max_by(key)`, `sl << key` = `min_by(key)`.
 
@@ -32,8 +32,8 @@ Positions use `center()`: the centroid of a face, the midpoint of an edge (see `
   first (`circles().sort_by("radius")`).
 
 ## group_by
-- Groups hold shapes whose key is within `tol` of the group's first (smallest) key. Values
-  0, 6e-5, 1.2e-4, 1.8e-4 with tol 1e-4 make two groups, [0, 6e-5] and [1.2e-4, 1.8e-4].
+- Groups hold shapes whose key is within `tolerance` of the group's first (smallest) key. Values
+  0, 6e-5, 1.2e-4, 1.8e-4 with tolerance 1e-4 make two groups, [0, 6e-5] and [1.2e-4, 1.8e-4].
 - `group_by(Z)[-1]` is `max_by(Z)`, `group_by(Z)[0]` is `min_by(Z)`.
 - Edges of `Box(10, 20, 30)` by `"length"`: three groups of 4.
 - Use it to pick "the second level from the top": `part.faces().planar().group_by(Z)[-2]`.

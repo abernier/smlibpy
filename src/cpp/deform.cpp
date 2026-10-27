@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Space deformations of whole Breps (smlibpy.deform): twist, taper, bend and free-form
+// Space deformations of whole Breps (smlibpy.deformations): twist, taper, bend and free-form
 // deformation with a control lattice, registered as `_core.deform`.
 //
 // The kernel describes a space deformation as an SmVolume, a map of 3D space onto itself

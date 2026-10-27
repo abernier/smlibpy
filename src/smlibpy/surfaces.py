@@ -75,8 +75,8 @@ def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.n
             the points: 0 to 1, default 1e-2. For noisy points raise it (0.1 to 1), or take fewer
             control points.
         report: True returns ``(sheet, report)``, a :class:`FitReport`: how far each point lies
-            from the surface (to its closest point), the largest and the rms distance. A few
-            milliseconds for thousands of points.
+            from the surface (to its closest point), the largest and the rms distance. About
+            0.13 s for 1,500 points, 3 s for 20,000.
 
     A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over).
     The surface spans the smallest rectangle around the points in that plane; where there are
@@ -326,7 +326,8 @@ def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None
 
 
 def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, radius2: float | None = None,
-                   shape: str = "round", sides: tuple[int, int] = (1, 1), trim: bool = False) -> Shell:
+                   shape: Literal["round", "chamfer"] = "round", sides: tuple[int, int] = (1, 1),
+                   trim: bool = False) -> Shell:
     """A round blend between the surfaces of two faces, as a sheet: for surfaces that are not the
     faces of one part, such as two sheets that cross (``fillet`` rounds the edges of a part). Or a
     flat one, a chamfer, between the same lines.
@@ -430,8 +431,8 @@ def _free_edges(body: Shell | Part) -> int:
     return sum(1 for e in body.edges() if len(e.faces()) == 1)
 
 
-def blend(edge_a: Edge, edge_b: Edge, *, continuity: str | int = "G2", tension: float | tuple[float, float] = (1, 1),
-          join: bool = False) -> Shell:
+def blend(edge_a: Edge, edge_b: Edge, *, continuity: Literal["G1", "G2", "G3"] | int = "G2",
+          tension: float | tuple[float, float] = (1, 1), join: bool = False) -> Shell:
     """A smooth bridge between free edges of two sheets: a sheet that leaves one sheet across one
     edge and reaches the other across the other, tangent to both (or curvature-continuous).
 
@@ -532,7 +533,10 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
         boundary: The curves around the hole, in any order and direction: edges on the border of
             sheets (``sheet.edges().filter(lambda e: len(e.faces()) == 1)``), curves
             (:class:`~smlibpy.Spline`, :class:`~smlibpy.ThreePointArc`, ...) or wires. One closed
-            curve (the round edge of a hole), or two, is cut into four sides.
+            curve (the round edge of a hole), or two, is cut into four sides. Where the curves run
+            into each other without corners (a rim in two or three pieces, cut where a seam
+            crosses it), the four sides are as nearly equal as the curves' ends allow: a round hole
+            is filled the same wherever its rim was cut.
         tangent: True (default): where the curves are edges of sheets, the patch meets each sheet
             tangentially along its edge; then every curve must be such an edge, and the sheets must
             meet each other tangentially where the edges meet (a hole in one smooth sheet, a corner
@@ -544,7 +548,8 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
     N-sided fill of one face per side, sewn, meeting in the middle (tangent to the sheets only to
     about 1.4 degrees: the kernel's N-sided fill). Three sides make an N-sided fill of three faces
     through curves only; tangent to sheets, a Coons patch whose fourth side shrinks to a point at
-    one corner (a pole there: thickening such a patch fails).
+    one corner (a pole there: thickening such a patch fails). Three curves without corners between
+    them make four sides instead.
 
     Returns:
         The patch, a sheet. Its normal follows the sheets it is tangent to; through curves only,

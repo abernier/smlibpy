@@ -5,6 +5,7 @@ it: where the two halves of a mold or a casting pattern meet.
 
 ## Signature
 `part.parting_line(direction) -> ShapeList[Wire]`
+`parting_line(part, direction)`: the same, as a function
 
 `direction`: an `Axis` (`Z`) or a vector; its length does not matter. Zero raises
 `ValueError: parting_line: the direction must not be zero`.
@@ -41,7 +42,8 @@ they mostly face. A face that still faces both ways raises `ModelingError: parti
 still faces both ways after the split; heal() the part, or try a direction a little off this one`.
 
 ## Cost
-1 to 20 ms for the examples here, 0.1 s with a traced torus.
+0.5 ms (the box) to 20 ms (the tapered core) for the examples here, 25 ms for the tilted torus
+(traced).
 
 ## Example
 ```python

@@ -6,7 +6,7 @@ point of a part through a deformation, or drape a curve with a lattice.
 
 ## Signature
 `twist(edge_or_wire_or_points, angle, ...)`, `taper(...)`, `bend(...)`,
-`unroll(..., radius=...)`, `lat.apply(...)`; the options are those for parts
+`unroll(..., radius=...)`, `lat.apply(...)` or `deform(..., lat)`; the options are those for parts
 (`deform/twist`, `deform/taper`, `deform/bend`, `deform/unroll`, `deform/Lattice`).
 
 - An `Edge` gives an `Edge`, a `Wire` a `Wire`, a point (a `Vector` or `(x, y, z)`) a

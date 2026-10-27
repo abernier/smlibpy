@@ -22,7 +22,7 @@ straight lines and ignores the sheets' directions.)
 A `Shell` of one B-spline face: its long edges are the two edges (to 1e-9), its side edges join
 the nearest ends of the two edges, whichever way the edges run. Its normal follows `edge_a`'s
 sheet, so the sewn sheet thickens. With `join`: the sheets and the blend in one `Shell`.
-It takes a few ms.
+It takes under 1 ms between the sheets of the example, about 40 ms between two tubes' rims.
 
 Two closed edges (the round rims of two tubes, closed loops) are bridged all round: each point of
 `edge_a` joins the point of `edge_b` at the same fraction of its length, counted from its point
@@ -37,16 +37,17 @@ one cannot be bridged.
   blend's agree to 1e-6 degrees along both edges; sewn and thickened by 1: 1266.054 (= area).
 - Off a quarter cylinder r 20: G2 and G3 have the cylinder's curvature 1/20 across the edge
   (to 1e-6) and 0 at a flat sheet, at any tension; G1 does not (0.031 there).
-- Arc edges, freeform sheets from `surface`: tangent to 1e-4 degrees.
-- The rims of tubes r 10 and r 6, 20 apart: 1033.631, tangent to 4e-6 degrees, its rims 2.5e-8 off
+- Arc edges, freeform sheets from `surface`: tangent to 2e-4 degrees.
+- The rims of tubes r 10 and r 6, 20 apart: 1033.631, tangent to 7e-6 degrees, its rims 3e-8 off
   the circles; sewn to both tubes (`join=True`) it thickens by 1 and by -1. To an elliptic loft's
-  rim: tangent across its two seams to 1e-6 degrees.
+  rim: tangent across its two seams to 2e-6 degrees.
 
 ## Errors
 - `ValueError: blend: edge_a lies between two faces; take an edge on a sheet's border (used by
   one face)`: an edge of a part, or inside a sheet.
 - `TypeError: blend: edge_a is a curve, not an edge of a sheet; ...`: a `Line`, `Spline`, ...;
-  make a sheet with it first (`extrude`, `ruled`).
+  make a sheet with it first (`extrude`, `ruled`). `TypeError: blend takes edges of sheets, not a
+  Shell`: pass an edge of the sheet.
 - `ValueError: blend: one edge is closed (a full circle, a closed loop) and the other is not;
   bridge two closed edges or two open ones`: the round edge of a tube and an edge with two ends.
   Split the tube (`Part.split` before taking its face) so that its edge has two ends too.

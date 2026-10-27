@@ -57,8 +57,8 @@ type SurfaceOptions = { interpolate?: boolean; controls?: number | readonly [num
  *   cloud. `smoothing` (clouds): how much the surface resists bending, against how close it comes
  *   to the points: 0 to 1, default 1e-2; for noisy points raise it (0.1 to 1), or take fewer
  *   control points. `report`: `true` returns `[sheet, report]`, a `FitReport`: how far each point
- *   lies from the surface (to its closest point), the largest and the rms distance; a few
- *   milliseconds for thousands of points.
+ *   lies from the surface (to its closest point), the largest and the rms distance; about 0.13 s
+ *   for 1,500 points, 3 s for 20,000 (smlibpy, natively).
  *
  * A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over). The
  * surface spans the smallest rectangle around the points in that plane; where there are no
@@ -343,7 +343,7 @@ export function surfaceFillet(
   a: Face | Shell,
   b: Face | Shell,
   radius: number,
-  options: { radius2?: number | null; shape?: string; sides?: readonly [number, number]; trim?: boolean } = {},
+  options: { radius2?: number | null; shape?: 'round' | 'chamfer'; sides?: readonly [number, number]; trim?: boolean } = {},
 ): Shell {
   return scope(() => {
     _opts('surfaceFillet', options)
@@ -464,7 +464,7 @@ function _freeEdges(body: Shell | Part): number {
 export function blend(
   edgeA: Edge,
   edgeB: Edge,
-  options: { continuity?: string | number; tension?: number | readonly [number, number]; join?: boolean } = {},
+  options: { continuity?: 'G1' | 'G2' | 'G3' | number; tension?: number | readonly [number, number]; join?: boolean } = {},
 ): Shell {
   _opts('blend', options)
   const fa = _freeFace(edgeA, 'edgeA')
@@ -542,7 +542,9 @@ function _oneFace(x: unknown, name: string): Face {
  * @param boundary The curves around the hole, in any order and direction: edges on the border of
  *   sheets (`sheet.edges().filter((e) => e.faces().length === 1)`), curves (`Spline`,
  *   `ThreePointArc`, ...) or wires. One closed curve (the round edge of a hole), or two, is cut into
- *   four sides.
+ *   four sides. Where the curves run into each other without corners (a rim in two or three pieces,
+ *   cut where a seam crosses it), the four sides are as nearly equal as the curves' ends allow: a
+ *   round hole is filled the same wherever its rim was cut.
  * @param options `tangent`: `true` (default): where the curves are edges of sheets, the patch meets
  *   each sheet tangentially along its edge; then every curve must be such an edge, and the sheets
  *   must meet each other tangentially where the edges meet (a hole in one smooth sheet, a corner
@@ -553,7 +555,8 @@ function _oneFace(x: unknown, name: string): Face {
  * of one face per side, sewn, meeting in the middle (tangent to the sheets only to about 1.4 degrees:
  * the kernel's N-sided fill). Three sides make an N-sided fill of three faces
  * through curves only; tangent to sheets, a Coons patch whose fourth side shrinks to a point at one
- * corner (a pole there: thickening such a patch fails).
+ * corner (a pole there: thickening such a patch fails). Three curves without corners between them
+ * make four sides instead.
  *
  * @returns The patch, a sheet. Its normal follows the sheets it is tangent to; through curves only,
  *   it follows the right-hand rule around the loop in the direction of the first curve given. Sew it

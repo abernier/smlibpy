@@ -14,11 +14,16 @@ made with `Vertex(x, y, z)`.
 - `edges()`, `faces()`: the edges and faces meeting at a vertex of a body (3 and 3 at a box
   corner); empty for a free vertex.
 - `distance_to(point_or_shape)`.
+- `tolerance`: how far the edges and faces that meet at a vertex of a body may pass from its
+  point (1e-5 on most parts; more on imported, stitched or healed bodies); `ValueError` for a
+  free vertex.
 
 ## Equality
-- Two vertices are `==` when they are at the same position within about 1e-6 (5e-7 apart: equal,
-  2e-6: not), also a body vertex and a free vertex: `Vertex(5, 5, 5) in box.vertices()` is True.
-- Their hashes differ, though: a set or dict can hold a body vertex and an equal free vertex as two
+- A free vertex (`Vertex(x, y, z)`, or a moved copy) is `==` to any vertex at the same position
+  within about 1e-6 (5e-7 apart: equal, 2e-6: not): `Vertex(5, 5, 5) in box.vertices()` is True.
+- Two vertices of bodies are `==` only when they are the same vertex of the kernel: the same
+  corner of two separate boxes is not.
+- Hashes differ, though: a set or dict can hold a body vertex and an equal free vertex as two
   entries. Compare with `==` or by coordinates.
 
 ## Vertices of common bodies
@@ -43,7 +48,7 @@ corner = box.vertices().top().right().back().one()
 print(corner, corner.x, corner.point)            # Vertex(5, 5, 5) 5.0 Vector(5, 5, 5)
 print(corner == Vertex(5, 5, 5))                 # True: equal by position
 print(len(corner.edges()), len(corner.faces()))  # 3 3
-print(Line(corner, Vertex(0, 0, 0)).length)      # 8.660254037844387
+print(round(Line(corner, Vertex(0, 0, 0)).length, 6))   # 8.660254
 sk = Rectangle(20, 10)
 rounded = sk.fillet(2, sk.vertices().right())    # round only the two right corners
 print(round(rounded.area, 4))                    # 198.2832

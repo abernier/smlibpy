@@ -19,8 +19,12 @@
 //
 // os.fork: the forked copy has only the forking thread. Without care it could start with kernel
 // state that another thread was changing, and with the lock held by a thread it does not have
-// (its first kernel call would wait for ever). The hooks below take the lock before the fork,
-// give it back in the parent, and give the copy a new lock.
+// (its first kernel call would wait for ever). The hooks below take the lock before the fork and
+// give it back in the parent; the copy gets a new lock from pthread_atfork's child handler, inside
+// fork() itself, before any of its Python code runs. (Python runs a copy's after_in_child hooks in
+// the order they were registered, threading's before smlibpy's: a garbage collection in one of
+// those freed a body, whose finalizer waited for ever for the old lock. The guarded step "cells"
+// of tools/parity.py never finished in its copy that way, on Linux with Python 3.10.)
 
 #include "kernel_lock.h"
 
@@ -31,6 +35,10 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 
 namespace py = pybind11;
 
@@ -229,16 +237,18 @@ void bind_kernel_lock(py::module_ m)
         "Whether a function or method of this module takes the kernel lock (all overloads); None for "
         "what pybind11 did not make.");
 
-    // Not functions of the module: lock_kernel_entries must not wrap them (the copy's hook cannot
-    // take the old lock).
+    // Not functions of the module: lock_kernel_entries must not wrap them. (The lock is taken in
+    // Python's hook, which may wait for it with the GIL let go; a handler of pthread_atfork runs
+    // inside fork(), where it may not.)
     py::module_ os = py::module_::import("os");
     if (py::hasattr(os, "register_at_fork"))
     {
         py::cpp_function before([] { acquire(); });
         py::cpp_function parent([] { g_lock->unlock(); });
-        py::cpp_function child([] { g_lock = new std::recursive_mutex(); });
-        os.attr("register_at_fork")(py::arg("before") = before, py::arg("after_in_parent") = parent,
-                                    py::arg("after_in_child") = child);
+        os.attr("register_at_fork")(py::arg("before") = before, py::arg("after_in_parent") = parent);
+#ifndef _WIN32
+        pthread_atfork(nullptr, nullptr, [] { g_lock = new std::recursive_mutex(); });
+#endif
     }
 }
 

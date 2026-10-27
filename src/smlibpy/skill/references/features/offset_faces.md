@@ -6,6 +6,7 @@ works on imported parts, which have no history.
 
 ## Signature
 `part.offset_faces(faces, distance)`
+`offset_faces(part, faces, distance)` (the same, the part first)
 
 - `faces`: faces of this part: a selection, one `Face` or a list. Faces of an earlier version of
   the part are matched by position and area.

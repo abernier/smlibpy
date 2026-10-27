@@ -19,7 +19,7 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `is_seam` | True for the seam of a closed surface (see `edges(seams=True)`) |
 | `convexity`, `is_convex()`, `dihedral_angle` | see `convexity` |
 | `tangent_chain()` | this edge and the edges that continue it tangentially (see `tangent_chain`) |
-
+| `tolerance` | how far its curve, its ends and its faces may lie apart in the kernel (1e-5 on most parts; more on imported, stitched or healed bodies); `ValueError` for a free edge |
 | `intersections(other, tolerance=None)` | points where it meets an edge, wire, face, body or a list of them, in order along the edge; `[]` for none |
 | `intersection_params(other)` | the same as fractions of the length (for `split`, `trim`, `point_at`) |
 | `self_intersections()` | points where the edge crosses itself |
@@ -36,7 +36,8 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `continuity(samples=16)` | how the two faces meet: G0, G1, G2 with gap, angle, curvature jump; see `continuity` |
 
 ## Details
-- `point_at` is uniform in arc length: 400 steps along a spline were all 0.0509 long.
+- `point_at` is uniform in arc length: 400 steps along `Spline((0, 0), (10, 10), (20, 0))`
+  (29.5789 long) were all 0.07395 long.
   `point_at(-0.5)` gives the start, `point_at(1.5)` the end.
 - `arc_center` is the center of the circle; `center()` is a point on the curve. For a full circle
   starting at (5, 0, 0), `center()` is (−5, 0, 0).
@@ -70,7 +71,7 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 - Two free edges built from the same points are not `==` (identity); compare `start`/`end`.
 - A moved edge (`translate`, `rotate`) is a free edge: `faces()` is empty and features of the part
   reject it.
-- Straight edges can be `"bspline"` (after `chamfer`, `loft`, `ruled`, `to_nurbs`, `mirror`):
+- Straight edges can be `"bspline"` (after `chamfer`, `loft`, `ruled`, `to_nurbs`):
   `direction`, `lines()` and `parallel_to` treat them as straight; `geom_type` stays
   `"bspline"`.
 

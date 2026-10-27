@@ -18,8 +18,12 @@
 //   curves, lie across each edge from its face and are tangent to it; a patch on the wrong side is
 //   built again with the loop turned round. Its N-sided fill (five sides and more) is tangent only
 //   approximately: up to about 1.4 degrees halfway between a side's middle and its ends, whatever
-//   angle tolerance it is given; Coons patches (three and four sides) within 0.02 degrees (0.2 where
-//   the loop is a closed curve cut into four, on a steep sheet).
+//   angle tolerance it is given; Coons patches (three and four sides) within 0.02 degrees, now that
+//   its four-sided branch puts all four sides on [0, 1] (third_party/patches: a round hole of one
+//   edge, cut into four equal arcs, was filled up to 64 degrees off the sphere). Where the curves
+//   of a loop run into each other without corners, their ends are no corners of the patch either:
+//   one closed curve, or two or three that make one, become four sides as nearly equal as those
+//   ends allow, so that a sphere's hole is filled the same however the sphere is turned.
 // - SmBSplineSurface::CreateGordonSurface needs a compatible network (crossings at the same parameter
 //   along every curve of a set) and fills fixed arrays of 640 curves without a count check; given an
 //   incompatible one it misses its own curves (4.15e-2 on a 10 mm patch), and even given a compatible
@@ -185,25 +189,89 @@ struct Side
     SmPoint3d to() const { return reversed ? first(*curve) : last(*curve); }
 };
 
-// Each side cut into k pieces of equal parameter length.
-std::vector<Side> split(std::vector<Side>& sides, int k)
+// The sides of the chained loop cut into pieces of equal parameter length, count[i] of side i, in the
+// loop's order.
+std::vector<Side> cut(std::vector<Side>& sides, const std::vector<int>& count)
 {
     std::vector<Side> out;
-    for (Side& s : sides)
+    for (size_t j = 0; j < sides.size(); ++j)
     {
+        Side& s = sides[j];
+        const int k = count[j];
+        if (k == 1)
+        {
+            out.push_back(std::move(s));
+            continue;
+        }
         const SmExtent1d ivl = s.curve->GetNaturalInterval();
         for (int i = 0; i < k; ++i)
         {
+            const int m = s.reversed ? k - 1 - i : i;  // (a side that runs against the loop: from its end)
+            const double a = ivl.Evaluate(double(m) / k), b = ivl.Evaluate(double(m + 1) / k);
             Side p;
-            const double a = ivl.Evaluate(double(i) / k), b = ivl.Evaluate(double(i + 1) / k);
             p.curve = piece(s.curve.get(), a, b);
             if (s.uv)
                 p.uv = piece(s.uv.get(), a, b);
-            p.surface = s.surface, p.face = s.face, p.edge = s.edge;
+            p.surface = s.surface, p.face = s.face, p.edge = s.edge, p.reversed = s.reversed;
             out.push_back(std::move(p));
         }
     }
     return out;
+}
+
+// Whether the loop runs on from side a into side b without a corner (in directions within half a
+// degree where they meet).
+bool smooth(const Side& a, const Side& b)
+{
+    const SmExtent1d ia = a.curve->GetNaturalInterval(), ib = b.curve->GetNaturalInterval();
+    SmVector3d ta = tangent(*a.curve, a.reversed ? ia.GetMin() : ia.GetMax());
+    SmVector3d tb = tangent(*b.curve, b.reversed ? ib.GetMax() : ib.GetMin());
+    if (a.reversed)
+        ta = ta * -1.0;
+    if (b.reversed)
+        tb = tb * -1.0;
+    const double la = ta.Length(), lb = tb.Length();
+    return la > 0.0 && lb > 0.0 && ta.Dot(tb) >= std::cos(0.5 * SM_PI / 180.0) * la * lb;
+}
+
+// How many pieces each side of the chained loop is cut into: one curve into four, two into four
+// sides. Curves that run into each other without corners all round, two or three (a closed curve cut
+// where its sheet's seam or another face crosses it), end where the hole's shape has no corner: the
+// four sides are made as nearly equal in length as those ends allow, so that a round hole is filled
+// the same wherever its rim was cut (a sphere's, however the sphere is turned).
+std::vector<int> pieces(const std::vector<Side>& sides)
+{
+    const size_t n = sides.size();
+    std::vector<int> count(n, 1);
+    if (n == 1)
+        count[0] = 4;
+    if (n == 2)
+        count = {2, 2};
+    if (n != 2 && n != 3)
+        return count;
+    for (size_t i = 0; i < n; ++i)
+        if (!smooth(sides[i], sides[(i + 1) % n]))
+            return count;
+    std::vector<double> length;
+    for (const Side& s : sides)
+    {
+        const SmExtent1d ivl = s.curve->GetNaturalInterval();
+        length.push_back(smlibpy::curve_length(s.curve.get(), ivl.GetMin(), ivl.GetMax(), 1e-10));
+    }
+    if (n == 3)
+    {
+        count[std::max_element(length.begin(), length.end()) - length.begin()] = 2;  // the longest in two
+        return count;
+    }
+    // of 1 + 3, 2 + 2 and 3 + 1 pieces, the most even
+    auto spread = [&](int a) {
+        const double x = length[0] / a, y = length[1] / (4 - a);
+        return std::max(x, y) / std::max(std::min(x, y), 1e-300);
+    };
+    for (int a : {1, 3})
+        if (spread(a) < spread(count[0]) * (1.0 - 1e-9))
+            count = {a, 4 - a};
+    return count;
 }
 
 // The sides ordered and turned into one loop, each starting where the one before ends.
@@ -363,17 +431,19 @@ SmVector3d outward(const SmFace* face, const SmPoint2d& uv)
     return n;
 }
 
-// How the patches lie along a tangent side at its parameter t: +1 across the edge from the face, -1
-// over the face; the face's outward normal and the patch's normal there.
+// The edge's parameter at the fraction f along a side (of its own piece of the edge).
+double along(const Side& s, double f) { return s.curve->GetNaturalInterval().Evaluate(f); }
+
+// How the patches lie along a tangent side at the edge's parameter t: +1 across the edge from the
+// face, -1 over the face; the face's outward normal and the patch's normal there.
 int side_vote(const std::vector<SurfacePtr>& patches, const Side& s, double t, double h, SmVector3d& face_normal,
               SmVector3d& patch_normal)
 {
     const SmEdgeuse* eu = s.edge->GetEdgeuseOfFace(s.face);
-    const SmExtent1d ivl = s.edge->GetInterval();
     SmPoint3d p;
     SmVector3d inward;
     SmPoint2d uv;
-    check(eu->EvaluateBinormal(ivl.Evaluate(t), TRUE, p, inward, nullptr, nullptr, &uv), "SmEdgeuse::EvaluateBinormal");
+    check(eu->EvaluateBinormal(t, TRUE, p, inward, nullptr, nullptr, &uv), "SmEdgeuse::EvaluateBinormal");
     face_normal = outward(s.face, uv);
     inward.Unitize();
     const double away = nearest(patches, p - inward * h), over = nearest(patches, p + inward * h);
@@ -656,14 +726,11 @@ SmBrep* fill_loop(const std::vector<SmCurve*>& curves, const std::vector<SmFace*
     }
     const double size = std::max(box.GetMin().DistanceBetween(box.GetMax()), 1e-9);
     if (n < 3)
-    {
-        // one closed curve, or two: four sides
         for (Side& s : sides)
             if (s.curve->GetNaturalInterval().GetLength() <= 0.0)
                 throw std::invalid_argument("fill: a curve has no length");
-        sides = split(sides, n == 1 ? 4 : 2);
-    }
     chain(sides, tolerance);
+    sides = cut(sides, pieces(sides));  // one closed curve, or two (or three without corners), into four sides
     const double tol = std::max(1e-7 * size, 1e-9);
 
     // a loop's normal by the right-hand rule (Newell), from samples along it
@@ -712,7 +779,7 @@ SmBrep* fill_loop(const std::vector<SmCurve*>& curves, const std::vector<SmFace*
             for (const Side& s : sides)
             {
                 SmVector3d fn, pn;
-                votes += side_vote(patches, s, 0.5, h, fn, pn);
+                votes += side_vote(patches, s, along(s, 0.5), h, fn, pn);
             }
             if (votes > 0)
                 break;
@@ -724,13 +791,12 @@ SmBrep* fill_loop(const std::vector<SmCurve*>& curves, const std::vector<SmFace*
         for (const Side& s : sides)
         {
             const SmEdgeuse* eu = s.edge->GetEdgeuseOfFace(s.face);
-            const SmExtent1d ivl = s.edge->GetInterval();
             for (int k = 1; k < 8; ++k)
             {
                 SmPoint3d p;
                 SmVector3d inward;
                 SmPoint2d uv, puv;
-                check(eu->EvaluateBinormal(ivl.Evaluate(k / 8.0), TRUE, p, inward, nullptr, nullptr, &uv), "SmEdgeuse::EvaluateBinormal");
+                check(eu->EvaluateBinormal(along(s, k / 8.0), TRUE, p, inward, nullptr, nullptr, &uv), "SmEdgeuse::EvaluateBinormal");
                 size_t which = 0;
                 if (nearest(patches, p, &which, &puv) > 1e-3 * size)
                     continue;
@@ -758,7 +824,7 @@ SmBrep* fill_loop(const std::vector<SmCurve*>& curves, const std::vector<SmFace*
             for (int k = 1; k < 8; ++k)
             {
                 SmVector3d fn, pn;
-                side_vote(patches, s, k / 8.0, 1e-3 * size, fn, pn);
+                side_vote(patches, s, along(s, k / 8.0), 1e-3 * size, fn, pn);
                 fn.Unitize(), pn.Unitize();
                 worst_angle = std::max(worst_angle, std::acos(std::min(1.0, std::abs(fn.Dot(pn)))) * 180.0 / SM_PI);
             }

@@ -39,14 +39,16 @@ corners), `.concave()` (inside corners, also the corners of a square hole), `.sm
 ## 2D Booleans
 
 `a + b` unites, `a - b` cuts, `a & b` intersects, `a ^ b` keeps what is in exactly one. The
-right side may be a list or a pattern; `sum(list_of_sketches)` unites a list.
+right side may be a list or a pattern; `sum(list_of_sketches)` unites a list. By name, as methods
+of any number of sketches and as functions: `a.fuse(b, c)`, `a.cut(b)`, `a.intersect(b)`,
+`a.xor(b)`; `fuse(a, b)`, `cut(a, b)`, `intersect(a, b)`, `xor(a, b)`.
 
 - Exact: lines and arcs stay lines and arcs, areas match closed forms (two circles of radius
   10, 10 apart: `&` 122.836969 against 122.83697). Shapes that were moved, turned or placed
   combine as reliably as unmoved ones.
 - A list on the right goes into one kernel call where its members do not overlap:
-  `plate - (GridLocations(10, 10, 18, 10) * Circle(3))` (180 holes) takes 0.4 s. One Boolean
-  of small sketches takes about 1.4 ms.
+  `Rectangle(200, 100) - (GridLocations(10, 10, 18, 10) * Circle(3))` (180 holes) takes 0.16 s.
+  One Boolean of small sketches takes about 0.5 ms.
 - Disjoint pieces stay one `Sketch` with several faces. A bar cut through gives 2 faces.
   Squares touching at one corner stay 2 faces; squares sharing an edge fuse to 1 face of 4 edges.
 - Faces that touch each other at a single point (the faces of `^`, squares touching at a
@@ -94,8 +96,9 @@ into the part (subtract it), `extrude(+d)` grows out of it (add it).
 ## Gotchas
 
 - `on(face)` puts the sketch origin at the face's **area centroid**, not at the middle of its
-  bounding box. Holes shift it: on a plate whose top has a hole at y = +15, the centroid was at
-  y = -0.49. When the position matters, place on a plane: `s.on(Plane.XY.offset(top_z))`.
+  bounding box. Holes shift it: on a 60 x 40 plate whose top has a hole of radius 4 at y = +15,
+  the centroid is at y = -0.32. When the position matters, place on a plane:
+  `s.on(Plane.XY.offset(top_z))`.
 - `sketch.plane.origin` moves with the sketch, also with `align` and `translate`. It is the
   constructor's center for the primitives, the world origin for `Polygon` and `Profile`, and the
   centroid of the outline for `make_face` and `wire.to_sketch()`. `revolve()` without an axis

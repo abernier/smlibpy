@@ -30,10 +30,10 @@ closed forms and converged references, the results are right to 1e-11 and better
 lengths are integrated to 1e-12, and `point_at` follows the arc length as closely.
 
 A part keeps its measures: `volume`, `area`, `center()` and `mass_properties()` share one
-integration, the first of them pays for it: a few milliseconds for most parts, 55 ms for the
-spring of `examples/spring.py` with its 512 knot spans, 0.6 s for a surface through 105 x 105
-points thickened to a solid (46,000 knot spans on its top face; the kernel's own integration
-takes 0.4 s there at 1e-7 and is 2e-8 off).
+integration, the first of them pays for it: a few milliseconds for most parts, 105 ms for the
+spring of `examples/spring.py` with its 4 x 1024 knot spans, 0.6 s for a surface through
+105 x 105 points thickened to a solid (46,000 knot spans on its top face; the kernel's own
+integration takes 0.4 s there at 1e-7 and is 8e-8 off).
 
 ## Mass properties
 
@@ -53,7 +53,7 @@ mp.radii_of_gyration                       # sqrt(principal moment / mass), per 
 ```
 
 `accuracy` (1e-10 to 1e-2) sets the bound above for one call. It costs little: the spring
-takes 55 ms at 1e-7 and at 1e-10, 23 ms at 1e-4. A coarse accuracy saves little on dense
+takes 105 ms at 1e-7 and at 1e-10, 44 ms at 1e-4. A coarse accuracy saves little on dense
 free-form faces, though: every knot span gets at least 7 x 7 points, and the thickened surface
 above takes 0.6 s at any accuracy.
 
@@ -86,11 +86,12 @@ less the slab's own thickness term.
 The numbers are as exact as the body. Where the kernel fits a surface or an intersection
 curve (fitted chamfers, G2 and G3 blends and variable fillets, the offset faces of a shell, the
 cut ends of a sweep, two cylinders crossing), neighbouring faces meet only to within about 1e-6 to
-2e-5 mm, and the volume of the body is defined only to that: measured turned by 90 degrees, a pin
+4e-5 mm, and the volume of the body is defined only to that: measured turned by 90 degrees, a pin
 with G2 blends on its rims (`Cylinder(3, 10)`, 1) differs by 3.4e-6, two crossing cylinders of the
-same radius by 3e-7, the shelled bottle by 3.6e-6. (Chamfers of full circles between coaxial faces
-are exact cones: the flange of `examples/flange.py` differs by 2e-14.) Bodies whose edges are lines and circles close up exactly and
-agree with their formulas to 1e-10 and better. Compare against formulas with a relative
+same radius (`Cylinder(5, 40)`, fused) by 4e-8, the shelled bottle of `examples/bottle.py` by
+2.7e-6. (Chamfers of full circles between coaxial faces are exact cones: the flange of
+`examples/flange.py` differs by 2e-15.) Bodies whose edges are lines and circles close up exactly
+and agree with their formulas to 1e-10 and better. Compare against formulas with a relative
 tolerance of 1e-6, or 1e-5 for sweeps, shells and offsets of curved faces.
 
 A face the integration cannot converge on stops it after a budget of surface points (far more
@@ -103,11 +104,10 @@ The integration measures the gaps as well: it integrates the volume with three f
 kernel's (0, 0, z) and (x, 0, 0) and (0, y, 0), which give the same volume only for faces that
 close up. Where they differ by more than 1e-5 (or the accuracy asked for, if that is coarser),
 `volume`, `area`, `center()` and `mass_properties()` say so in a `RuntimeWarning` with the size
-of the uncertainty, and give the volume of the faces as they are. A sheet unfolded across a hole
-in a bend zone, whose NURBS faces as trimmed do not quite meet their neighbours, gets 8e-5 (its
-volume is 6e-5 off). A warning that the integration did not reach the accuracy asked for looks
-the same; each comes once per part. From 1e-2 the faces do not bound one solid (a Boolean
-result that left a face out: 0.25), and `is_valid()` is False.
+of the uncertainty, and give the volume of the faces as they are. A plate 2 thick folded at a
+radius of 0.2 and unfolded again gets 6e-4. A warning that the integration did not reach the
+accuracy asked for looks the same; each comes once per part. From 1e-2 the faces do not bound
+one solid (a Boolean result that left a face out: 0.25), and `is_valid()` is False.
 
 ## What is wrong with a body
 
@@ -217,8 +217,8 @@ Polyline((0, 0), (10, 0), (10, 10)).continuity().level   # 'G0': the joints of a
 
 `g1()` selects the edges that are at least tangent, `g2()` the curvature-continuous ones. The
 defaults: G1 within 0.5 degrees (the kernel's own tolerance, also `smooth()`'s), G2 within 1% of
-the larger curvature (or `1e-3 / length`, where both are nearly flat); `angle_tol=` and
-`curvature_tol=` take others. `smooth()` and `convexity` look along the whole edge as well: an
+the larger curvature (or `1e-3 / length`, where both are nearly flat); `angle_tolerance=` and
+`curvature_tolerance=` take others. `smooth()` and `convexity` look along the whole edge as well: an
 edge whose faces meet tangentially only at its middle is not smooth.
 
 ## Rays
@@ -241,8 +241,9 @@ To select faces with a ray instead, and chain on, use `part.faces().hit_by(origi
 
 Many rays at once (height maps, depth images, visibility, sampling) go through `raycast_many`:
 the first hit of each ray, or `None`. It traces the rays through a mesh of the part with the
-kernel's ray tracer and moves each hit onto the exact face, 20 to 50 times faster than one
-`raycast` per ray on a plate with holes; on a mesh it is the tracer alone:
+kernel's ray tracer and moves each hit onto the exact face: on a plate with 144 holes 0.06 ms a
+ray, where `raycast` takes 0.8 ms (the first call also meshes the part, 2.4 s there); on a mesh
+it is the tracer alone:
 
 ```python
 import numpy as np

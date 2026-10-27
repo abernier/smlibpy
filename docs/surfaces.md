@@ -132,8 +132,9 @@ outside = sheet - Cylinder(5, 30)      # the sheet with a hole
 print(round(inside.area + outside.area - sheet.area, 9))   # 0.0
 ```
 
-`part & sheet` is `sheet & part`; `part + sheet` and `part - sheet` raise `TypeError` (a sheet
-encloses no volume: split the part, or `imprint` the sheet's lines into its faces).
+`sheet.intersect(part)` and `sheet.cut(part)` are `&` and `-` by name. `part & sheet` is
+`sheet & part`; `part + sheet` and `part - sheet` raise `TypeError` (a sheet encloses no volume:
+split the part, or `imprint` the sheet's lines into its faces).
 
 ## Offset surfaces
 
@@ -257,16 +258,17 @@ the curves on the part: [features](features.md#imprint).
 
 ## Filling holes and curve networks
 
-`fill` closes a loop of curves with a patch: four sides make a Coons patch, three or five and
-more an N-sided fill. Where the curves are border edges of sheets, the patch meets the sheets
-tangentially (`tangent=False` runs it through the curves only):
+`fill` closes a loop of curves with a patch: four sides make a Coons patch, five and more an
+N-sided fill, three an N-sided fill through the curves, or, tangent to sheets, a Coons patch with
+one side shrunk to a point. Where the curves are border edges of sheets, the patch meets the
+sheets tangentially (`tangent=False` runs it through the curves only):
 
 ```python
 cut = Sphere(10) - Box(30, 30, 30).translate(0, 0, 8 + 15)
 dome = stitch([f for f in cut.faces() if f.geom_type == "sphere"])
 cap = fill(dome.edges().filter(lambda e: len(e.faces()) == 1))   # tangent to the sphere
 ball = stitch(dome, cap)
-print(type(ball).__name__, round(ball.volume, 2))                 # Part 4141.52
+print(type(ball).__name__, round(ball.volume, 2))                 # Part 4141.58
 
 sides = [Spline((0, 0, 0), (5, 0, 2), (10, 0, 0)), Spline((10, 0, 0), (10, 5, 1), (10, 10, 0)),
          Spline((10, 10, 0), (5, 10, 2), (0, 10, 0)), Spline((0, 10, 0), (0, 5, 1), (0, 0, 0))]
@@ -288,7 +290,7 @@ skin = network(us, vs)
 
 ## Extending and untrimming
 
-`extend` grows a sheet of one face past its sides (`face.extended` any face's surface), to make
+`extend` grows a sheet of one face past its sides (`face.extend` any face's surface), to make
 it reach across a part before it cuts or splits it, or to give a blend room: by `distance` along
 the surface, continuing it as it is (`"natural"`: planes stay planes, cylinders and spheres the
 same ones) or along its tangents (`"G1"`) or curvature (`"G2"`). `face.untrimmed()` is the whole

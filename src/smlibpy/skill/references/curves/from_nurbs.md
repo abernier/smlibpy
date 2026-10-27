@@ -40,4 +40,5 @@ sign of the weights, a degree outside 1 to 32. `TypeError` for something that is
 a 4-tuple.
 
 ## Related
-`nurbs`, `make_compatible`, `Bezier`, `through` (bend a curve through a point).
+`nurbs`, `make_compatible`, `Bezier`, `through` (bend a curve through a point);
+`surfaces/nurbs_surface` (`Shell.from_nurbs`: a sheet of surface data).

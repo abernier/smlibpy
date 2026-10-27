@@ -5,7 +5,8 @@ revolves, lofts, sweeps and Booleans return Parts.
 
 ## Making one
 
-You never call `Part()` (it raises `TypeError: create a Part with the constructors`). Use
+You never call `Part()` (it raises `TypeError: create a Part with the constructors (Box(),
+Rectangle(), ...)`). Use
 `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `AnnularSector`, `Pyramid`, `sketch.extrude(...)`,
 `sketch.revolve(...)`, `swing`, `loft`, `sweep`, or combine parts with `+`, `-`, `&`. Cylinder,
 Cone, Sphere and Torus also make sectors (`arc_size=`, `arc_size1..3=`, `major_angle=`).
@@ -13,11 +14,15 @@ Cone, Sphere and Torus also make sectors (`arc_size=`, `arc_size1..3=`, `major_a
 Every operation returns a new Part; the input is unchanged. Reassigning is the normal style:
 `plate -= Cylinder(3, 20)`.
 
+Every operation of a part is a method and a function of the same name, the function taking the
+part first: `part.draft(faces, 3, Plane.XY)` is `draft(part, faces, 3, Plane.XY)`, `a.fuse(b)`
+(`a + b`) is `fuse(a, b)`. `fillet(edges, r)` and `chamfer(edges, d)` take the edges instead.
+
 ## What a Part knows
 
 | Member | Returns | Notes |
 |---|---|---|
-| `volume`, `area` | float | exact integration, relative accuracy about 1e-7 |
+| `volume`, `area` | float | integrated on the exact faces, to a relative accuracy of 1e-7 |
 | `center()` | Vector | center of mass, not the bbox center |
 | `bbox()` | BoundBox | tight; `.min`, `.max`, `.size` |
 | `is_valid()` | bool | closed manifold solid with a positive volume; see the gotchas |
@@ -49,10 +54,11 @@ part that should be one piece, check `len(part.solids()) == 1`.
 ## Gotchas
 
 - `info()["edges"]` counts seam edges; `len(part.edges())` does not (a cylinder: 3 vs 2).
-- `repr` computes the volume with accuracy 1e-5 and prints six digits, so the last digit can
-  be off (`Torus(20, 4)`: repr 6316.8, `.volume` 6316.548). Use `.volume` for numbers.
-- `is_valid()` can be True for a wrong body: a sweep whose profile overlaps itself counts the
-  overlap twice. Compare the volume with a formula as well.
+- `repr` rounds the volume to six digits (`Torus(20, 4)`: repr 6316.55, `.volume` 6316.547).
+  Use `.volume` for numbers.
+- `is_valid()` can be True for a wrong body: a sweep whose tube runs into itself (`Circle(3)`
+  along `Helix(4, 20, 10)`: neighbouring turns overlap) counts the overlap twice (its volume is
+  π·3²·length). Compare the volume with a formula as well.
 - A fuse where a face only touches a curved face (tangent contact) raises `ModelingError`.
   See `booleans`. Fillet, chamfer, shell and offset refuse an invalid part.
 - A cut or intersection can return an empty Part (0 faces, volume 0, `is_valid()` False)
@@ -60,7 +66,7 @@ part that should be one piece, check `len(part.solids()) == 1`.
 - `solids()` separates a body that floats inside a cavity of another (a captive part) from it;
   the touching cells of a merged part stay one solid.
 - `colored()` accepts any value; an unknown color name fails only at export
-  (`ValueError: unknown color 'lightgreen'`).
+  (`ValueError: unknown color 'lightgreen'`). With `faces=` it is checked at once.
 - `part.name = "x"` mutates the part in place. Use `named()`.
 - Primitive size errors are `ValueError`, not `ModelingError`. Kernel failures are
   `KernelError` (a `ModelingError`).

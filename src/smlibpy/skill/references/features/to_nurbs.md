@@ -8,7 +8,7 @@ spheres, tori, lines and circles are converted.
 
 ## Returns
 A body of the same type, the same shape: volume within about 1e-7 relative
-(19978.761 → +0.0033), the same bbox size, the same face count, `is_valid()` True. All faces and
+(19978.761 → +0.0027), the same bbox size, the same face count, `is_valid()` True. All faces and
 edges report `geom_type == "bspline"`. A sketch keeps its plane.
 
 ## What you lose
@@ -17,7 +17,7 @@ edges report `geom_type == "bspline"`. A sketch keeps its plane.
   `ValueError: a bspline face has no radius`. Select before converting, or by position.
   Flat faces and straight edges still count: `planar()`, `lines()`, `parallel_to` and
   `face.plane` work.
-- STEP files get larger (11.8 kB → 18.1 kB for a box with a hole and four rounds); they read
+- STEP files get larger (11.7 kB → 17.7 kB for a box with a hole and four rounds); they read
   back with the same volume.
 
 ## Why you would

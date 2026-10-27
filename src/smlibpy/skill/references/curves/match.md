@@ -15,8 +15,9 @@ tangentially (G1).
 ## Returns
 A new free `Edge` (`geom_type == "bspline"`, cubic at least; lines and arcs become B-splines)
 whose ends lie on their targets exactly and point in the directions given. The kernel's end
-deformation (`SmCurve::DeformToEndPointTargets`): the parts near the ends (15 % of the curve each)
-move as a whole, the middle blends, so the shape is kept.
+deformation (`SmCurve::DeformToEndPointTargets`): the parts near the ends move almost as a whole,
+the middle blends, so the shape is kept. With only the end of the spline below moved 5 up, the
+point at 0.9 of its length moves 4.998, the one at 0.5 moves 2.42 and the one at 0.1 moves 0.0008.
 
 ## Example
 ```python
@@ -28,8 +29,8 @@ moved = Line((0, 0), (10, 0)).match(start=(0, 1), start_tangent=(1, 1))
 ```
 
 ## Gotchas
-- Large moves bend the ends' 15 % strongly; for a new curve between two points use `Spline` with
-  `tangents=`.
+- Large moves bend the curve strongly where it blends; for a new curve between two points use
+  `Spline` with `tangents=`.
 
 ## Errors
 - `ValueError: match: give start, end, start_tangent or end_tangent`.

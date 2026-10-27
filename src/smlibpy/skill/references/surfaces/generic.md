@@ -9,6 +9,9 @@ is a `Part`. The path is always: **make faces → (stitch them) → thicken or c
 |---|---|---|
 | A freeform patch through measured or computed points | `surface(grid)` (at least 4 x 4) | 1 bicubic face |
 | A surface fitted to a cloud of points (a scan), in any order | `surface(points)` | 1 bicubic face |
+| A surface from control points, knots, degrees and weights | `nurbs_surface(points, knots, degrees, weights)` | 1 face |
+| A patch in a closed loop of curves (a hole, a frame), tangent to the sheets around | `fill(curves)` | Shell |
+| A surface through a network of crossing curves | `network(u_curves, v_curves)` | 1 face |
 | A round blend between two sheets (or a sheet and a pipe) | `surface_fillet(a, b, r)` | Shell |
 | A smooth bridge between border edges of two sheets that do not meet (G1, G2, G3) | `blend(edge_a, edge_b)` | 1 face |
 | A sheet cut along curves on it (a hole, an outline, where another sheet crosses) | `sheet.trim(curves, keep)` | Shell |
@@ -43,8 +46,9 @@ result has its normals made to agree with its first piece's (put the piece whose
 first, or turn the result with `flipped()`). B + `shell` and C give the same body (volumes within
 0.001).
 
-Trim a sheet with a solid: `stitch(solid & sheet)` returns the part of the sheet inside. Trim it
-with curves on it: `sheet.trim(curves, keep=point)` (`"split"` keeps both sides as faces).
+Trim a sheet with a solid: `sheet & solid` (or `sheet.intersect(solid)`) returns the part of the
+sheet inside, `sheet - solid` the rest, as Shells. Trim it with curves on it:
+`sheet.trim(curves, keep=point)` (`"split"` keeps both sides as faces).
 
 ## 3. Check after every step
 
@@ -56,14 +60,13 @@ with curves on it: `sheet.trim(curves, keep=point)` (`"split"` keeps both sides 
 | closed solid | volume against an estimate (an integral, a bounding shape); `bbox()` against the face positions |
 
 ## Silent failures (no exception)
-- `thicken` of a closed `surface` grid: mostly an error, but some tubes give a Part of volume
-  about 0 that `is_valid()` accepts. (A dome with a pole and a Shell with mixed normals raise.)
 - `stitch` that does not close: a Shell (`stitch(..., report=True)` says how many edges stayed
   open). With a large `tolerance`: a valid Part whose faces stand off their edges by up to the
   `max_gap` it reports (`volume` warns that the faces do not meet).
-- `part & sheet`, `part - sheet`, `part + sheet`: invalid "Parts". Only `stitch(part & sheet)` is
-  useful.
 - `surface` with repeated rows overshoots wildly.
+
+`part - sheet` and `part + sheet` raise `TypeError` (to split a part along a sheet:
+`part.split(sheet)`); `part & sheet` is the sheet trimmed to the part, a Shell.
 
 ## Example: closed block and open cover from one freeform skin
 ```python
@@ -113,11 +116,12 @@ panel = skin.thicken(-2)                                  # normal is up; -2 goe
 assert panel.is_valid() and panel.volume > 0
 fender = panel - Cylinder(42, 200).rotate(X, 90)          # wheel arch, axis along Y
 fender = fender.fillet(fender.faces().cylinders().edges(), 0.5)
-print(fender.is_valid(), round(fender.volume, 2), len(fender.solids()))   # True 9908.48 1
+print(fender.is_valid(), round(fender.volume, 2), len(fender.solids()))   # True 9908.48 1 (about, 9908.58 on Linux, Windows and macOS x86_64)
 ```
 Once thickened, the panel is an ordinary Part: Booleans, fillets and STEP export work (the STEP
 file reads back with the same volume). The arch edges meet the panel at a shallow angle, so
-the fillet must stay well under the 2 mm wall (1.5 fails).
+the fillet must stay well under the 2 mm wall (1 and 1.5 fail).
 
 ## Related
-`surface`, `ruled`, `stitch`, `Shell`; `loft`, `extrude`, `sweep`, `shell`, `fillet` in features
+`surface`, `nurbs_surface`, `ruled`, `fill`, `network`, `blend`, `trim`, `stitch`, `Shell`; `loft`,
+`extrude`, `sweep`, `shell`, `fillet` in features

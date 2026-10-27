@@ -7,8 +7,9 @@ Runs the kernel's B-rep healer on a copy of a part or shell.
 
 ## Returns
 A new body of the same type; a `Shell` whose faces close around a volume once healed comes back
-as a `Part` (a box of faces moved apart by 0.1 and stitched within 0.5: a Shell, healed a valid
-Part). What the healer does: adjusts tolerances to measured gaps,
+as a `Part` (the six faces of `Box(10, 10, 10)` added together as sheets with `+`: a `Shell`,
+healed a valid `Part` of 1000.0; `stitch` makes them a `Part` itself). What the healer does:
+adjusts tolerances to measured gaps,
 removes degenerate pieces, repairs periodic seams. It does not merge vertices that lie on top of
 each other (`import_step` makes one vertex per vertex of the file), close real gaps, refit curves
 or rebuild faces.

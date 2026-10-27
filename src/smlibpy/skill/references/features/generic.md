@@ -2,7 +2,10 @@
 
 Features make solids from profiles (`extrude`, `revolve`, `swing`, `loft`, `sweep`, `thicken`) and change
 solids (`fillet`, `chamfer`, `shell`, `offset`, `split`, `mirror`). `merge` combines parts into
-one part made of cells (`cells()`). Each returns a new shape.
+one part made of cells (`cells()`). Each returns a new shape. An operation on a part is a method
+and a function of the same name and parameters, the function taking the part first:
+`part.shell(2, faces)` is `shell(part, 2, faces)`; `fillet(edges, r)` and `chamfer(edges, d)`
+take the edges and find their part.
 
 ## `is_valid()` is not enough
 Features check their result: revolve, swing, sweep, loft, extrude with taper or a direction and thicken raise
@@ -26,7 +29,9 @@ check `is_valid()` after each step and fix the step that broke it.
 - Faces of a part: normals point out of the material. Positive extrusions and thickenings
   from a face grow the part; negative ones go into it.
 - `split(keep="above")` keeps the side the normal points to.
-- Mirrored sketches have their normal flipped.
+- A mirrored sketch's normal is mirrored with it: across a plane parallel to the sketch it
+  turns over (`Rectangle(10, 10).translate(0, 0, 5).mirror(Plane.XY)` faces -Z), across a plane
+  through the normal it stays.
 
 ## Sizes and limits
 - Rounds and chamfers: two treated edges `d` apart allow a setback of `d/2`, one of `d`.
@@ -44,9 +49,11 @@ Its `trace` says where the kernel gave up, for a bug report: the kernel's failur
 the last ones last (`'SM_ERR_INVALID_INPUT at SmFilletExecutive.cpp:1909 (CreateFilletCorners)'`, ...,
 `'... (SmApiFilletEdges)'`); do not branch on it, it changes with the kernel.
 `ValueError`/`TypeError` mean a wrong argument (a radius or length that is not positive, a zero
-thickness or angle, a `(start, end)` radius where it cannot hold). Shell, offset and thicken run
-the kernel in a forked copy of the process (Linux, macOS): a crash there is a `ModelingError`
-("the kernel crashed ... in a copy of this process"), and this process goes on.
+thickness or angle, a `(start, end)` radius where it cannot hold). Shell, offset, thicken,
+`cells()`, `remove_fillets` and `remove_faces` run the kernel in another process (a forked copy
+on Linux and macOS, a helper process on Windows; see `parts/guards`): a crash there, or a step
+longer than `smlibpy.defeature.GUARD_SECONDS`, is a `ModelingError` ("the kernel crashed ... in a
+copy of this process"), and this process goes on.
 
 ## Order
 Main body → additions → subtractions → fillets and chamfers → shell (or shell earlier when

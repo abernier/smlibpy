@@ -27,7 +27,8 @@ Bend faces are cylinders of exactly R and R + t; the end edges circles, all othe
 - On a part bent before, draw the line on the flange's face: its plane is exact
   (`face.center()`), e.g. the inside face of the flange above at x = 20 - BA/2 + R.
 - A second bend's line must be at least half its allowance away from the flat end of the first
-  bend (where its cylinder meets the flat), else `ModelingError: ... holds more than the sheet`.
+  bend (where its cylinder meets the flat), else `ModelingError: ... holds more than the sheet`
+  (or `... overlaps another bend`).
 
 ## Gotchas
 - The line must cross the sheet everywhere along the bend zone: near a parallel edge (closer
@@ -55,7 +56,7 @@ blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))   # z = 0
 bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)        # line on the top face at x = 20
 ba = bend_allowance(90, radius=2, thickness=2)
 bb = bracket.bbox()
-print(round(bb.max.x, 4), round(bb.max.z, 4))            # 20 - BA/2 + R + t, t + R + (30 - BA/2)
+print(round(bb.max.x, 4), round(bb.max.z, 4))            # 21.7381 31.7381 = 20 - BA/2 + R + t, t + R + (30 - BA/2)
 print(sorted(round(f.radius, 6) for f in bracket.faces() if f.geom_type == "cylinder"))   # exact R and R + t
 down = fold(blank, Axis((20, 0, 2), (0, 1, 0)), -90, radius=2)          # negative: folds away from the face
 print(round(down.bbox().min.z, 4))
@@ -69,7 +70,8 @@ slots = Box(31, 1, 10).translate(35, 10.5, 0) + Box(31, 1, 10).translate(35, -10
 tab = fold(blank - slots, Line((25, -10, 2), (25, 10, 2)), 90, radius=2, partial=True)
 print(tab.is_valid(), tab.bbox().max, tab.bends())
 ```
-Prints `True Vector(50, 20, 26.7381) [Bend(angle=90, radius=2, thickness=2, length=20, allowance=4.52389)]`.
+Prints `True Vector(50, 20, 26.7381) [Bend(angle=90, radius=2, thickness=2, k_factor=0.44, length=20,
+allowance=4.52389)]`.
 
 ## Related
 `flange`, `unfold`, `bend_allowance`, `sheetmetal/generic`.

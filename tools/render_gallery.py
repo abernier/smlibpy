@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from smlibpy import Align, Box, Cylinder, Plane, Rectangle, X, Z, diff_images, render  # noqa: E402
 
-R = sys.modules["smlibpy.render"]  # the module (the package exports the function as smlibpy.render)
+import smlibpy.pictures as R  # noqa: E402
 
 TW, TH, CAP, COLS = 500, 375, 34, 4
 

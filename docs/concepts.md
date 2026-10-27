@@ -41,7 +41,28 @@ intersection = a & b
 ring = Circle(10) - Circle(6)          # 2D works the same way
 ```
 
-The right-hand side may be a list: `part - [tool1, tool2]` subtracts both.
+The right-hand side may be a list: `part - [tool1, tool2]` subtracts both. The operators have names
+too, as methods of any number of operands and as functions: `a.fuse(b, c)`, `a.cut(b)`,
+`a.intersect(b)`, a sketch's `a.xor(b)`; `fuse(a, b)`, `cut(a, b)`.
+
+## Methods and functions
+
+Every operation of a body (a part, a sheet or a sketch) is a method and a function of the same name
+and parameters. The function takes the body first; use whichever reads better:
+
+```python
+block = Box(40, 30, 20)
+walls = block.faces().filter(lambda f: abs(f.normal_at().z) < 1e-9)
+tapered = block.draft(walls, 3, Plane.XY)
+same = draft(block, walls, 3, Plane.XY)           # the function form
+nested = shell(fillet(block.edges().parallel_to(Z), 4), 2)
+print(round(tapered.volume, 3) == round(same.volume, 3), round(nested.volume, 3))
+```
+
+`fillet`, `chamfer` and `fillet_preview` take the edges instead and find the part they belong to:
+`fillet(block.edges().parallel_to(Z), 4)` rounds `block`. What only selects, measures or places
+(`faces()`, `volume`, `moved`) is a method, and what makes a shape from several inputs (`loft`,
+`blend`, `network`) or reads and writes files is a function.
 
 ## Planes
 

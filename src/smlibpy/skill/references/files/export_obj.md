@@ -37,10 +37,11 @@ Unnamed shapes are called `part_<i>` (meshes too), counted from 1 over the list.
 
 ## Example
 ```python
+bracket = (Box(60, 40, 8) - Cylinder(4, 10)).named("bracket")
+cover = Box(60, 40, 2).translate(0, 0, 10).named("cover")
 export_obj([bracket, cover], "assembly.obj", tolerance=0.01)
 print([l.strip() for l in open("assembly.obj") if l.startswith("o ")])   # ['o bracket', 'o cover']
 ```
-(`bracket` and `cover` as in `export_glb.md`.)
 
 ## Related
 `export_stl`, `export_glb`, `tessellate`.

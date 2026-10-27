@@ -44,7 +44,7 @@ import {
 import { bends, din6935 } from '../src/sheetmetal.ts'
 import { Lattice, ModelingError, bendAllowance, fromStep, toStep, unroll } from '../src/index.ts'
 import { Edge, bend, makeFace, taper, twist as twistShape } from '../src/index.ts'
-import { MAX_DEGREE, _planBend } from '../src/deform.ts'
+import { MAX_DEGREE, _planBend } from '../src/deformations.ts'
 import { k } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
@@ -387,11 +387,11 @@ test('continuity of fillet borders', () => {
   const crease = box.edges()[0].continuity()
   assert.equal(crease.level, 'G0')
   approx(crease.angle, 90)
-  const seam = Cylinder(5, 10).edges(true).filter((e) => e.isSeam)[0].continuity()
+  const seam = Cylinder(5, 10).edges({ seams: true }).filter((e) => e.isSeam)[0].continuity()
   assert.equal(seam.level, 'G2')
   assert.ok(seam.angle <= 1e-9)
-  assert.equal(borders[0].continuity(16, { angleTol: 1e-12 }).level, 'G1')
-  assert.equal(borders[0].continuity(16, { curvatureTol: 10 }).level, 'G2')
+  assert.equal(borders[0].continuity(16, { angleTolerance: 1e-12 }).level, 'G1')
+  assert.equal(borders[0].continuity(16, { curvatureTolerance: 10 }).level, 'G2')
   raises(() => Line([0, 0, 0], [1, 0, 0]).continuity(), RangeError, /free curve/)
   raises(() => Rectangle(10, 10).edges()[0].continuity(), RangeError, /between two faces/)
 })

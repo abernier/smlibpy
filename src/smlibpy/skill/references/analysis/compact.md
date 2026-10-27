@@ -11,19 +11,23 @@ faces and edges; the next query builds what it needs again.
 
 ## When
 
-| Query | Left on a holed, filleted box of 129 KB |
+| Query | Left on a holed, filleted box of about 150 KB (the example's part) |
 |---|---|
-| `volume`, `area`, `mass_properties()`, selectors | nothing |
-| `bbox()` | 41 KB |
-| `mesh()`, `export(...stl/glb/obj)` | 754 KB |
-| `distance_to(body)` | 799 KB |
+| `volume`, `area`, `mass_properties()`, `is_valid()`, selectors | nothing |
+| `bbox()` | 42 KB |
+| `closest_point(point)` | 47 KB |
+| `mesh()`, `export(...stl/glb/obj)` | 770 KB |
+| `distance_to(body)` | 820 KB |
+
+(The heap per body, over 300 copies, macOS arm64.)
 
 - A query that finds what an earlier one left is about 1.2 times as fast (`closest_point()`
-  after `distance_to()`: twice); Booleans, fillets and the other operations gain nothing.
+  after `distance_to()` or another `closest_point()`: 11 times, 0.035 ms instead of 0.4);
+  Booleans, fillets and the other operations gain nothing.
 - So compact the bodies that are kept but no longer queried: the copies of a large pattern after
   they were measured, meshed or exported, a library of parts held in a session. A few parts
   need nothing.
-- Compacting takes about 0.01 ms a body; compacting one that holds nothing costs the same.
+- Compacting takes about 0.04 ms a body, 0.005 ms one that holds nothing.
 
 ## Example
 
@@ -31,7 +35,7 @@ faces and edges; the next query builds what it needs again.
 part = Box(40, 30, 10) - Cylinder(5, 20)
 part = part.fillet(part.edges().parallel_to(Z), 2)
 copies = [part.translate(i * 50, 0, 0) for i in range(100)]
-meshes = [p.mesh() for p in copies]      # each copy now keeps about 750 KB
+meshes = [p.mesh() for p in copies]      # each copy now keeps about 770 KB
 for p in copies:
     p.compact()                           # and gives it back
 print(round(copies[0].volume, 3), copies[0].bbox().max)   # the bodies are unchanged

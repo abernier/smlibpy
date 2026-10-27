@@ -5,7 +5,12 @@ Combine parts: union (`+`, `fuse`), difference (`-`, `cut`), intersection (`&`, 
 ## Signatures
 
 `part.fuse(*others)`, `part.cut(*others)`, `part.intersect(*others)`;
-`part + other`, `part - other`, `part & other`; `+=`, `-=`, `&=`.
+`part + other`, `part - other`, `part & other`; `+=`, `-=`, `&=`; as functions
+`fuse(part, *others)`, `cut(part, *others)`, `intersect(part, *others)`.
+
+The functions take a sheet or a sketch first too, as their methods do: `fuse(sketch, other)` is
+`sketch.fuse(other)` (`sketches/generic`, `surfaces/Shell`). Anything else raises `TypeError: cut
+takes a part, a sheet or a sketch, not a str`.
 
 - `other` is a Part or any iterable of Parts, nested as you like: `a - [t1, t2]`,
   `a.cut(t1, t2)`, `a.cut([[t1], (t2,)])`, a generator, a ShapeList, a pattern
@@ -46,7 +51,7 @@ Measured on 10 mm boxes unless noted:
 | fuse, face to face | one solid, coplanar faces merged (6 faces), valid |
 | fuse, a small box standing on a face | one solid, valid |
 | fuse, touching along an edge only | **raises `ModelingError`** |
-| fuse, touching in a point | one solid, valid (STEP export splits it into two) |
+| fuse, touching in a point | valid, 2 `solids()` (2 solids in a STEP file too) |
 | fuse of disjoint parts | one Part, several `solids()` |
 | cut that splits the part | one Part, several `solids()` |
 | cut with a tool that misses, or only touches from outside | the part unchanged |
@@ -55,10 +60,10 @@ Measured on 10 mm boxes unless noted:
 | tool flush with a face (`Hole(...).on(face)`) | fine; coplanar faces are handled |
 | tool fully inside | a closed cavity (12 faces), one solid |
 | gaps or overlaps below about 1e-6 | treated as contact |
-| face or cylinder **tangent** to a cylinder (line contact) in a fuse | **raises `ModelingError`** |
-| sphere or cylinder tangent to a flat face, coaxial cylinders, crossed cylinders | valid |
+| face or cylinder **tangent** to a cylinder, or a cylinder lying on a flat face (line contact), in a fuse; a cylinder tool flush with a side face, in a cut | **raises `ModelingError`** |
+| sphere tangent to a flat face, coaxial cylinders, crossed cylinders | valid |
 | crossing holes whose seams lie tangent to the other hole (`Box(20, 20, 20) - Cylinder(3, 40).translate(0, 3, 0) - Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)`) | right: 6931.7476 (the second hole goes in turned about its axis); `&` of the two holes 62.721 |
-| a groove pin tangent to a bore (`(Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)`) | right: 24299.2587 (the pin goes in turned about its axis); also with `to_nurbs()` copies of the part or the pin |
+| a groove pin tangent to a bore (`(Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)`) | right: 24299.2587 (the pin goes in turned about its axis); also with a `to_nurbs()` copy of the pin (with one of the part: 24299.2603, within 1e-7) |
 | a ball tangent to the seam of an earlier hole (`(Box(20, 20, 20) - Cylinder(3.174, 40).translate(-2.051, -2.981, 0)) & Sphere(3.159).translate(1.123, 0.178, 2.221)`) | right: 111.1921 (the hole's seam is moved on its face first); it gave 6.9039 |
 | a tool beside an earlier parallel hole (`(Box(40, 40, 10) - Cylinder(6, 30)) - Cylinder(3, 30).translate(8, 0, 0)`), also in a curved part (`(Sphere(20) - Cylinder(6, 60)) - Cylinder(3, 60).translate(8, 0, 0)`) | right: 14612.2528 and 28160.6083 (tried again with a NURBS copy of the tool); within about 1e-8, where both tools at once are exact |
 
@@ -81,9 +86,9 @@ Measured on 10 mm boxes unless noted:
   again with a NURBS copy of the operand whose seam touches (the union and intersection of
   `(Box(30, 30, 30) - Cylinder(5.997, 60).translate(2.016, 2.814, 0))` with `Torus(3.546,
   1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396)`: 23635.9574 and 194.5466) or raises
-  `ModelingError` ("... a seam of one operand touches a face of the other at a point ...": move
-  or turn the tool a little). `split` by a plane that touches a torus' outer equator checks that
-  the two sides hold the part's volume.
+  `ModelingError` ("... the seam of a closed face of an operand (where its surface meets itself)
+  touches a face of the other at a point ...: move or turn the tool a little"). `split` by a
+  plane that touches a torus' outer equator checks that the two sides hold the part's volume.
 - **Overlapping parallel through cuts**: a single tool that overlaps an earlier parallel hole
   (keyholes, slots made of holes) makes the kernel fail; smlibpy then tries again with a NURBS
   copy of the tool, which works: `Box(40, 40, 10) - Cylinder(6, 30) -
@@ -106,7 +111,7 @@ Measured on 10 mm boxes unless noted:
   Shells (see `surfaces/Shell`).
 - If moving an operand does not help: check each operand's `is_valid()` and `volume`, and
   combine the tools before applying them.
-- Speed is not an issue for ordinary parts: 225 holes as one list cut in under 1 s.
+- Speed is not an issue for ordinary parts: 225 holes as one list cut in about 1 s.
 
 ## Errors
 
@@ -138,7 +143,8 @@ Measured on 10 mm boxes unless noted:
 - `TypeError: cannot cut a Sketch with a Part; extrude it first` (also for `+` and `&`).
 - `TypeError: cannot cut a body with a str value; use parts (or a list of parts)` for
   strings, numbers, edges and vertices.
-- `export_step` of an empty result: `ValueError: nothing to write`.
+- `export_step` of an empty result: `ValueError: export_step: the Part is empty: it has no faces
+  to write (a Boolean that left nothing?)`.
 
 ## Example
 

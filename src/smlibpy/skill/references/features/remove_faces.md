@@ -6,6 +6,7 @@ meshing) and for getting a base shape back from an imported part.
 
 ## Signature
 `part.remove_faces(faces, *, partial=False)`
+`remove_faces(part, faces, *, partial=False)` (the same, the part first)
 
 - `faces`: faces of this part (a selection, one face), or of an earlier version of it (matched
   by position). Faces the selection encloses go with it: the floor of a blind hole with its
@@ -39,19 +40,21 @@ and the part's box may not shrink.
   (`remove_fillets`) or select them with the feature.
 - Select faces with a box (`within`) rather than a height filter: `faces().filter(lambda f:
   f.bbox().min.z > 3.9)` also picks the top face of the part.
-- On imported parts and after other defeaturing steps the kernel can crash on a feature (seen on
-  the example bracket after `remove_fillets(partial=True)`: all 4 hole features failed, while the
-  same holes went from the STEP import directly: 19 → 13 faces). The crash happens in a forked
-  copy of the process (Linux, macOS; see `remove_fillets`), this process goes on. Try the other
+- On imported parts and after other defeaturing steps the kernel can fail on a feature (the
+  example bracket read from STEP, after `remove_fillets(partial=True)`: 2 of its 4 hole features
+  fail, while the same holes go from the STEP import directly: 19 → 13 faces). Where it crashes,
+  it crashes in another process (see `remove_fillets`), and this process goes on. Try the other
   order (holes first, then fillets) and `partial=True`.
 
 ## Errors
 - `ModelingError: remove_faces: that is every face of the part; nothing would be left`
-- `ModelingError: remove_faces: the kernel crashed (signal 11, in a copy of this process) at (44.92, 10, 4) (4 of 4 features failed); select every face of the feature (...), take out its fillets first (remove_fillets), or keep it with partial=True`
+- `ModelingError: remove_faces: the kernel could not close the gap at (44.92, 10, 4) (2 of 4 features failed); select every face of the feature (...), take out its fillets first (remove_fillets), or keep it with partial=True`
+  (`the kernel crashed (signal 11, in a copy of this process)` in place of the reason where it crashed)
 - `ValueError: remove_faces: no faces selected`; `ValueError: Face(...) is not a face of this part`.
 
 ## Cost
-0.02 s per feature on the box examples (with the guard, the kernel runs twice).
+About 0.015 s per feature on the box examples (each kernel step runs once, in the other
+process).
 
 ## Example
 ```python

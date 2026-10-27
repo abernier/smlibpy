@@ -31,7 +31,7 @@ import os
 import struct
 import tempfile
 import warnings
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 import numpy as np
 
@@ -94,8 +94,9 @@ def _not_writable(item: Any, what: str) -> str:
     name = type(item).__name__
     article = "an" if name[:1].upper() in "AEIOU" else "a"
     smb = what in ("save", "to_smb")
-    text = f"an .smb file holds one body, not {article} {name}" if smb else \
-        f"{what} writes parts, sheets, faces and meshes, not {article} {name}"
+    kinds = "parts, sheets and faces" if what in ("to_brep", "export_brep", "to_smp") else \
+        "parts, sheets, faces and meshes"  # (.brep and .smp files hold exact bodies)
+    text = f"an .smb file holds one body, not {article} {name}" if smb else f"{what} writes {kinds}, not {article} {name}"
     if isinstance(item, (Edge, Wire)):
         return text + (": save curves to an .smp file, which holds bodies and curves (or write them with export_step "
                        "or export_dxf)" if smb else ": export_step and export_dxf write curves, and so does save to an "
@@ -210,7 +211,8 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
                          ".usda or .brep")
 
 
-def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None,
+def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: Literal["mm", "cm", "m", "um", "inch", "in"] = "mm",
+                name: str | None = None,
                 assembly: bool = False) -> None:
     """Exact B-rep export to STEP AP214. Names and colors of parts are kept.
 
@@ -230,7 +232,8 @@ def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", 
     write_step(_step_items(shapes), os.fspath(path), unit=unit, name=name, assembly=assembly)
 
 
-def to_step(shapes: Any, *, unit: str = "mm", name: str | None = None, assembly: bool = False) -> str:
+def to_step(shapes: Any, *, unit: Literal["mm", "cm", "m", "um", "inch", "in"] = "mm", name: str | None = None,
+            assembly: bool = False) -> str:
     """The text of a STEP AP214 file of the shapes (see :func:`export_step`). Without a file the
     product is called ``"part"`` unless ``name`` says otherwise.
 

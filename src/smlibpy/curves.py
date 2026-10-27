@@ -786,8 +786,9 @@ def fit_curve(
     it, and takes more control points (spread evenly over the points) until every point is within
     the tolerance, measured to the nearest point of the curve. An open curve runs from the first
     point to the last; where the points run smoothly there and no tangent is given, it leaves them
-    in the points' own direction. A tolerance below the points' noise makes the curve go through
-    them all.
+    in the points' own direction. Below the points' noise it takes up to a control point per point,
+    and where even that does not keep within the tolerance it raises :class:`ModelingError` with the
+    distance it reached (:func:`Spline` passes through every point).
 
     Args:
         points: The points in order along the curve: a list of points or an (n, 2) or (n, 3) array
@@ -915,8 +916,10 @@ def Spiral(start_radius: float, end_radius: float, turns: float, plane: Plane = 
     with the angle from ``start_radius`` to ``end_radius`` over ``turns`` turns. It starts on the
     plane's X axis and turns counterclockwise seen from the plane's normal (``clockwise=True``:
     the other way). Either radius may be 0 (a spiral from or to the center). For spiral springs,
-    scroll grooves and coils; a B-spline within 1e-4 of the exact spiral, as :func:`Helix`, of any
-    number of turns.
+    scroll grooves and coils; a B-spline within 1e-4 of the exact spiral, as :func:`Helix`. Less
+    than a turn with a large change of radius (``Spiral(2, 20, 0.5)``) and very many turns
+    (``Spiral(20, 0, 130)``) are beyond the kernel's approximation: :class:`KernelError`, whose hint
+    says what makes such a curve.
 
     ``Spiral(2, 20, 5)`` runs from (2, 0) to (20, 0) in five turns, 9/5 = 3.6 apart.
     """
@@ -934,7 +937,9 @@ def Spiral(start_radius: float, end_radius: float, turns: float, plane: Plane = 
     # center starts or ends at its first or last control point, moved there.
     r0, r1, n = float(start_radius), float(end_radius), float(turns)
     height = 2e-7 * max(1.0, n)
-    with kernel_call("Spiral"):
+    with kernel_call("Spiral", "the kernel could not approximate this spiral (it fails for less than a turn with a "
+                               "large change of radius, and for some numbers of turns, such as 130 from 20 to 0); "
+                               "fit_curve through points of the spiral makes it"):
         curve = _helix_curve(height / n, height, max(r0, 1e-7), max(r1, 1e-7), n, not clockwise)
         d = ext.curve_data(curve)
         ext.delete_curve(curve)
@@ -990,7 +995,8 @@ def _fp(v: Vector) -> str:
     return f"({fmt(v.x)}, {fmt(v.y)})" if abs(v.z) < 1e-9 else f"({fmt(v.x)}, {fmt(v.y)}, {fmt(v.z)})"
 
 
-def _fillet_wire(wire: Wire, radius: float, vertices: Iterable[VectorLike | Vertex] | None) -> Wire:
+def _fillet_wire(wire: Wire, radius: float, vertices: VectorLike | Vertex | Iterable[VectorLike | Vertex] | None
+                 ) -> Wire:
     """Round the corners of a wire (Wire.fillet): a planar wire's corners between lines and arcs
     exactly in its plane (as Sketch.fillet), a wire that is not planar its corners between lines.
     Corners that cannot be rounded raise, named or not; points that are not corners raise."""
@@ -1009,6 +1015,9 @@ def _fillet_wire(wire: Wire, radius: float, vertices: Iterable[VectorLike | Vert
     joints = list(range(n if closed else n - 1))  # corner i: where edges[i] ends and edges[i + 1] starts
     chosen = set(joints)
     if vertices is not None:
+        if isinstance(vertices, (Vertex, Vector)) or (isinstance(vertices, (tuple, list)) and vertices
+                                                       and all(isinstance(c, (int, float)) for c in vertices)):
+            vertices = [vertices]  # (one corner, as Sketch.fillet takes it)
         targets = [_vec(v.point if isinstance(v, Vertex) else v) for v in vertices]
         if not targets:
             raise ValueError("fillet: no corners given (the selection is empty)")

@@ -6,6 +6,7 @@ which have no history.
 
 ## Signature
 `part.move_faces(faces, by)`
+`move_faces(part, faces, by)` (the same, the part first)
 
 - `faces`: faces of this part: a selection, one `Face` or a list. Faces of an earlier version of
   the part are matched by position and area.
@@ -39,8 +40,8 @@ A zero move returns an equal copy.
   `part.solids()` one by one).
 - Faces around the moved ones that the kernel extends keep their cylinder or cone (a vertical
   round of a box whose top is pulled up; the kernel gives them surfaces of extrusion and
-  B-splines, which smlibpy puts back where they still lie on it); other kinds can change (a
-  sphere or torus extended becomes a B-spline face within about 1e-7 of the size).
+  B-splines, which smlibpy puts back where they still lie on it). Spheres and tori around them
+  kept theirs where tried (a spherical dimple and a toroidal groove, their rim plane moved up 2).
 
 ## Errors
 - `ModelingError: move_faces: the plane face at (0, -3, 0) meets the moved cylinder face at (-6.91, 0, 0) tangentially, so it must be moved with it (the kernel keeps tangent faces together); add it to the faces`

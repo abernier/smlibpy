@@ -319,3 +319,13 @@ test('fills of a sketch outline run through the curves', () => {
   approx(RV.fill(RV.Circle(5).edges()).area, Math.PI * 25, 1e-6)
   approx(RV.fill(RV.Rectangle(10, 10).edges()).area, 100, 1e-9)
 })
+
+test('a closed grid tube that thickens into no volume throws', () => {
+  // (the kernel's body has volume -1e-12 and isValid() refuses it; its coarse volume did not show it)
+  const rows = [0, 10, 20, 30].map((z) => Array.from({ length: 9 }, (_, i) => {
+    const a = (2 * Math.PI * i) / 8
+    return [10 * Math.cos(a), 10 * Math.sin(a), z] as [number, number, number]
+  }))
+  assert.throws(() => (surface(rows) as Shell).thicken(1), /thicken: the kernel returned a body that is without volume/)
+  approx(Box(20, 20, 20).faces().top()[0].toShell().thicken(2).volume, 800)
+})

@@ -200,8 +200,9 @@ not real edges and are left out of `edges()`; `edges(seams=True)` includes them.
 
 ## Operators
 
-`filter_by`, `sort_by` and `group_by` take an axis, a type name or a function, and the
-operators `>`, `<`, `>>` and `<<` sort, reverse-sort and take the top and bottom groups:
+`filter_by` takes an axis, a type name or a function, `sort_by` and `group_by` an axis, a
+measure (`"area"`) or a function, and the operators `>`, `<`, `>>` and `<<` sort, reverse-sort
+and take the top and bottom groups:
 
 ```python
 part.faces() >> Z     # same as part.faces().max_by(Z)

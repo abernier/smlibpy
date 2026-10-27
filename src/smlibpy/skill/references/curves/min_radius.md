@@ -33,9 +33,13 @@ smallest radius folds over itself), offsets (the same on the inner side), drawin
 - `edge.curvature_at(t)` takes a fraction of the length and gives one number (an edge bends one
   way at a point); `face.curvature_at(point)` takes a point and gives a `Curvature` with both
   principal curvatures and their directions (`analysis/curvature_at`).
-- Sweep errors about the path's curvature now say where it bends most tightly:
-  `... the profile may be too large for the path's curvature: the path bends with a radius of
-  4.556 at (9.259, 10.77, 10.65) (Edge.min_radius), and the profile reaches 5.59 from the path`.
+- Check `min_radius()` before a sweep: `sweep` does not refuse every profile that reaches
+  farther from the path than that. Along the path of the example (4.556), `Circle(5.59)` comes
+  back as a body whose surface folds through itself (`is_valid()` True, `is_valid(strict=True)`
+  False, volume pi * 5.59² * length as if nothing overlapped); along
+  `Spline((0, 0), (10, 5), (20, -3), (30, 4))` (3.997), `Circle(6)` passes even the strict check.
+  A path of a single arc raises: `ModelingError: sweep: the profile reaches across the axis of the
+  arc (radius 2), so it would sweep through itself; ...`.
 - `edge.bbox()` of a free curve is exact (ends, corners and where the tangent is perpendicular to
   an axis): `Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox().max.y` is 1.0069.
 

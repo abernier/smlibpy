@@ -21,7 +21,10 @@ The return type depends on how many bodies the file holds:
 
 Handle both cases:
 ```python
-r = import_step(path)
+bracket = (Box(60, 40, 8) - Cylinder(4, 10)).named("bracket").colored("steelblue")   # (a file to read)
+cover = Box(60, 40, 2).translate(0, 0, 10).named("cover").colored("#d9925a")
+export_step([bracket, cover], "assembly.step", assembly=True)
+r = import_step("assembly.step")
 parts = r if isinstance(r, ShapeList) else [r]
 ```
 

@@ -7,6 +7,7 @@ a curved part, to find where a surface is tangent to a view, and for the contour
 ## Signature
 
 `body.silhouette(direction=(0, 0, 1)) -> ShapeList[Edge]` on `Part`, `Shell` and `Sketch`.
+`silhouette(body, direction=(0, 0, 1))`: the same, as a function.
 
 `direction` points from the model towards the viewer (like `view=` of `snapshot`): an Axis
 (`Z`) or a vector. Its length does not matter; `(0, 0, 0)` raises
@@ -19,16 +20,17 @@ A `ShapeList` of standalone 3D `Edge`s on the body (not projected to a plane), i
 of the contour, the side the viewer sees and the side behind:
 
 - On curved faces: the contour generators, where the surface normal is perpendicular to the
-  direction. Exact for spheres, cylinders and tori around the direction (`circle`, `line`
-  pieces), traced as `bspline` otherwise. Arcs of one circle come joined: a sphere seen from
-  above gives one `circle`.
+  direction. Exact for spheres, cylinders and tori around the direction (`circle`s; a cylinder's
+  contour lines come as straight `bspline`s), traced as `bspline` otherwise. Arcs of one circle
+  come joined: a sphere seen from above gives one `circle`.
 - Edges where faces that face the viewer meet faces that face away: a box seen along (1, 1, 1)
   gives its 6 outline edges (120 mm), the same edges as `parting_line`.
 - Faces seen edge-on go with the faces behind them, so their near edges are the contour: a box
   from +Z gives its 4 top edges (z = 5), from -Z its 4 bottom edges; a cylinder from the side
   its two contour lines and the near halves of its rims.
 - A torus from +X: 314.16 mm (its two circles of radius 20 and the two tube circles of radius
-  5), seen and hidden.
+  5), seen and hidden, traced: 13 `bspline` pieces, one of them a sliver 1.5e-4 long (count
+  length, not pieces).
 - A sheet (`Shell`): the curves where it turns away from the viewer, and its creases; its free
   edges are not part of the contour.
 

@@ -8,6 +8,7 @@ on, without its holes and cut borders.
 ## Signature
 `sheet.extend(distance, *, sides=None, continuity="natural")`
 `face.extend(distance, *, sides=None, continuity="natural")`
+`extend(sheet_or_face, distance, *, sides=None, continuity="natural")`: the same, as a function
 `face.untrimmed()`
 
 - `distance`: how far past each side, measured along the surface, across the middle of the side.
@@ -29,31 +30,35 @@ A plane's rectangle is the smallest one around the face in the plane's own direc
 cylinder the cut left it on (all around, full height); a plane as its rectangle around the face.
 
 ## Measured
-- Box(10) top face, `extended(3)`: a plane 16 x 16 (256); past one edge: 13 x 10 (130).
-  `Circle(5)` face: `extended(1)` 12 x 12 (144), `untrimmed()` 10 x 10 (100).
-- `Cylinder(5, 10)` side, `extended(2)`: still a cylinder, 2π·5·14 = 439.823, z -7..7 (around it
+- Box(10) top face, `extend(3)`: a plane 16 x 16 (256); past one edge: 13 x 10 (130).
+  `Circle(5)` face: `extend(1)` 12 x 12 (144), `untrimmed()` 10 x 10 (100).
+- `Cylinder(5, 10)` side, `extend(2)`: still a cylinder, 2π·5·14 = 439.823, z -7..7 (around it
   the cylinder is closed: it does not grow that way).
-- A cap of a sphere r 5, `extended(1)`: still a sphere; every point at radius 5 (1e-15).
+- A cap of a sphere r 5, `extend(1)`: still a sphere; every point at radius 5 (1e-14).
 - A quarter round r 2: natural follows the circle; `"G1"` reaches the tangent lines (exactly 1
   past the round's ends); `"G2"` in between.
-- Sheet from `surface` (20 x 20, parabolic across x), `extend(3)`: y -3..23 exactly for all three
-  continuities; along the parabola x -1.79..21.79 (natural), -2.03..22.03 (G1). The kernel's
+- Sheet from `surface` (20 x 20, z = 0.05 (x - 10)²), `extend(3)`: y -3..23 exactly for all
+  three continuities; along the parabola x -1.79..21.79 (natural), -2.03..22.03 (G1). The kernel's
   extension is approximate (its step comes from an average of five iso-curves, and where it fails
   it halves the distance silently): each side is measured across its middle and extended again or
-  cut back, so the middle is exact.
+  cut back until it reaches the distance there within 1e-3 of it (on this sheet: 1e-6 natural and
+  G1, 2e-5 G2).
 - `Box(20, 20, 20) - Cylinder(4, 40)`: the hole's face `untrimmed()` 1005.31 = 2π·4·40, z -20..20.
 
 ## Errors
-- `ValueError: extended: an edge lies where the surface closes around (a seam) or at a pole`: a
-  side that cannot grow (a full cylinder around, a sphere's pole, a cone's tip).
-- `ValueError: extended: an edge does not run along a side of the face's surface rectangle`: a
-  trim edge across the surface (a hole, a slanted border).
-- `ValueError: extended: an edge in sides does not bound the face`, `TypeError: ... sides are
+- `ValueError: extend: an edge lies where the surface closes around (a seam) or at a pole; ...`:
+  a side that cannot grow (a full cylinder around, a sphere's pole, a cone's tip). A whole sphere:
+  `ValueError: extend: the surface closes around and ends in poles: there is no side to extend
+  past`.
+- `ValueError: extend: an edge does not run along a side of the face's surface rectangle (it is a
+  trim across the surface) ...`: a hole's edge, a slanted border.
+- `ValueError: extend: an edge in sides does not bound the face`, `TypeError: extend: sides are
   edges of the face`.
 - `ValueError: extend: the sheet has 2 faces; extend one of them with sheet.faces()[i].extend(...)`.
-- `ValueError: ... the distance must be positive`, `... continuity is "natural", "G1" or "G2"`.
-- `KernelError` (`extend failed`): the kernel could not extend that far; try a shorter distance
-  or `"G1"`.
+- `ValueError: extend: the distance must be positive, got 0`, `... continuity is "natural", "G1" or
+  "G2", got 'G3'`.
+- `KernelError: extend failed ...: try a shorter distance, or continuity G1`: the kernel could not
+  extend that far.
 
 ## Example
 A curved sheet that must reach across a block before it splits it:

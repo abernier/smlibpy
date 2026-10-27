@@ -2,7 +2,7 @@
 //
 // A deformation moves every point of space, and the whole body with it: all faces, edges and
 // vertices go through the same map, so the result is again a closed solid with the same faces,
-// edges and vertices:
+// edges and vertices (split where `start` and `end` limit the deformation):
 //
 //     const bar = Box(20, 20, 100).twist(90)                  // a quarter turn over its length
 //     const grip = Cylinder(12, 80).taper(0.7)                // 70 % of the diameter at the top
@@ -24,7 +24,8 @@
 //
 // Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result has
 // that geometry: a plate bent about an axis gets exact cylinders (so `bends()`, `unfold` and
-// selections such as `faces().cylinders()` see them), a tapered cylinder an exact cone, the turned
+// selections such as `faces().cylinders()` see them; for bends of up to 90 degrees and of 120, 135,
+// 180, 240 and 270, NURBS at other angles), a tapered cylinder an exact cone, the turned
 // ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves in place
 // keep what they were; a cylinder, cone, sphere or torus about a twist's axis maps onto itself and
 // stays as it was (seam and all). The other faces are NURBS. Lattices and tapers are polynomial maps of
@@ -759,7 +760,9 @@ export interface BendOptions extends RangeOptions {
  *
  * The bend axis lies `radius` from the neutral layer on the side the part bends toward; the part
  * must not reach it. Plane faces across the bend become exact cylinders about the bend axis (and
- * lines across it circles), so a bent plate is a sheet metal part to `bends` and `unfold`; the
+ * lines across it circles), so a bent plate is a sheet metal part to `bends` and `unfold`. That holds
+ * for bends of up to 90 degrees and of 120, 135, 180, 240 and 270; at other angles the faces are
+ * NURBS within `tolerance`, which `bends()` and `unfold` do not take for bends. The
  * K-factor its neutral layer gives (where it lies in the thickness) is kept with it. For sheet
  * metal, `fold` bends at a line with an inside radius and a K-factor, with flat legs on both sides.
  *
@@ -1250,6 +1253,20 @@ export class Lattice {
   [Symbol.for('nodejs.util.inspect.custom')](): string {
     return this.toString()
   }
+}
+
+/** Deform a part, a sheet, a curve or points with a lattice: `lattice.apply(shape)` (see `Lattice`
+ * and `Part.deform`). */
+export function deform(shape: Part, lattice: Lattice, options?: { tolerance?: number | null }): Part
+export function deform(shape: Shell, lattice: Lattice, options?: { tolerance?: number | null }): Shell
+export function deform(shape: Edge, lattice: Lattice, options?: { tolerance?: number | null }): Edge
+export function deform(shape: Wire, lattice: Lattice, options?: { tolerance?: number | null }): Wire
+export function deform(shape: VectorLike, lattice: Lattice, options?: { tolerance?: number | null }): Vector
+export function deform(shape: readonly VectorLike[], lattice: Lattice, options?: { tolerance?: number | null }): Vector[]
+export function deform(shape: unknown, lattice: Lattice, options: { tolerance?: number | null } = {}): Any {
+  _opts('deform', options)
+  if (!(lattice instanceof Lattice)) throw new TypeError(`deform takes a Lattice, not a ${_typeName(lattice)}`)
+  return lattice.apply(shape as Part, options)
 }
 
 /** Refuse a lattice that turns space inside out on the part: the Jacobian determinant of the

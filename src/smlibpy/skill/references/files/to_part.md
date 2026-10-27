@@ -20,8 +20,9 @@ and 6).
 ## Gotchas
 - An open mesh raises `ModelingError: to_part: the mesh is open (3 open edges) ...`: close it
   with `fill_holes()` or `repaired()`.
-- Booleans get slow as faces add up: a sphere of 14 080 triangles took 40 s to cut by a box. A
-  mesh that would give more than `max_faces` faces raises `ModelingError`; decimate it first
+- Booleans get slow as faces add up: a sphere of 13 888 triangles (7596 faces) took 6 s to cut
+  by a box. A mesh that would give more than `max_faces` faces raises `ModelingError: to_part:
+  the part would get 8247 faces, more than max_faces=5000, ...` (`Sphere(10).mesh(0.01)`); decimate it first
   (`mesh.decimate(triangles=2000).to_part()`) or give a larger `max_faces`.
 - The faces stay flat: no fillets of curved faces, and a cylinder stays a prism of facets.
 - Converting takes 0.2 s for 3600 triangles.

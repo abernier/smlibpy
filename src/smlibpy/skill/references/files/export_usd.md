@@ -6,15 +6,15 @@ its usdview plugin and Omniverse read as solids, and a `Mesh` prim, which is wha
 viewer draws. For USD and Omniverse pipelines, and for showing a part in any USD viewer.
 
 ## Signature
-`export_usd(shapes, path, *, mesh=True, tolerance=None, angle=15.0, materials=False)`
-`to_usd(shapes, *, mesh=True, tolerance=None, angle=15.0, materials=False)` gives the text instead of
-writing a file.
+`export_usd(shapes, path, *, mesh=True, tolerance=None, angle=15.0, materials=False, max_edge=None)`
+`to_usd(shapes, *, mesh=True, tolerance=None, angle=15.0, materials=False, max_edge=None)` gives the
+text instead of writing a file.
 
 - `shapes`: a `Part`, `Shell`, `Sketch`, `Face`, `Mesh`, or a list of them.
 - `path`: a `.usda` or `.usd` file; it is written as text (`.usda`).
-- `mesh`: writes a `Mesh` prim (`<name>_mesh`) of each body, with `tolerance` and `angle` as in
-  `tessellate`. `mesh=False` writes the exact B-reps alone: for usd-brep and Omniverse, which
-  draw `BrepArray` prims themselves and would show each body twice.
+- `mesh`: writes a `Mesh` prim (`<name>_mesh`) of each body, with `tolerance`, `angle` and
+  `max_edge` as in `tessellate`. `mesh=False` writes the exact B-reps alone: for usd-brep and
+  Omniverse, which draw `BrepArray` prims themselves and would show each body twice.
 - `materials`: also writes a `Material` per color (a `UsdPreviewSurface` of that color, under
   `/World/Looks`, named after the first body of that color) and binds it to the `BrepArray` and
   `Mesh` prims of that color (`rel material:binding`). Omniverse and other renderers color by
@@ -57,8 +57,8 @@ writing a file.
 - The stage is in millimeters: viewers that honour `metersPerUnit` show a 60 mm part 6 cm long, a
   speck in a scene measured in meters (the three.js editor does not zoom to it: double-click it in
   the scene list).
-- Text USD is larger than STEP: a filleted plate with holes 61 kB, 15 kB with `mesh=False`
-  (STEP: 15 kB).
+- Text USD is larger than STEP with its mesh: the filleted plate with holes of the example 58 kB,
+  12 kB with `mesh=False` (STEP: 15 kB).
 - Edges, wires and vertices are not written: `TypeError: export_usd writes parts, sheets, faces
   and meshes, not an Edge: export_step and export_dxf write curves, and so does save to an .smp
   file`.

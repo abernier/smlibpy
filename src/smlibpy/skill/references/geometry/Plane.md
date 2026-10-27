@@ -81,4 +81,4 @@ print((block + boss).bbox().max.z)            # 11.0
 ```
 
 ## Related
-`on`, `Location`, `Axis`, sketches `extrude`, `Locations.on`.
+`on`, `Location`, `Axis`, features `extrude`, `Locations.on`.

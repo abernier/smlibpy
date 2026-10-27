@@ -6,6 +6,7 @@ A 2D drawing view of a body: its visible edges and contours, projected flat onto
 ## Signature
 
 `body.outline(plane=Plane.XY, *, hidden=False, tangent_edges=False)`
+`outline(body, plane=Plane.XY, *, hidden=False, tangent_edges=False)`: the same, as a function
 
 - Returns `ShapeList[Edge]` (the visible lines), or with `hidden=True` a tuple
   `(visible, hidden)` of two `ShapeList[Edge]`.
@@ -21,8 +22,10 @@ from +X. Works on `Part`, `Shell` and `Sketch`.
 Edges lying in the plane, in world coordinates (not in the plane's 2D coordinates):
 `Box(20, 10, 5).translate(100, 0, 0).outline(Plane.XZ.offset(7))` lies at y = -7 and spans
 x = 90..110. Straight and circular pieces are lines, arcs and circles (the arcs of one circle
-joined), so `circles()`, `radius` and `arc_center` find a view's holes; other curves (a torus'
-contour, a tilted circle's ellipse) are `bspline`.
+joined), so `circles()`, `radius` and `arc_center` find a view's holes; other curves (a tilted
+circle's ellipse) are `bspline`. Contours of curved faces are traced, and only some of their
+round pieces come back as arcs: a sphere r 5 from the front gives a half `circle` and a
+`bspline` half (8e-7 off the circle), from the top one `bspline`.
 
 What is in it:
 
@@ -38,7 +41,8 @@ What is in it:
 - Lines may come in pieces (where an edge passes behind the body, or where the kernel splits it),
   but each line once: a line that lies on a longer one of the view is left out, and so are the
   points the kernel's projection gives where an edge or seam is seen end-on (a torus from the
-  side: 8 edges, 4 lines and 4 quarters of the tube's circles, 111.416 long).
+  side: 5 edges, 111.416 long: 2 lines, the tube's circle at one end as a half `circle`, at the
+  other as two `bspline` quarters).
 - A tilted view works: a box on a plane with normal (1, 1, 1) gives the 6 hexagon edges and
   the 3 inner edges of an isometric drawing (and 3 hidden edges with `hidden=True`).
 
@@ -50,10 +54,12 @@ such.
 
 ## Gotchas
 
-- Without `hidden` and `tangent_edges` the kernel's own projection is used (seams of round faces
-  can show where they face the viewer); with either, smlibpy's (no seams).
-- A view of a part takes 2 to 400 ms (a 64-face valve: 0.2 to 0.4 s per view).
-- A flat sketch seen edge-on becomes one line (a circle on `Plane.XZ` gives a 10 mm line).
+- Without `hidden` and `tangent_edges` the kernel's own projection is used; with either, its
+  hidden-line pass. Seams of round faces are left out either way.
+- A view of a part takes under 1 ms (a box) to 0.25 s (the flange of `examples/flange.py` along
+  (1, 1, 1) with hidden lines; 55 ms from the top).
+- A flat sketch seen edge-on becomes one line (a rectangle on `Plane.XZ` gives a 10 mm line); a
+  circle gives a `bspline` that runs along its diameter and back (20 long for a circle r 5).
 - Tilted views: the kernel's hidden curve removal can misjudge a piece (natively, the flange
   example seen along (1, 1, 1) lacks one arc of its rim, which smlibwasm draws); the views along
   the axes were right in every case tested.

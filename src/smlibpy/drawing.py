@@ -10,7 +10,7 @@ the view from above goes above it, the view from the left to its left).
 from __future__ import annotations
 
 import os
-from typing import Any, NamedTuple, Sequence
+from typing import Any, Literal, NamedTuple, Sequence
 
 import numpy as np
 
@@ -54,7 +54,8 @@ _VIEWS = {
 _PLACES = {"front": (0, 0), "top": (0, -1), "bottom": (0, 1), "left": (1, 0), "right": (-1, 0), "back": (2, 0)}
 
 
-def drawing_views(part: Any, views: Sequence[str] = ("front", "top", "left"), *, projection: str = "first-angle",
+def drawing_views(part: Any, views: Sequence[str] = ("front", "top", "left"), *,
+                  projection: Literal["first-angle", "third-angle"] = "first-angle",
                   hidden: bool = True, tangent_edges: bool = False, gap: float | None = None) -> list[DrawingView]:
     """The views of a part for a 2D drawing, laid out in the world XY plane.
 

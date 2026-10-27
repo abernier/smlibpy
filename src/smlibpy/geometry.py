@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Iterable, Iterator, NamedTuple, Sequence,
 
 import numpy as np
 
+from ._renamed import renamed
+
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, Shape
 
@@ -76,17 +78,21 @@ class Vector:
     # -- access ---------------------------------------------------------------
     @property
     def x(self) -> float:
+        """The x coordinate."""
         return self._x
 
     @property
     def y(self) -> float:
+        """The y coordinate."""
         return self._y
 
     @property
     def z(self) -> float:
+        """The z coordinate."""
         return self._z
 
     def to_tuple(self) -> tuple[float, float, float]:
+        """The coordinates as a tuple ``(x, y, z)``."""
         return (self._x, self._y, self._z)
 
     def __iter__(self) -> Iterator[float]:
@@ -149,13 +155,16 @@ class Vector:
     # -- vector algebra -------------------------------------------------------
     @property
     def length(self) -> float:
+        """The length (for a point: its distance from the origin)."""
         return math.sqrt(self._x * self._x + self._y * self._y + self._z * self._z)
 
     def dot(self, other: VectorLike) -> float:
+        """The dot product with another vector."""
         o = Vector(other)
         return self._x * o._x + self._y * o._y + self._z * o._z
 
     def cross(self, other: VectorLike) -> Vector:
+        """The cross product with another vector: at right angles to both (right-handed)."""
         o = Vector(other)
         return Vector(
             self._y * o._z - self._z * o._y,
@@ -164,12 +173,14 @@ class Vector:
         )
 
     def normalized(self) -> Vector:
+        """The vector scaled to length 1; ValueError for a zero-length vector."""
         n = self.length
         if n < 1e-300:
             raise ValueError("cannot normalize a zero-length vector")
         return self / n
 
     def distance_to(self, other: VectorLike) -> float:
+        """The distance to another point."""
         return (self - Vector(other)).length
 
     def angle_to(self, other: VectorLike) -> float:
@@ -181,16 +192,22 @@ class Vector:
         c = max(-1.0, min(1.0, self.dot(o) / d))
         return math.degrees(math.acos(c))
 
-    def is_close(self, other: VectorLike, tol: float = TOLERANCE) -> bool:
-        return (self - Vector(other)).length <= tol
+    @renamed("0.6.0", tol="tolerance")
+    def is_close(self, other: VectorLike, tolerance: float = TOLERANCE) -> bool:
+        """True if the two points are at most ``tolerance`` apart (mm)."""
+        return (self - Vector(other)).length <= tolerance
 
-    def is_parallel(self, other: VectorLike, angle_tol: float = 1e-4) -> bool:
-        """True if both vectors point along the same line (either sense)."""
+    @renamed("0.6.0", angle_tol="angle_tolerance")
+    def is_parallel(self, other: VectorLike, angle_tolerance: float = 1e-4) -> bool:
+        """True if both vectors point along the same line (either sense), within ``angle_tolerance``
+        degrees."""
         a = self.angle_to(other)
-        return a <= angle_tol or a >= 180.0 - angle_tol
+        return a <= angle_tolerance or a >= 180.0 - angle_tolerance
 
-    def is_perpendicular(self, other: VectorLike, angle_tol: float = 1e-4) -> bool:
-        return abs(self.angle_to(other) - 90.0) <= angle_tol
+    @renamed("0.6.0", angle_tol="angle_tolerance")
+    def is_perpendicular(self, other: VectorLike, angle_tolerance: float = 1e-4) -> bool:
+        """True if the vectors are at right angles, within ``angle_tolerance`` degrees."""
+        return abs(self.angle_to(other) - 90.0) <= angle_tolerance
 
     def rotate(self, axis: Axis | VectorLike, angle: float) -> Vector:
         """Rotate this point about an axis (through the origin for a plain vector)."""
@@ -239,34 +256,44 @@ class Axis:
 
     @property
     def origin(self) -> Vector:
+        """A point of the axis (the one it was made with)."""
         return self._origin
 
     @property
     def direction(self) -> Vector:
+        """The axis's direction, of length 1."""
         return self._direction
 
     def __neg__(self) -> Axis:
         return self.reversed()
 
     def reversed(self) -> Axis:
+        """The axis through the same point, pointing the other way."""
         return Axis(self._origin, -self._direction)
 
-    def moved(self, loc: Location) -> Axis:
-        return Axis(loc * self._origin, loc.rotate_vector(self._direction))
+    @renamed("0.6.0", loc="location")
+    def moved(self, location: Location) -> Axis:
+        """The axis moved by a location: its origin moved, its direction turned."""
+        return Axis(location * self._origin, location.rotate_vector(self._direction))
 
     def at(self, origin: VectorLike) -> Axis:
         """The same direction through another point."""
         return Axis(origin, self._direction)
 
-    def is_parallel(self, other: Axis | VectorLike, angle_tol: float = 1e-4) -> bool:
+    @renamed("0.6.0", angle_tol="angle_tolerance")
+    def is_parallel(self, other: Axis | VectorLike, angle_tolerance: float = 1e-4) -> bool:
+        """True if the axis runs along another axis or a direction (either sense), within
+        ``angle_tolerance`` degrees."""
         d = other.direction if isinstance(other, Axis) else _vec(other)
-        return self._direction.is_parallel(d, angle_tol)
+        return self._direction.is_parallel(d, angle_tolerance)
 
     def distance_to(self, point: VectorLike) -> float:
+        """The distance of a point from the axis (the whole line)."""
         p = _vec(point) - self._origin
         return (p - self._direction * p.dot(self._direction)).length
 
     def project(self, point: VectorLike) -> Vector:
+        """The point of the axis (the whole line) nearest to a point."""
         p = _vec(point)
         return self._origin + self._direction * (p - self._origin).dot(self._direction)
 
@@ -360,6 +387,7 @@ class Location:
 
     @property
     def position(self) -> Vector:
+        """Where the location moves the origin to."""
         return Vector(self._m[:3, 3])
 
     @property
@@ -379,14 +407,17 @@ class Location:
 
     @property
     def x_dir(self) -> Vector:
+        """Where the location turns the X direction to."""
         return Vector(self._m[:3, 0])
 
     @property
     def y_dir(self) -> Vector:
+        """Where the location turns the Y direction to."""
         return Vector(self._m[:3, 1])
 
     @property
     def z_dir(self) -> Vector:
+        """Where the location turns the Z direction to."""
         return Vector(self._m[:3, 2])
 
     @property
@@ -395,6 +426,7 @@ class Location:
         return Plane(self.position, self.x_dir, self.z_dir)
 
     def inverse(self) -> Location:
+        """The location that undoes this one."""
         r = self._m[:3, :3]
         m = np.eye(4)
         m[:3, :3] = r.T
@@ -402,6 +434,7 @@ class Location:
         return Location(m)
 
     def rotate_vector(self, v: VectorLike) -> Vector:
+        """A direction turned by the location's rotation (its translation left out)."""
         return Vector(self._m[:3, :3] @ np.array(_vec(v).to_tuple()))
 
     # -- composition ----------------------------------------------------------
@@ -546,14 +579,17 @@ class Plane:
     # -- properties -----------------------------------------------------------
     @property
     def origin(self) -> Vector:
+        """The plane's origin."""
         return self._origin
 
     @property
     def x_dir(self) -> Vector:
+        """The plane's X direction, of length 1."""
         return self._x
 
     @property
     def y_dir(self) -> Vector:
+        """The plane's Y direction, of length 1: ``z_dir.cross(x_dir)``."""
         return self._y
 
     @property
@@ -590,8 +626,10 @@ class Plane:
         """Rotate about the plane's own X, then Y, then Z axis (degrees)."""
         return Plane(self.location * Rot(x, y, z))
 
-    def moved(self, loc: Location) -> Plane:
-        return Plane(loc * self._origin, loc.rotate_vector(self._x), loc.rotate_vector(self._z))
+    @renamed("0.6.0", loc="location")
+    def moved(self, location: Location) -> Plane:
+        """The plane moved by a location: its origin moved, its axes turned."""
+        return Plane(location * self._origin, location.rotate_vector(self._x), location.rotate_vector(self._z))
 
     def at(self, origin: VectorLike) -> Plane:
         """The same orientation through another origin."""
@@ -599,25 +637,33 @@ class Plane:
 
     # -- coordinates ----------------------------------------------------------
     def to_local(self, point: VectorLike) -> Vector:
+        """A point in the plane's coordinates: along its X and Y directions, and its height above it."""
         d = _vec(point) - self._origin
         return Vector(d.dot(self._x), d.dot(self._y), d.dot(self._z))
 
     def from_local(self, point: VectorLike) -> Vector:
+        """The world coordinates of a point given in the plane's coordinates (see :meth:`to_local`)."""
         p = _vec(point)
         return self._origin + self._x * p.x + self._y * p.y + self._z * p.z
 
-    def contains(self, point: VectorLike, tol: float = TOLERANCE) -> bool:
-        return abs(self.to_local(point).z) <= tol
+    @renamed("0.6.0", tol="tolerance")
+    def contains(self, point: VectorLike, tolerance: float = TOLERANCE) -> bool:
+        """True if the point lies in the plane, at most ``tolerance`` (mm) off it."""
+        return abs(self.to_local(point).z) <= tolerance
 
     def distance_to(self, point: VectorLike) -> float:
         """Signed distance of a point above the plane."""
         return self.to_local(point).z
 
     def project(self, point: VectorLike) -> Vector:
+        """The point of the plane nearest to a point (straight along the normal)."""
         return _vec(point).project_to(self)
 
-    def is_coplanar(self, other: Plane, tol: float = TOLERANCE) -> bool:
-        return self._z.is_parallel(other._z) and abs(self.distance_to(other._origin)) <= tol
+    @renamed("0.6.0", tol="tolerance")
+    def is_coplanar(self, other: Plane, tolerance: float = TOLERANCE) -> bool:
+        """True if the other plane is the same plane (either facing), its origin at most ``tolerance``
+        (mm) off this one."""
+        return self._z.is_parallel(other._z) and abs(self.distance_to(other._origin)) <= tolerance
 
     # -- placement ------------------------------------------------------------
     def __mul__(self, other):  # type: ignore[no-untyped-def]
@@ -815,30 +861,37 @@ class BoundBox:
 
     @classmethod
     def of_points(cls, points: Iterable[VectorLike]) -> BoundBox:
+        """The smallest box along the axes around the points."""
         arr = np.array([tuple(_vec(p)) for p in points], dtype=float)
         return cls(arr.min(axis=0), arr.max(axis=0))
 
     @property
     def size(self) -> Vector:
+        """The box's extent along X, Y and Z, as a vector."""
         return self.max - self.min
 
     @property
     def center(self) -> Vector:
+        """The middle of the box."""
         return (self.min + self.max) * 0.5
 
     @property
     def diagonal(self) -> float:
+        """The length of the box's diagonal."""
         return self.size.length
 
     def union(self, other: BoundBox) -> BoundBox:
+        """The smallest box around both boxes."""
         return BoundBox(
             (min(self.min.x, other.min.x), min(self.min.y, other.min.y), min(self.min.z, other.min.z)),
             (max(self.max.x, other.max.x), max(self.max.y, other.max.y), max(self.max.z, other.max.z)),
         )
 
-    def contains(self, point: VectorLike, tol: float = TOLERANCE) -> bool:
+    @renamed("0.6.0", tol="tolerance")
+    def contains(self, point: VectorLike, tolerance: float = TOLERANCE) -> bool:
+        """True if the point lies in the box or on its sides, or at most ``tolerance`` (mm) outside."""
         p = _vec(point)
-        return all(lo - tol <= c <= hi + tol for c, lo, hi in zip(p, self.min, self.max))
+        return all(lo - tolerance <= c <= hi + tolerance for c, lo, hi in zip(p, self.min, self.max))
 
     def __iter__(self) -> Iterator[Vector]:
         yield self.min

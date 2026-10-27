@@ -15,7 +15,7 @@ import math
 import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Literal, Sequence
 
 import numpy as np
 
@@ -793,7 +793,8 @@ def _de_boor(poles: np.ndarray, weights: Any, knots: np.ndarray, deg: int, u: fl
 
 
 def import_dxf_wires(path: str | os.PathLike[str], *, layers: Iterable[str] | str | None = None,
-                     unit: str | None = None, tolerance: float | None = None) -> ShapeList[Wire]:
+                     unit: Literal["mm", "cm", "m", "um", "inch", "in", "ft"] | None = None,
+                     tolerance: float | None = None) -> ShapeList[Wire]:
     """Every chain of curves of a DXF drawing as a :class:`~smlibpy.Wire`, open or closed.
 
     The curves are read and joined like in :func:`import_dxf`; chains also stop where three or
@@ -802,7 +803,8 @@ def import_dxf_wires(path: str | os.PathLike[str], *, layers: Iterable[str] | st
     return _wires(_file_text(path), layers, unit, tolerance, "import_dxf_wires")
 
 
-def from_dxf_wires(data: str | bytes, *, layers: Iterable[str] | str | None = None, unit: str | None = None,
+def from_dxf_wires(data: str | bytes, *, layers: Iterable[str] | str | None = None,
+                   unit: Literal["mm", "cm", "m", "um", "inch", "in", "ft"] | None = None,
                    tolerance: float | None = None) -> ShapeList[Wire]:
     """:func:`import_dxf_wires` of a drawing in memory: the text of a DXF file, or its bytes."""
     return _wires(_data_text(data, "from_dxf_wires"), layers, unit, tolerance, "from_dxf_wires")
@@ -817,7 +819,8 @@ def _wires(text: str, layers: Any, unit: str | None, tolerance: float | None, wh
 
 
 def import_dxf(path: str | os.PathLike[str], *, layers: Iterable[str] | str | None = None,
-               unit: str | None = None, tolerance: float | None = None) -> Sketch:
+               unit: Literal["mm", "cm", "m", "um", "inch", "in", "ft"] | None = None,
+               tolerance: float | None = None) -> Sketch:
     """Read the outlines of a DXF drawing as a sketch.
 
     Lines, arcs, circles, ellipses, polylines (bulges become exact arcs), splines (exact NURBS)
@@ -839,7 +842,8 @@ def import_dxf(path: str | os.PathLike[str], *, layers: Iterable[str] | str | No
     return _sketch(_file_text(path), layers, unit, tolerance, "import_dxf", "import_dxf_wires")
 
 
-def from_dxf(data: str | bytes, *, layers: Iterable[str] | str | None = None, unit: str | None = None,
+def from_dxf(data: str | bytes, *, layers: Iterable[str] | str | None = None,
+             unit: Literal["mm", "cm", "m", "um", "inch", "in", "ft"] | None = None,
              tolerance: float | None = None) -> Sketch:
     """:func:`import_dxf` of a drawing in memory: the text of a DXF file, or its bytes (an upload)."""
     return _sketch(_data_text(data, "from_dxf"), layers, unit, tolerance, "from_dxf", "from_dxf_wires")
@@ -893,8 +897,9 @@ def _sketch(text: str, layers: Any, unit: str | None, tolerance: float | None, w
 # =============================================================================
 # export_dxf
 # =============================================================================
-def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", plane: Plane | None = None,
-               curves: str = "exact", tolerance: float = 0.01) -> None:
+def export_dxf(shapes: Any, path: str | os.PathLike[str], *,
+               unit: Literal["mm", "cm", "m", "um", "inch", "in", "ft"] = "mm", plane: Plane | None = None,
+               curves: Literal["exact", "arcs"] = "exact", tolerance: float = 0.01) -> None:
     """Write sketches, faces, wires and edges to a DXF drawing (AutoCAD 2000, AC1015).
 
     Every curve is written exactly: LINE, ARC, CIRCLE, ELLIPSE, or SPLINE with the kernel's
@@ -923,7 +928,8 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
         fh.write(text)
 
 
-def to_dxf(shapes: Any, *, unit: str = "mm", plane: Plane | None = None, curves: str = "exact",
+def to_dxf(shapes: Any, *, unit: Literal["mm", "cm", "m", "um", "inch", "in", "ft"] = "mm", plane: Plane | None = None,
+           curves: Literal["exact", "arcs"] = "exact",
            tolerance: float = 0.01) -> str:
     """The text of a DXF drawing (AutoCAD 2000, AC1015) of sketches, faces, wires and edges, as
     :func:`export_dxf` writes it; ``unit``, ``plane``, ``curves`` and ``tolerance`` as there."""

@@ -13,15 +13,18 @@ import itertools
 import math
 import time
 import weakref
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, NamedTuple, Sequence, TypeVar, Union, overload
+from typing import (TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, NamedTuple, Sequence, TypeVar, Union,
+                    overload)
 
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, _traced, ext, k, kernel_call
+from ._renamed import keyword_only, renamed
 from .geometry import (TOLERANCE, Axis, BoundBox, ClosestPoints, Continuity, Curvature, Hit, Location, Nurbs,
                        NurbsSurface, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec)
 
 if TYPE_CHECKING:  # pragma: no cover
+    from .deformations import Lattice
     from .mesh import Mesh
 
 __all__ = [
@@ -185,11 +188,13 @@ class Shape:
 
         return tessellate(self, tolerance=tolerance, angle=angle, max_edge=max_edge)
 
-    def show(self, **kwargs: Any) -> Any:
+    def show(self, *, title: str = "smlibpy", path: str | None = None, open_browser: bool = True,
+             tolerance: float | None = None, angle: float = 12.0, edges: bool = True) -> Any:
         """Show the shape in the browser viewer (see :func:`smlibpy.show`)."""
         from .viewer import show
 
-        return show(self, **kwargs)
+        return show(self, title=title, path=path, open_browser=open_browser, tolerance=tolerance, angle=angle,
+                    edges=edges)
 
     def _repr_html_(self) -> str:
         from .viewer import notebook_html
@@ -278,12 +283,14 @@ class ShapeList(list[T]):
 
     @property
     def first(self) -> T:
+        """The first shape; IndexError for an empty list."""
         if not self:
             raise IndexError("empty selection")
         return self[0]
 
     @property
     def last(self) -> T:
+        """The last shape; IndexError for an empty list."""
         if not self:
             raise IndexError("empty selection")
         return self[-1]
@@ -318,30 +325,34 @@ class ShapeList(list[T]):
         return self.min_by(key)
 
     def sort_by_distance(self, point: VectorLike, reverse: bool = False) -> ShapeList[T]:
+        """The shapes by the distance of their centers from a point, nearest first (farthest first with ``reverse``)."""
         p = _vec(point)
         return ShapeList(sorted(self, key=lambda s: s.center().distance_to(p), reverse=reverse))
 
-    def group_by(self, key: SortKey = Z, tol: float = 1e-4) -> list[ShapeList[T]]:
-        """Group shapes with equal key (within ``tol``), groups in ascending key order."""
+    @renamed("0.6.0", tol="tolerance")
+    def group_by(self, key: SortKey = Z, tolerance: float = 1e-4) -> list[ShapeList[T]]:
+        """Group shapes with equal key (within ``tolerance``), groups in ascending key order."""
         f = _key_fn(key)
         pairs = sorted(((f(s), s) for s in self), key=lambda p: p[0])
         groups: list[ShapeList[T]] = []
         last = None
         for v, s in pairs:
-            if last is None or abs(v - last) > tol:
+            if last is None or abs(v - last) > tolerance:
                 groups.append(ShapeList())
                 last = v
             groups[-1].append(s)
         return groups
 
-    def max_by(self, key: SortKey = Z, tol: float = 1e-4) -> ShapeList[T]:
-        """The shapes with the largest key (all of them, if several tie)."""
-        groups = self.group_by(key, tol)
+    @renamed("0.6.0", tol="tolerance")
+    def max_by(self, key: SortKey = Z, tolerance: float = 1e-4) -> ShapeList[T]:
+        """The shapes with the largest key (all of them, if several tie within ``tolerance``)."""
+        groups = self.group_by(key, tolerance)
         return groups[-1] if groups else ShapeList()
 
-    def min_by(self, key: SortKey = Z, tol: float = 1e-4) -> ShapeList[T]:
-        """The shapes with the smallest key (all of them, if several tie)."""
-        groups = self.group_by(key, tol)
+    @renamed("0.6.0", tol="tolerance")
+    def min_by(self, key: SortKey = Z, tolerance: float = 1e-4) -> ShapeList[T]:
+        """The shapes with the smallest key (all of them, if several tie within ``tolerance``)."""
+        groups = self.group_by(key, tolerance)
         return groups[0] if groups else ShapeList()
 
     def top(self) -> ShapeList[T]:
@@ -428,7 +439,7 @@ class ShapeList(list[T]):
         hole or a boss faces no direction, and a fillet only with a ``max_angle`` that takes in
         all its normals.
         """
-        from .draft import _range
+        from .molding import _range
 
         d = _direction(direction, "facing")
         out = ShapeList()
@@ -525,10 +536,12 @@ class ShapeList(list[T]):
         """Shapes whose bounding box lies inside ``box``."""
         return ShapeList(s for s in self if box.contains(s.bbox().min) and box.contains(s.bbox().max))
 
-    def at(self, point: VectorLike, tol: float = 1e-4) -> ShapeList[T]:
-        """Shapes passing through ``point`` (vertices at, edges/faces touching it)."""
+    @renamed("0.6.0", tol="tolerance")
+    def at(self, point: VectorLike, tolerance: float = 1e-4) -> ShapeList[T]:
+        """Shapes passing through ``point`` (vertices at, edges/faces touching it), at most
+        ``tolerance`` (mm) from it."""
         p = _vec(point)
-        return ShapeList(s for s in self if s.distance_to(p) <= tol)  # type: ignore[attr-defined]
+        return ShapeList(s for s in self if s.distance_to(p) <= tolerance)  # type: ignore[attr-defined]
 
     # -- history ------------------------------------------------------------
     def new(self, since: Any) -> ShapeList[T]:
@@ -630,15 +643,19 @@ class ShapeList(list[T]):
         return ShapeList(r) if isinstance(i, slice) else r
 
     def vertices(self) -> ShapeList[Vertex]:
+        """The vertices of all the shapes, each once."""
         return _unique(v for s in self for v in s.vertices())
 
     def edges(self) -> ShapeList[Edge]:
+        """The edges of all the shapes, each once."""
         return _unique(e for s in self for e in s.edges())
 
     def faces(self) -> ShapeList[Face]:
+        """The faces of all the shapes, each once."""
         return _unique(f for s in self for f in s.faces())
 
     def wires(self) -> ShapeList[Wire]:
+        """The wires of all the shapes."""
         return ShapeList(w for s in self for w in s.wires())
 
     def center(self) -> Vector:
@@ -651,6 +668,7 @@ class ShapeList(list[T]):
         return c / len(self)
 
     def bbox(self) -> BoundBox:
+        """The box around all the shapes; IndexError for an empty list."""
         if not self:
             raise IndexError("empty selection")
         b = self[0].bbox()
@@ -660,6 +678,7 @@ class ShapeList(list[T]):
 
     # -- placement of the whole list -------------------------------------------
     def moved(self, location: Location) -> ShapeList[T]:
+        """Each shape moved by a location."""
         return ShapeList(s.moved(location) for s in self)
 
     def on(self, target: Any) -> ShapeList[T]:
@@ -668,9 +687,11 @@ class ShapeList(list[T]):
         return ShapeList(s.moved(loc) for s in self)
 
     def translate(self, x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0) -> ShapeList[T]:
+        """Each shape moved by ``(x, y, z)``."""
         return ShapeList(s.translate(x, y, z) for s in self)
 
     def rotate(self, axis: Axis = Z, angle: float = 0.0) -> ShapeList[T]:
+        """Each shape rotated about an axis by ``angle`` degrees."""
         return ShapeList(s.rotate(axis, angle) for s in self)
 
     def __rmul__(self, other: Any) -> Any:
@@ -933,18 +954,22 @@ class Vertex(Shape):
 
     @property
     def point(self) -> Vector:
+        """Where the vertex is."""
         return self._p
 
     @property
     def x(self) -> float:
+        """The vertex's x coordinate."""
         return self._p.x
 
     @property
     def y(self) -> float:
+        """The vertex's y coordinate."""
         return self._p.y
 
     @property
     def z(self) -> float:
+        """The vertex's z coordinate."""
         return self._p.z
 
     @property
@@ -958,25 +983,31 @@ class Vertex(Shape):
         return float(ext.vertex_tolerance(self._v))
 
     def center(self) -> Vector:
+        """Where the vertex is (as :attr:`point`)."""
         return self._p
 
     def bbox(self) -> BoundBox:
+        """A box of size 0 at the vertex."""
         return BoundBox(self._p, self._p)
 
     def vertices(self) -> ShapeList[Vertex]:
+        """This vertex, in a list."""
         return ShapeList([self])
 
     def edges(self) -> ShapeList[Edge]:
+        """The edges of the body that meet at this vertex (none for a vertex of no body)."""
         if self._v is None:
             return ShapeList()
         return ShapeList(Edge._of(self._owner, e) for e in self._v.edges())
 
     def faces(self) -> ShapeList[Face]:
+        """The faces of the body that meet at this vertex (none for a vertex of no body)."""
         if self._v is None:
             return ShapeList()
         return ShapeList(Face(self._owner, f) for f in self._v.faces())
 
     def distance_to(self, other: VectorLike | Shape) -> float:
+        """The distance to a point or to a shape."""
         if isinstance(other, Shape):
             return other.distance_to(self._p)  # type: ignore[attr-defined]
         return self._p.distance_to(other)
@@ -1023,7 +1054,7 @@ class Edge(Shape):
     """A bounded curve: a line segment, an arc, a circle, an ellipse or a NURBS curve.
 
     Edges come from bodies (``part.edges()``) or from curve constructors such as
-    :func:`~smlibpy.Line`, :func:`~smlibpy.Arc` and :func:`~smlibpy.Spline`.
+    :func:`~smlibpy.Line`, :func:`~smlibpy.CenterArc` and :func:`~smlibpy.Spline`.
     Parameters along an edge (``point_at(t)``) run from 0 at the start to 1 at the end,
     proportional to arc length.
     """
@@ -1031,7 +1062,7 @@ class Edge(Shape):
     __slots__ = ("_owner", "_e", "_c", "_rev", "_cache")
 
     def __init__(self) -> None:  # use the constructors
-        raise TypeError("create edges with Line(), Arc(), Spline(), ... or take them from a shape")
+        raise TypeError("create edges with Line(), CenterArc(), Spline(), ... or take them from a shape")
 
     @classmethod
     def _of(cls, owner: Any, kedge: Any, reversed: bool = False) -> Edge:
@@ -1106,20 +1137,24 @@ class Edge(Shape):
 
     @property
     def length(self) -> float:
+        """The edge's length."""
         return self._length()
 
     @property
     def start(self) -> Vector:
+        """The point where the edge starts (in its direction)."""
         t0, t1 = self._range()
         return Vector(self._curve().evaluate(t1 if self._rev else t0))
 
     @property
     def end(self) -> Vector:
+        """The point where the edge ends (in its direction)."""
         t0, t1 = self._range()
         return Vector(self._curve().evaluate(t0 if self._rev else t1))
 
     @property
     def is_closed(self) -> bool:
+        """True if the edge ends where it starts (a circle, a closed spline)."""
         return self.start.is_close(self.end, 1e-7)
 
     @property
@@ -1243,6 +1278,7 @@ class Edge(Shape):
         return self.point_at(0.5)
 
     def bbox(self) -> BoundBox:
+        """The box along the axes around the edge."""
         if self._e is not None:
             lo, hi = self._e.bounding_box(True)
             return BoundBox(lo, hi)
@@ -1359,7 +1395,8 @@ class Edge(Shape):
         a, b = self._piece(t0, u, "split"), self._piece(u, t1, "split")
         return (b, a) if self._rev else (a, b)
 
-    def extend(self, distance: float, *, end: str = "end", continuity: str = "G1") -> Edge:
+    def extend(self, distance: float, *, end: Literal["start", "end", "both"] = "end",
+               continuity: Literal["G1", "G2", "natural"] = "G1") -> Edge:
         """The edge made longer by ``distance`` at its ``end`` (``"end"``, ``"start"`` or
         ``"both"``), for cut tools and paths that must run past a body.
 
@@ -1790,14 +1827,16 @@ class Edge(Shape):
             raise ModelingError(f"match: the ends came no closer than {dev:.3g} to their targets")
         return e
 
-    def continuity(self, samples: int = 16, *, angle_tol: float = 0.5, curvature_tol: float = 0.01) -> Continuity:
+    @renamed("0.6.0", angle_tol="angle_tolerance", curvature_tol="curvature_tolerance")
+    def continuity(self, samples: int = 16, *, angle_tolerance: float = 0.5,
+                   curvature_tolerance: float = 0.01) -> Continuity:
         """How the two faces of the edge meet, checked at ``samples`` points along it
         (:class:`Continuity`): ``"G2"`` where their curvatures across the edge agree as well,
         ``"G1"`` where they meet tangentially (a circular fillet's border), ``"G0"`` at a crease,
         ``None`` where they leave a gap wider than the edge's tolerance.
 
-        ``angle_tol`` is the largest angle (degrees) between the faces' normals for G1;
-        ``curvature_tol`` the largest difference of their curvatures across the edge for G2,
+        ``angle_tolerance`` is the largest angle (degrees) between the faces' normals for G1;
+        ``curvature_tolerance`` the largest difference of their curvatures across the edge for G2,
         relative to the larger of them (and at least ``1e-3 / length``, so that nearly flat
         faces count as G2). ``ValueError`` for an edge that does not lie between two faces."""
         if self._e is None:
@@ -1807,13 +1846,15 @@ class Edge(Shape):
         with kernel_call("continuity"):
             r = ext.edge_continuity(self._e, int(samples))
         gap_tol = max(float(r["tolerance"]), 1e-7)
-        level = _continuity_level(r["gap"], gap_tol, r["angle"], angle_tol, r["jump"], r["curvature"], curvature_tol,
+        level = _continuity_level(r["gap"], gap_tol, r["angle"], angle_tolerance, r["jump"], r["curvature"],
+                                  curvature_tolerance,
                                   r["length"])
         at = r["gap_at"] if level is None else r["angle_at"] if level == "G0" else r["jump_at"]
         return Continuity(level, float(r["gap"]), float(r["angle"]), float(r["jump"]), Vector(tuple(at)))
 
     # -- topology -------------------------------------------------------------
     def vertices(self) -> ShapeList[Vertex]:
+        """The vertices at the edge's ends, start first (one for a closed edge)."""
         if self._e is not None:
             a, b = self._e.vertices()
             vs = [Vertex._of(self._owner, a), Vertex._of(self._owner, b)]
@@ -1823,9 +1864,11 @@ class Edge(Shape):
         return _unique([Vertex(self.start), Vertex(self.end)])
 
     def edges(self) -> ShapeList[Edge]:
+        """This edge, in a list."""
         return ShapeList([self])
 
     def faces(self) -> ShapeList[Face]:
+        """The faces of the body that meet at this edge (none for an edge of no body)."""
         if self._e is None:
             return ShapeList()
         return ShapeList(Face(self._owner, f) for f in self._e.faces())
@@ -2174,28 +2217,35 @@ class Wire(Shape):
         return w
 
     def edges(self) -> ShapeList[Edge]:
+        """The wire's edges, in order."""
         return ShapeList(self._edges)
 
     def vertices(self) -> ShapeList[Vertex]:
+        """The vertices of the wire's edges, each once."""
         return _unique(v for e in self._edges for v in e.vertices())
 
     def wires(self) -> ShapeList[Wire]:
+        """This wire, in a list."""
         return ShapeList([self])
 
     @property
     def is_closed(self) -> bool:
+        """True if the wire ends where it starts."""
         return self.start.is_close(self.end, 1e-6)
 
     @property
     def start(self) -> Vector:
+        """The point where the wire's first edge starts."""
         return self._edges[0].start
 
     @property
     def end(self) -> Vector:
+        """The point where the wire's last edge ends."""
         return self._edges[-1].end
 
     @property
     def length(self) -> float:
+        """The sum of the edges' lengths."""
         return sum(e.length for e in self._edges)
 
     def center(self) -> Vector:
@@ -2209,6 +2259,7 @@ class Wire(Shape):
         return c / total if total else self._edges[0].start
 
     def bbox(self) -> BoundBox:
+        """The box along the axes around the wire."""
         b = self._edges[0].bbox()
         for e in self._edges[1:]:
             b = b.union(e.bbox())
@@ -2225,6 +2276,7 @@ class Wire(Shape):
         return self.end
 
     def tangent_at(self, t: float = 0.5) -> Vector:
+        """The direction of the wire (length 1) at ``t``, a fraction of its length from its start."""
         lengths = [e.length for e in self._edges]
         s = max(0.0, min(1.0, t)) * sum(lengths)
         for e, L in zip(self._edges, lengths):
@@ -2339,7 +2391,8 @@ class Wire(Shape):
             for c in curves:
                 ext.delete_curve(c)
 
-    def offset(self, distance: float, *, corners: str = "round", plane: Plane | None = None) -> Wire:
+    def offset(self, distance: float, *, corners: Literal["round", "sharp", "chamfer"] = "round",
+               plane: Plane | None = None) -> Wire:
         """The wire moved ``distance`` sideways in its plane, as a parallel curve: an open wire to
         its left for a positive distance (seen from the side the plane's normal points to), to
         its right for a negative one; a closed wire outward for a positive distance, inward for
@@ -2399,12 +2452,13 @@ class Wire(Shape):
         p = _vec(point)
         return min((e.closest_point(p) for e in self._edges), key=lambda q: (q - p).length)
 
-    def continuity(self, *, angle_tol: float = 0.5, curvature_tol: float = 0.01) -> Continuity:
+    @renamed("0.6.0", angle_tol="angle_tolerance", curvature_tol="curvature_tolerance")
+    def continuity(self, *, angle_tolerance: float = 0.5, curvature_tolerance: float = 0.01) -> Continuity:
         """How the edges of the wire meet at its joints (and where a closed wire closes)
         (:class:`Continuity`): ``"G2"`` where their curvature vectors agree as well, ``"G1"``
-        where they meet tangentially (within ``angle_tol`` degrees), ``"G0"`` at a corner,
+        where they meet tangentially (within ``angle_tolerance`` degrees), ``"G0"`` at a corner,
         ``None`` where an edge does not start where the one before ends (within 1e-6).
-        ``curvature_tol`` is relative to the larger curvature (and at least ``1e-3 / length``).
+        ``curvature_tolerance`` is relative to the larger curvature (and at least ``1e-3 / length``).
         ``ValueError`` for a wire of one open edge, which has no joint."""
         edges = list(self._edges)
         pairs = list(zip(edges, edges[1:]))
@@ -2424,8 +2478,8 @@ class Wire(Shape):
                     worst[key] = (value, p)
             curvatures.append(max(ka.length, kb.length))
         gap, angle, jump = worst["gap"][0], worst["angle"][0], worst["jump"][0]
-        level = _continuity_level(gap, max(1e-6, 1e-9 * self.length), angle, angle_tol, jump, max(curvatures),
-                                  curvature_tol, self.length)
+        level = _continuity_level(gap, max(1e-6, 1e-9 * self.length), angle, angle_tolerance, jump, max(curvatures),
+                                  curvature_tolerance, self.length)
         at = worst["gap" if level is None else "angle" if level == "G0" else "jump"][1]
         return Continuity(level, gap, angle, jump, at)
 
@@ -2438,6 +2492,7 @@ class Wire(Shape):
         return Wire._raw((*self._edges, Line(self.end, self.start)))
 
     def reversed(self) -> Wire:
+        """The wire run the other way: its edges reversed, in reverse order."""
         return Wire._raw(tuple(e.reversed() for e in reversed(self._edges)))
 
     def _transformed(self, m: np.ndarray) -> Wire:
@@ -2454,7 +2509,8 @@ class Wire(Shape):
         pts = [self.point_at(i / 64) for i in range(64)]
         return _fit_plane(pts, closed=self.is_closed)
 
-    def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Wire:
+    def fillet(self, radius: float, vertices: VectorLike | Vertex | Iterable[VectorLike | Vertex] | None = None
+               ) -> Wire:
         """Round corners with tangent arcs of ``radius``: every sharp corner, or those at
         ``vertices`` (points or vertices). A planar wire's corners are rounded in its plane, as
         :meth:`Sketch.fillet` does: between lines and arcs exactly, next to splines and ellipses
@@ -2642,6 +2698,7 @@ class Face(Shape):
 
     @property
     def area(self) -> float:
+        """The face's area."""
         return float(self._measure()["area"])
 
     def center(self) -> Vector:
@@ -2738,6 +2795,7 @@ class Face(Shape):
         return Axis(pl["origin"], pl["z_dir"])
 
     def bbox(self) -> BoundBox:
+        """The box along the axes around the face."""
         lo, hi = self._f.bounding_box(True)
         return BoundBox(lo, hi)
 
@@ -2928,15 +2986,19 @@ class Face(Shape):
         return out
 
     def outer_wire(self) -> Wire:
+        """The face's outer boundary."""
         return self._loops()[0]
 
     def inner_wires(self) -> ShapeList[Wire]:
+        """The boundaries of the face's holes."""
         return ShapeList(self._loops()[1:])
 
     def wires(self) -> ShapeList[Wire]:
+        """The face's boundaries: the outer one first, then those of its holes."""
         return ShapeList(self._loops())
 
-    def edges(self, seams: bool = False) -> ShapeList[Edge]:
+    @keyword_only("0.6.0", "seams")
+    def edges(self, *, seams: bool = False) -> ShapeList[Edge]:
         """The face's edges (seam edges only with ``seams=True``)."""
         out = ShapeList()
         counts: dict[int, int] = {}
@@ -2954,9 +3016,11 @@ class Face(Shape):
         return out
 
     def vertices(self) -> ShapeList[Vertex]:
+        """The face's vertices."""
         return ShapeList(Vertex._of(self._owner, v) for v in self._f.vertices())
 
     def faces(self) -> ShapeList[Face]:
+        """This face, in a list."""
         return ShapeList([self])
 
     def neighbors(self) -> ShapeList[Face]:
@@ -3015,7 +3079,7 @@ class Face(Shape):
         return Shell._wrap(b)
 
     def extend(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
-               continuity: str = "natural") -> Shell:
+               continuity: Literal["natural", "G1", "G2"] = "natural") -> Shell:
         """The face's surface grown past its sides, as a sheet of one face: to make a sheet reach
         across a part before cutting or splitting it with it, or to give a blend room.
 
@@ -3044,9 +3108,10 @@ class Face(Shape):
         """
         return Shell._wrap(_extended_face(self, distance, sides, continuity, "extend"))
 
-    def extrude(self, amount: float, **kwargs: Any) -> Part:
+    def extrude(self, amount: float, *, both: bool = False, taper: float = 0.0,
+                direction: Axis | VectorLike | None = None, corners: Literal["sharp", "round"] = "sharp") -> Part:
         """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
-        return self.to_sketch().extrude(amount, **kwargs)
+        return self.to_sketch().extrude(amount, both=both, taper=taper, direction=direction, corners=corners)
 
     def _transformed(self, m: np.ndarray) -> Face:
         moved = self.to_shell()._transformed(m)
@@ -3065,7 +3130,9 @@ class Face(Shape):
 
     def __repr__(self) -> str:
         c = self.center()
-        return f"Face({self.geom_type}, area={self.area:.6g}, center=({c.x:.4g}, {c.y:.4g}, {c.z:.4g}))"
+        tiny = 1e-9 * max(1.0, math.sqrt(abs(self.area)))  # (the integration's noise about a coordinate of 0)
+        x, y, z = (0.0 if abs(v) < tiny else v for v in (c.x, c.y, c.z))
+        return f"Face({self.geom_type}, area={self.area:.6g}, center=({x:.4g}, {y:.4g}, {z:.4g}))"
 
 
 # =============================================================================
@@ -3188,9 +3255,11 @@ class _Body(Shape):
 
     # -- topology -------------------------------------------------------------
     def faces(self) -> ShapeList[Face]:
+        """The body's faces."""
         return ShapeList(Face(self, f) for f in self._brep.faces())
 
-    def edges(self, seams: bool = False) -> ShapeList[Edge]:
+    @keyword_only("0.6.0", "seams")
+    def edges(self, *, seams: bool = False) -> ShapeList[Edge]:
         """All edges. Seam edges (where a closed surface such as a cylinder meets itself)
         are left out unless ``seams`` is true."""
         all_edges = self._brep.edges()
@@ -3200,13 +3269,16 @@ class _Body(Shape):
         return ShapeList(Edge._of(self, e) for i, e in enumerate(all_edges) if i not in skip)
 
     def vertices(self) -> ShapeList[Vertex]:
+        """The body's vertices."""
         return ShapeList(Vertex._of(self, v) for v in self._brep.vertices())
 
     def wires(self) -> ShapeList[Wire]:
+        """The boundaries of all the body's faces."""
         return ShapeList(w for f in self.faces() for w in f.wires())
 
     # -- geometry -------------------------------------------------------------
     def bbox(self) -> BoundBox:
+        """The box along the axes around the body."""
         lo, hi = self._brep.bounding_box(True)
         return BoundBox(lo, hi)
 
@@ -3250,6 +3322,7 @@ class _Body(Shape):
         raise TypeError(f"closest_points takes a body, a face, an edge or a wire, not a {type(other).__name__}")
 
     def closest_point(self, point: VectorLike) -> Vector:
+        """The point of the body's surface nearest to a point (also from inside a part)."""
         with kernel_call("closest point"):
             return Vector(*ext.nearest_point(self._brep, list(_vec(point).to_tuple()))["point"])
 
@@ -3312,8 +3385,8 @@ class _Body(Shape):
         query builds what it needs again.
 
         The kernel keeps these caches as long as the body lives, and they can outweigh the body:
-        on a holed, filleted box of 129 KB, ``bbox()`` left 41 KB, ``mesh()`` 754 KB and
-        ``distance_to()`` 799 KB. A query that finds them is about 1.2 times as fast (twice for
+        on a holed, filleted box of about 150 KB, ``bbox()`` left 42 KB, ``mesh()`` 770 KB and
+        ``distance_to()`` 820 KB. A query that finds them is about 1.2 times as fast (11 times for
         ``closest_point()`` after ``distance_to()``); Booleans gain nothing from them. Compact
         bodies that are kept but no longer queried, such as the copies of a large pattern after
         they were measured or exported.
@@ -3369,7 +3442,7 @@ class _Body(Shape):
         near edges are the contour (a box seen from +Z: its 4 top edges). A sheet's free edges are
         not part of it. The curves are exact for spheres, cylinders and tori
         around the direction, traced (within 1e-6 of the body's size) otherwise."""
-        from .draft import _contour, _joined_arcs
+        from .molding import _contour, _joined_arcs
 
         d = _direction(direction, "silhouette")
         body, line = _contour(self, -d, "silhouette")
@@ -3428,6 +3501,7 @@ class _Body(Shape):
         (the tangent lines of fillets) are drawn too. Either way each line comes once: hidden
         pieces under visible lines are cut away, seams of closed faces and edges seen end-on are
         left out. See also :func:`drawing_views`."""
+        plane = _as_plane(plane)
         tol = 1e-7 * max(self.bbox().diagonal, 1.0)
         if hidden or tangent_edges:
             with kernel_call("outline"):
@@ -3491,10 +3565,9 @@ class _Body(Shape):
         and the value and tolerance it measured. An empty list: nothing found.
 
         ``level`` 0 checks the structure (how faces, loops, edges and vertices connect, the
-        pointers between them) and the gaps between vertices, edges and faces against their
-        tolerances; 1 also the geometry; 2 (the default) everything, the slow tests too. That
-        takes some milliseconds on parts smlibpy makes, about 0.1 s on an imported part of
-        170 faces.
+        pointers between them); 1 also the geometry; 2 (the default) everything, the slow tests
+        too, among them the gaps between vertices and faces against their tolerances. That takes
+        about 0.1 s on a plate with 24 holes and on an imported part of 170 faces.
 
         The tests look at each face, edge and vertex and its neighbours (SmBrep::AssertValid):
         they do not see a body that runs through itself. Use them where :meth:`is_valid`
@@ -3561,7 +3634,7 @@ def _drawn(edges: Iterable[Edge], tol: float) -> ShapeList[Edge]:
     hole's rim seen edge-on, on the part's outline): each line comes once. A piece that cannot be
     rebuilt (a straight one that runs back on itself) stays as the kernel gave it."""
     from .curves import CenterArc, Line, ThreePointArc
-    from .draft import _joined_arcs
+    from .molding import _joined_arcs
     from .dxf import _circle_of
 
     out: list[Edge] = []
@@ -4296,6 +4369,12 @@ def _empty_is_right(a: Part, tools: Sequence[Part], op: Any) -> bool:
         return False
 
 
+def _operands(others: tuple[Any, ...]) -> Any:
+    """The operands of a named Boolean (``fuse(*others)``) as its operator gets them: one alone
+    as itself, so that a message names its type, not the tuple's."""
+    return others[0] if len(others) == 1 else others
+
+
 def _bodies(items: Any, name: str = "combine") -> list[_Body]:
     if isinstance(items, _Body):
         return [items]
@@ -4487,11 +4566,13 @@ class MassProperties:
 
     @property
     def principal_moments(self) -> tuple[float, float, float]:
+        """The principal moments of inertia, smallest first."""
         w, _ = np.linalg.eigh(self.inertia)
         return (float(w[0]), float(w[1]), float(w[2]))
 
     @property
     def principal_axes(self) -> tuple[Vector, Vector, Vector]:
+        """The principal axes of inertia (directions), in the order of :attr:`principal_moments`."""
         _, v = np.linalg.eigh(self.inertia)
         return (Vector(v[:, 0]), Vector(v[:, 1]), Vector(v[:, 2]))
 
@@ -4689,6 +4770,7 @@ class Part(_Body):
 
     @property
     def volume(self) -> float:
+        """The part's volume (mm³)."""
         return float(self._measured()["volume"])
 
     @property
@@ -4927,9 +5009,8 @@ class Part(_Body):
         color where none of them has one. The kernel keeps no record of the parts: smlibpy
         classifies a point inside each cell against them.
 
-        The kernel's stitcher runs in another process (see ``smlibpy.defeature.GUARD_SECONDS``): it
-        crashed on some merges (a null polar box, patched in 0.5.0); a crash there raises
-        :class:`KernelError`."""
+        The kernel's stitcher runs in another process (see ``smlibpy.defeature.GUARD_SECONDS``): a
+        crash there raises :class:`KernelError`, and this process goes on."""
         d = ext.brep_dump(self._brep, False)
         if sum(1 for r in d["regions"] if not r["infinite"] and not r["void"]) <= 1:
             return ShapeList([self])
@@ -4987,9 +5068,10 @@ class Part(_Body):
         return out
 
     # -- points ---------------------------------------------------------------
-    def classify(self, point: VectorLike, tol: float | None = None) -> tuple[str, Face | Edge | Vertex | None]:
+    @renamed("0.6.0", tol="tolerance")
+    def classify(self, point: VectorLike, tolerance: float | None = None) -> tuple[str, Face | Edge | Vertex | None]:
         """Where a point lies: ``("inside", None)`` in the material, ``("outside", None)``
-        (also in a cavity), or ``("on", shape)`` on the surface within ``tol`` (default: the
+        (also in a cavity), or ``("on", shape)`` on the surface within ``tolerance`` (default: the
         part's own tolerance, 1e-5 for most parts), with the vertex, edge or face it lies on
         (the vertex rather than its edges, an edge rather than its faces).
 
@@ -4997,7 +5079,7 @@ class Part(_Body):
         from it would graze a face or pass through an edge, which the parity of
         :meth:`raycast` hits gets wrong.
         """
-        where, index, _ = self._classify([point], tol)[0]
+        where, index, _ = self._classify([point], tolerance)[0]
         if where == "face":
             return "on", Face(self, self._brep.faces()[index])
         if where == "edge":
@@ -5006,16 +5088,18 @@ class Part(_Body):
             return "on", Vertex._of(self, self._brep.vertices()[index])
         return where, None
 
-    def contains(self, point: VectorLike, tol: float | None = None) -> bool:
+    @renamed("0.6.0", tol="tolerance")
+    def contains(self, point: VectorLike, tolerance: float | None = None) -> bool:
         """True if the point lies in the material of this part or on its surface (within
-        ``tol``, see :meth:`classify`); False outside and in a cavity."""
-        return self._classify([point], tol)[0][0] != "outside"
+        ``tolerance``, see :meth:`classify`); False outside and in a cavity."""
+        return self._classify([point], tolerance)[0][0] != "outside"
 
-    def cell_at(self, point: VectorLike, tol: float | None = None) -> Part | None:
+    @renamed("0.6.0", tol="tolerance")
+    def cell_at(self, point: VectorLike, tolerance: float | None = None) -> Part | None:
         """The cell of a merged part (see :meth:`merge`) that holds the point, as in
         :meth:`cells`; None outside, in a cavity and on a face (also one between two cells).
         For a part that is one solid: the part itself or None."""
-        _, _, cell = self._classify([point], tol)[0]
+        _, _, cell = self._classify([point], tolerance)[0]
         return None if cell < 0 else self.cells()[cell]
 
     def _classify(self, points: Iterable[VectorLike], tol: float | None = None) -> list[tuple[str, int, int]]:
@@ -5053,7 +5137,7 @@ class Part(_Body):
             if op == k.BooleanOp.INTERSECTION and len(tools) == 1:
                 return tools[0] & self  # the piece of the sheet inside the part
             kind = next(type(t).__name__ for t in tools if not isinstance(t, Part))
-            raise TypeError(f"cannot {name} a {kind} with a Part: a sheet encloses no volume; to split the part "
+            raise TypeError(f"cannot {name} a Part with a {kind}: a sheet encloses no volume; to split the part "
                             f"along it use part.split(sheet), to cut its outline into the part's faces "
                             f"part.imprint(sheet), to trim the sheet sheet - part or sheet & part")
         try:
@@ -5561,7 +5645,7 @@ class Part(_Body):
         continuity: int | str | None = None,
         fullness: float = 1.0,
         propagate: bool = True,
-        corners: str = "patch",
+        corners: Literal["patch", "mitre", "miter"] = "patch",
         setback: float | None = None,
     ) -> Part:
         """Round edges.
@@ -5786,7 +5870,8 @@ class Part(_Body):
         return ShapeList(Shell._wrap(b, name=self.name, color=self.color) for b in sheets)
 
     def chamfer(self, edges: Any, length: float, *, length2: float | None = None, angle: float | None = None,
-                reference: Any = None, propagate: bool = True, corners: str = "patch") -> Part:
+                reference: Any = None, propagate: bool = True,
+                corners: Literal["patch", "mitre", "miter"] = "patch") -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces.
 
         An asymmetric bevel: ``length2`` is the setback on the other face of each edge, ``length`` the one
@@ -6129,7 +6214,8 @@ class Part(_Body):
                 f"{math.degrees(wedge):.4g} degrees; use an angle below {180 - math.degrees(wedge):.4g}")
         return length, length * math.sin(a) / math.sin(wedge + a)
 
-    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False, corners: str | None = None,
+    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False,
+              corners: Literal["round", "sharp"] | None = None,
               walls: Any = None) -> Part:
         """Hollow the part out to walls of ``thickness``, removing the ``openings`` faces.
 
@@ -6496,7 +6582,7 @@ class Part(_Body):
                     f"{expect:.10g}")
         return None
 
-    def offset(self, distance: float, *, corners: str = "sharp") -> Part:
+    def offset(self, distance: float, *, corners: Literal["sharp", "round"] = "sharp") -> Part:
         """Grow (positive) or shrink (negative) the part by ``distance`` everywhere (0 gives an
         equal copy).
 
@@ -6631,7 +6717,7 @@ class Part(_Body):
             raise error
         raise ModelingError(f"{name}: the kernel could not build a valid result (it built {refused}); {hint}")
 
-    def split(self, plane: Plane | Face | Shell, keep: str = "above") -> Any:
+    def split(self, plane: Plane | Face | Shell, keep: Literal["above", "below", "both"] = "above") -> Any:
         """Cut the part with a plane or along a sheet.
 
         ``keep="above"`` keeps the side the plane normal points to, ``"below"`` the other
@@ -7039,35 +7125,42 @@ class Part(_Body):
             raise TypeError(f"from_mesh takes a Mesh, not a {type(mesh).__name__}")
         return mesh.to_part(max_faces)
 
-    # -- deformations (smlibpy.deform) ---------------------------------------
-    def twist(self, angle: float, **kwargs: Any) -> Part:
+    # -- deformations (smlibpy.deformations) ------------------------------
+    def twist(self, angle: float, *, axis: Axis = Axis.Z, start: float | None = None, end: float | None = None,
+              tolerance: float | None = None) -> Part:
         """Twist about an axis (default Z) by ``angle`` degrees over the part; see :func:`smlibpy.twist`."""
-        from .deform import twist
+        from .deformations import twist
 
-        return twist(self, angle, **kwargs)
+        return twist(self, angle, axis=axis, start=start, end=end, tolerance=tolerance)
 
-    def taper(self, scale: float, **kwargs: Any) -> Part:
+    def taper(self, scale: float, *, axis: Axis = Axis.Z, start: float | None = None, end: float | None = None,
+              tolerance: float | None = None) -> Part:
         """Scale cross-sections toward an axis (default Z) from 1 to ``scale``; see :func:`smlibpy.taper`."""
-        from .deform import taper
+        from .deformations import taper
 
-        return taper(self, scale, **kwargs)
+        return taper(self, scale, axis=axis, start=start, end=end, tolerance=tolerance)
 
-    def bend(self, angle: float, **kwargs: Any) -> Part:
+    def bend(self, angle: float, *, radius: float | None = None, plane: Plane = Plane.XZ, start: float | None = None,
+             end: float | None = None, tolerance: float | None = None) -> Part:
         """Bend around an axis by ``angle`` degrees (default: along X, toward +Z); see :func:`smlibpy.bend`."""
-        from .deform import bend
+        from .deformations import bend
 
-        return bend(self, angle, **kwargs)
+        return bend(self, angle, radius=radius, plane=plane, start=start, end=end, tolerance=tolerance)
 
-    def unroll(self, **kwargs: Any) -> Part:
+    def unroll(self, *, radius: float, axis: Axis = Axis.Z, start: VectorLike | None = None,
+               tolerance: float | None = None) -> Part:
         """Unroll this part from around an axis (default Z) into a flat one, the layer at
         ``radius`` keeping its length; see :func:`smlibpy.unroll`."""
-        from .deform import unroll
+        from .deformations import unroll
 
-        return unroll(self, **kwargs)
+        return unroll(self, radius=radius, axis=axis, start=start, tolerance=tolerance)
 
-    def deform(self, lattice: Any, **kwargs: Any) -> Part:
-        """Deform with a :class:`smlibpy.Lattice` (same as ``lattice.apply(part)``)."""
-        return lattice.apply(self, **kwargs)
+    def deform(self, lattice: Lattice, *, tolerance: float | None = None) -> Part:
+        """Deform with a :class:`smlibpy.Lattice` (same as ``lattice.apply(part)``); see
+        :func:`smlibpy.deform`."""
+        from .deformations import deform
+
+        return deform(self, lattice, tolerance=tolerance)
 
     def remove_fillets(self, faces: Any = None, *, max_radius: float | None = None, partial: bool = False) -> Part:
         """The part with fillets taken out and their edges sharp again: ``faces`` (fillet faces
@@ -7087,15 +7180,15 @@ class Part(_Body):
 
     def draft_analysis(self, direction: Axis | VectorLike, *, min_angle: float = 1.0) -> Any:
         """Draft angle of every face for the pull direction, with the faces grouped by whether
-        they release (see :class:`smlibpy.draft.DraftAnalysis`)."""
-        from .draft import draft_analysis
+        they release (see :class:`smlibpy.molding.DraftAnalysis`)."""
+        from .molding import draft_analysis
 
         return draft_analysis(self, direction, min_angle=min_angle)
 
     def parting_line(self, direction: Axis | VectorLike) -> ShapeList[Wire]:
         """The closed lines where the part's surface turns from facing ``direction`` to facing
-        away from it (see :func:`smlibpy.draft.parting_line`)."""
-        from .draft import parting_line
+        away from it: where the halves of a mold part (see :func:`smlibpy.molding.parting_line`)."""
+        from .molding import parting_line
 
         return parting_line(self, direction)
 
@@ -7123,7 +7216,7 @@ class Part(_Body):
                 A face's normal points out of the part: the top face drafts for a mold that
                 moves up, the bottom face for one that moves down (use ``Plane.XY`` there).
         """
-        from .draft import draft_faces
+        from .molding import draft_faces
 
         return draft_faces(self, faces, angle, neutral_plane)
 
@@ -7181,7 +7274,8 @@ class Part(_Body):
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
     # -- local edits of a face (smlibpy.shaping) -----------------------------
     def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
-             normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Part:
+             normal: VectorLike | None = None, radius: float | None = None,
+             continuity: Literal["G0", "G1", "G2"] = "G1") -> Part:
         """Push or pull a face at a point: a smooth dent or bump, local to the point, its edges in place.
 
         Args:
@@ -7211,7 +7305,8 @@ class Part(_Body):
 
         return shaping.checked(self, shaping.push(self, face, at, by, to, normal, radius, continuity), "push")
 
-    def warp(self, face: Face, region: Any, by: float | VectorLike, *, continuity: str = "G2") -> Part:
+    def warp(self, face: Face, region: Any, by: float | VectorLike, *,
+             continuity: Literal["crease", "G1", "G2"] = "G2") -> Part:
         """Raise or sink a region of a face: a smooth bump over an outline drawn on the face.
 
         Args:
@@ -7238,7 +7333,8 @@ class Part(_Body):
 
         return shaping.checked(self, shaping.warp(self, face, region, by, continuity), "warp")
 
-    def flatten(self, face: Face, region: Any, plane: Plane | Face, *, continuity: str = "G2") -> Part:
+    def flatten(self, face: Face, region: Any, plane: Plane | Face, *,
+                continuity: Literal["crease", "G1", "G2"] = "G2") -> Part:
         """Press a region of a face onto a plane: a flat area (a seat, a pad, a label area) on a curved
         face, blended into the rest of it.
 
@@ -8410,9 +8506,11 @@ class Shell(_Body):
 
     @property
     def area(self) -> float:
+        """The total area of the faces."""
         return sum(f.area for f in self.faces())
 
     def center(self) -> Vector:
+        """The center of the faces' area (each face weighted by its area)."""
         total = 0.0
         c = Vector()
         for f in self.faces():
@@ -8446,7 +8544,13 @@ class Shell(_Body):
             # (the kernel's offset code, which can crash, mostly in its extended mode, which depends
             # on memory layout: it runs in another process)
             b = isolated("thicken", _thicken_step, hint, self._brep, d, extended)
-            return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+            part = _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+            # measured, as is_valid() measures: the coarse volume took a closed grid tube's body of no
+            # volume (-1e-12) for a solid
+            problem = part._solid_problem(gaps=True)
+            if problem is not None:
+                raise ModelingError(f"thicken: the kernel returned a body that is {problem}; {hint}")
+            return part
 
         try:
             part = attempt(True)
@@ -8577,7 +8681,7 @@ class Shell(_Body):
         return out
 
     def extend(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
-               continuity: str = "natural") -> Shell:
+               continuity: Literal["natural", "G1", "G2"] = "natural") -> Shell:
         """The sheet (of one face) grown past its sides: see :meth:`Face.extend`.
 
         Args:
@@ -8613,7 +8717,7 @@ class Shell(_Body):
         Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next
         to it bend near those ends, and the faces on the other side of those edges follow them the
         same way, but meet the matched face with a crease near the matched edge (no tangent is kept
-        across those side edges: 10 to 20 degrees in a sheet of two faces; merge faces first with
+        across those side edges: 20 to 34 degrees in a sheet of two faces; merge faces first with
         :meth:`merge_faces` to keep a sheet smooth). Every face that changes must be bounded by the
         four sides of its surface (as
         :func:`~smlibpy.surface`, ``loft``, :func:`~smlibpy.ruled`, :func:`~smlibpy.fill` and
@@ -8655,42 +8759,55 @@ class Shell(_Body):
             else self._like(out._copy_brep())
 
     def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
-             normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Shell:
+             normal: VectorLike | None = None, radius: float | None = None,
+             continuity: Literal["G0", "G1", "G2"] = "G1") -> Shell:
         """Push or pull a face of the sheet at a point: see :meth:`Part.push` (``by`` as a distance moves
         along the face's normal). Returns a new sheet; a Sketch's comes back as a Shell."""
         from . import shaping
 
         return shaping.checked(self, shaping.push(self, face, at, by, to, normal, radius, continuity), "push")
 
-    def warp(self, face: Face, region: Any, by: float | VectorLike, *, continuity: str = "G2") -> Shell:
+    def warp(self, face: Face, region: Any, by: float | VectorLike, *,
+             continuity: Literal["crease", "G1", "G2"] = "G2") -> Shell:
         """Raise or sink a region of a face of the sheet: see :meth:`Part.warp`. Returns a new sheet; a
         Sketch's comes back as a Shell."""
         from . import shaping
 
         return shaping.checked(self, shaping.warp(self, face, region, by, continuity), "warp")
 
-    def flatten(self, face: Face, region: Any, plane: Plane | Face, *, continuity: str = "G2") -> Shell:
+    def flatten(self, face: Face, region: Any, plane: Plane | Face, *,
+                continuity: Literal["crease", "G1", "G2"] = "G2") -> Shell:
         """Press a region of a face of the sheet onto a plane: see :meth:`Part.flatten`. Returns a new
         sheet; a Sketch's comes back as a Shell."""
         from . import shaping
 
         return shaping.checked(self, shaping.flatten(self, face, region, plane, continuity), "flatten")
 
-    def __add__(self, other: Any) -> Shell:
+    def fuse(self, *others: Shell | Part | Face | Iterable[Shell | Part | Face]) -> Shell:
+        """Union with other sheets (``sheet + other``)."""
         h = BrepHandle(self._copy_brep())
-        for t in _bodies(other):
+        for t in _bodies(_operands(others)):
             with kernel_call("fuse"):
                 _combine(h, t, k.BooleanOp.UNION)
         return self._like(_take(h))
 
-    def __sub__(self, other: Any) -> Shell:
+    def cut(self, *others: Part | Iterable[Part]) -> Shell:
         """The sheet trimmed by parts: the pieces outside them (``sheet - part``)."""
-        return self._trimmed(other, k.BooleanOp.DIFFERENCE, "cut")
+        return self._trimmed(_operands(others), k.BooleanOp.DIFFERENCE, "cut")
 
-    def __and__(self, other: Any) -> Shell:
+    def intersect(self, *others: Part | Iterable[Part]) -> Shell:
         """The sheet trimmed by parts: the pieces inside them (``sheet & part``; also
         ``part & sheet``)."""
-        return self._trimmed(other, k.BooleanOp.INTERSECTION, "intersect")
+        return self._trimmed(_operands(others), k.BooleanOp.INTERSECTION, "intersect")
+
+    def __add__(self, other: Any) -> Shell:
+        return self.fuse(other)
+
+    def __sub__(self, other: Any) -> Shell:
+        return self.cut(other)
+
+    def __and__(self, other: Any) -> Shell:
+        return self.intersect(other)
 
     def _trimmed(self, other: Any, op: Any, name: str) -> Shell:
         """The sheet less the pieces inside (or outside) parts. The kernel's Boolean of a sheet and a
@@ -9174,8 +9291,24 @@ class Sketch(Shell):
             b2 = ext.copy_faces(solid._brep, [f._f for f in base])
         return self._like(b2)
 
+    def fuse(self, *others: Sketch | Iterable[Sketch]) -> Sketch:  # type: ignore[override]
+        """The union with other sketches (``+``)."""
+        return self._boolean2d(_operands(others), k.BooleanOp2D.UNION, "fuse")
+
+    def cut(self, *others: Sketch | Iterable[Sketch]) -> Sketch:  # type: ignore[override]
+        """The region less other sketches (``-``)."""
+        return self._boolean2d(_operands(others), k.BooleanOp2D.DIFFERENCE, "cut")
+
+    def intersect(self, *others: Sketch | Iterable[Sketch]) -> Sketch:  # type: ignore[override]
+        """The region common to this and other sketches (``&``)."""
+        return self._boolean2d(_operands(others), k.BooleanOp2D.INTERSECTION, "intersect")
+
+    def xor(self, *others: Sketch | Iterable[Sketch]) -> Sketch:
+        """The region in exactly one of the sketches (``^``)."""
+        return self._boolean2d(_operands(others), k.BooleanOp2D.EXCLUSIVE_OR, "xor")
+
     def __add__(self, other: Any) -> Sketch:
-        return self._boolean2d(other, k.BooleanOp2D.UNION, "fuse")
+        return self.fuse(other)
 
     def __radd__(self, other: Any) -> Sketch:
         if other == 0:
@@ -9183,13 +9316,13 @@ class Sketch(Shell):
         return self + other
 
     def __sub__(self, other: Any) -> Sketch:
-        return self._boolean2d(other, k.BooleanOp2D.DIFFERENCE, "cut")
+        return self.cut(other)
 
     def __and__(self, other: Any) -> Sketch:
-        return self._boolean2d(other, k.BooleanOp2D.INTERSECTION, "intersect")
+        return self.intersect(other)
 
     def __xor__(self, other: Any) -> Sketch:
-        return self._boolean2d(other, k.BooleanOp2D.EXCLUSIVE_OR, "xor")
+        return self.xor(other)
 
     # -- measures -------------------------------------------------------------
     def center(self) -> Vector:
@@ -9231,7 +9364,8 @@ class Sketch(Shell):
         return SectionProperties(area, Plane(centroid, local.x_dir, local.z_dir), ixx, iyy, ixy, extent)
 
     # -- 2D operations --------------------------------------------------------
-    def offset(self, distance: float, *, corners: str = "round", round: bool | None = None) -> Sketch:
+    @renamed("0.6.0", round=("corners", lambda r: "round" if r else "sharp"))
+    def offset(self, distance: float, *, corners: Literal["round", "sharp", "chamfer"] = "round") -> Sketch:
         """Grow (positive ``distance``) or shrink (negative) the region; holes move the other way.
 
         ``corners`` shapes the corners that the offset pulls apart (convex ones when growing,
@@ -9239,12 +9373,9 @@ class Sketch(Shell):
         (the sides extended until they meet) or ``"chamfer"`` (a straight cut across).
         Lines stay lines and arcs stay arcs. Parts that grow into each other merge, parts that
         get too thin vanish; shrinking away the whole region raises :class:`ModelingError`.
-        ``round=False`` is the older spelling of ``corners="sharp"``.
         """
         from ._regions import CORNER_STYLES, offset_region
 
-        if round is not None:
-            corners = "round" if round else "sharp"
         if corners not in CORNER_STYLES:
             raise ValueError(f"offset: corners is 'round', 'sharp' or 'chamfer', not {corners!r}")
         if distance == 0:
@@ -9291,7 +9422,8 @@ class Sketch(Shell):
                 return piece
         return None
 
-    def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Sketch:
+    def fillet(self, radius: float, vertices: VectorLike | Vertex | Iterable[VectorLike | Vertex] | None = None
+               ) -> Sketch:
         """Round corners of the region with tangent arcs of ``radius``.
 
         ``vertices``: the corners to round, as vertices of this sketch (a selection such as
@@ -9307,7 +9439,8 @@ class Sketch(Shell):
             raise ValueError("fillet: the radius must be positive")
         return round_corners(self, float(radius), vertices, "fillet")
 
-    def chamfer(self, length: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Sketch:
+    def chamfer(self, length: float, vertices: VectorLike | Vertex | Iterable[VectorLike | Vertex] | None = None
+                ) -> Sketch:
         """Bevel corners of the region: cut back ``length`` along both edges of each corner
         (measured along the edge) and join the two points with a line.
 
@@ -9338,7 +9471,7 @@ class Sketch(Shell):
         both: bool = False,
         taper: float = 0.0,
         direction: Axis | VectorLike | None = None,
-        corners: str = "sharp",
+        corners: Literal["sharp", "round"] = "sharp",
     ) -> Part:
         """Extrude the region into a solid.
 
@@ -9598,16 +9731,18 @@ class Sketch(Shell):
                      f"{_fmt_point(o)}, pass axis=... (for example Axis((0, 0, 0), (0, 1, 0)))") if default else ""
             raise ModelingError(f"revolve: the axis crosses the region{where}")
 
-    def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
+    def sweep(self, path: Edge | Wire, *, orient: bool = True, translational: bool = False,
+              sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
               twist: float | Callable[[float], float] = 0.0,
               scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None,
-              anchor: str | VectorLike | Vertex = "center") -> Part:
+              anchor: Literal["center", "origin"] | VectorLike | Vertex = "center") -> Part:
         """Sweep the region along a path (see :func:`~smlibpy.sweep`: the center of the region's box, or
         the point ``anchor`` names, goes to the start of the path; ``up`` and ``twist`` set its attitude
         along it, ``scale`` its size)."""
         from .operations import sweep
 
-        return sweep(self, path, sharp_corners=sharp_corners, up=up, twist=twist, scale=scale, anchor=anchor)
+        return sweep(self, path, orient=orient, translational=translational, sharp_corners=sharp_corners, up=up,
+                     twist=twist, scale=scale, anchor=anchor)
 
     def swing(self, outline: Sketch | Face | Wire | Edge) -> Part:
         """Swing the region around an outline: a revolve about Z whose circle is the outline (see

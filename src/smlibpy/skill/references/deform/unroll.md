@@ -5,7 +5,8 @@ rolled sheet (a ring segment, a curl), a cylindrical label or a pattern on a cyl
 must be developed flat.
 
 ## Signature
-`unroll(shape, *, radius, axis=Z, start=None, tolerance=None)` or `part.unroll(radius=..., ...)`
+`unroll(shape, *, radius, axis=Z, start=None, tolerance=None)` or
+`part.unroll(*, radius, axis=Z, start=None, tolerance=None)`
 
 - `radius`: the radius of the neutral layer, the one that keeps its length (mm, > 0). A
   point at distance r from the axis and at the angle a (radians) from `start` goes to distance

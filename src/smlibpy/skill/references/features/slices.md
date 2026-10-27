@@ -6,6 +6,7 @@ the profile of a scan every few millimeters.
 ## Signatures
 `part.slices(step, axis=Z) -> list[Sketch]`
 `mesh.slices(step, axis=Z) -> list[ShapeList[Wire]]`
+`slices(shape, step, axis=Z)` (either, the part or mesh first)
 
 - `step`: the layer thickness, positive (`ValueError` otherwise).
 - `axis`: an `Axis` or a direction; the planes are perpendicular to it.

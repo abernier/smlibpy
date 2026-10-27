@@ -19,7 +19,7 @@ import os
 import struct
 import zlib
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -141,10 +141,13 @@ class ImageDiff:
 # -----------------------------------------------------------------------------
 # public functions
 # -----------------------------------------------------------------------------
-def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any = "iso",
+def render(*shapes: Any, path: str | os.PathLike[str] | None = None,
+           view: Literal["iso", "front", "back", "left", "right", "top", "bottom", "sheet"] | dict[str, Any]
+           | tuple[float, float, float] = "iso",
            size: tuple[int, int] = (800, 600), edges: bool = True, background: Any = "white",
            tolerance: float | None = None, zoom: float = 1.0, look_at: Any = None, frame: Any = None,
-           supersample: int = 2, colors: str = "native", lines: bool = False, drawing: Any = False,
+           supersample: int = 2, colors: Literal["native", "distinct"] = "native", lines: bool = False,
+           drawing: Any = False,
            sheet: Any = False, section: Any = None, cap: bool = True, highlight: Any = None,
            highlight_at: Any = None, markers: Any = None, annotate: bool = False, xray: bool = False,
            xray_alpha: float = 0.42, zebra: Any = False, curvature: Any = None) -> Picture:
