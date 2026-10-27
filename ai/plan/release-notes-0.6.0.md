@@ -146,6 +146,15 @@ methods and classes.
   [0, 1]. A rim cut where a seam crosses it is now split into four nearly equal sides, so a hole
   gets the same cap however the sphere is turned: 4141.58 for every axis hole, where it was
   4141.52, 4141.58 or 4124.35.
+- **A guarded step no longer hangs in its forked copy.** The kernel steps that can crash or loop
+  (`shell`, `offset`, `thicken`, `cells`, `remove_fillets`, ...) run in a forked copy of the
+  process (Linux, macOS). The copy got a new kernel lock from smlibpy's Python fork hook. But
+  Python runs those hooks in the order they were registered, `threading`'s before smlibpy's. When
+  a garbage collection in an earlier hook freed a body, its finalizer waited for ever for the old
+  lock. After `GUARD_SECONDS` (20 s) the step failed with "the kernel did not finish". Whether it
+  happened depended on when Python collected: the first 0.6.0 release build hit it in `cells` on
+  Linux with Python 3.10. The copy now gets its new lock inside `fork()`, before any of its Python
+  code runs.
 - **Tests no longer open a browser.** The fillet guide's `show()` opened Edge on the Windows
   runners, and its WebGL page, drawn without a GPU, kept the cores busy: 0.5.0's release builds
   ran their second test run eleven times slower. *Tests only.*
