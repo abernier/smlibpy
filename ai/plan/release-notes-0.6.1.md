@@ -1,9 +1,24 @@
-# smlibpy and smlibwasm 0.6.1
+# smlibpy, smlibwasm and smlibpy-three 0.6.1
 
-A patch release: the fixes merged into `next` after 0.6.0. Code written for 0.6.0 runs unchanged.
+A patch release: the fixes merged into `next` after 0.6.0, and the first release of smlibpy-three,
+smlibwasm's API for three.js. Code written for 0.6.0 runs unchanged.
 
 Everything applies to smlibpy (Python) and smlibwasm (JavaScript and TypeScript) alike, unless
 marked *Python* or *smlibwasm*.
+
+## New
+
+- **smlibpy-three** (`@classcad/smlibpy-three`, in `smlibpy-three/`): smlibwasm's API for three.js.
+  Parts, sketches, faces, edges and curves are three.js objects (a part is a `THREE.Mesh`, an edge a
+  `THREE.Line`) that take and give three's types, in three's coordinates and with three's geometry
+  arguments: `new Box(80, 10, 60)` is the box `BoxGeometry(80, 10, 60)` would be, and cylinders
+  stand along y. three's Raycaster picks the exact faces and edges. It wraps all of smlibwasm's
+  public API; its README lists what it leaves out and why, and its `API.md` is the reference. It
+  is released with smlibpy and smlibwasm from now on, at their version, and depends on the
+  smlibwasm of its release: `npm install @classcad/smlibpy-three three`.
+- *smlibwasm*: `faceMeshes` is exported, as smlibpy's `smlibpy.mesh.face_meshes`: one mesh per face
+  of a part, shell or sketch, cut from one tessellation of the whole body. It was in `mesh.ts` but
+  not exported. smlibpy-three draws a body's faces with it.
 
 ## Fixed
 
