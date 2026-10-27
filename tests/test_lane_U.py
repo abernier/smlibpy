@@ -566,6 +566,25 @@ def test_fill_closes_the_holes_of_a_sphere_turned_by_any_angle():
         assert ball.volume == pytest.approx(4141.58, rel=2e-3)
 
 
+@pytest.mark.parametrize("r, x", [(5, 0), (5, 7), (5, 5), (2.5, 2.5)])
+def test_fill_a_round_hole_whose_rim_touches_the_sheet_s_knot_lines(r, x):
+    # The sheet's knots lie every 5 along x and y, and these rims touch knot lines where the
+    # patch's corners are: there a side's first knot span came out about 1e-4 long, and the
+    # kernel's tangent field gave its cross tangent an end derivative (the patch's twist) 1.85 to
+    # 2.7 times too large. The patch was refused 1.65 to 20.6 degrees off.
+    g = surface([[(px, py, 0.02 * (px * px + py * py)) for py in range(-20, 21, 5)] for px in range(-20, 21, 5)])
+    hole = stitch((Box(100, 100, 100) - Circle(r).translate((x, 0, 0)).extrude(100, both=True)) & g)
+    rim = [e for e in _free(hole) if (e.center().x - x) ** 2 + e.center().y ** 2 < 150]
+    cap = fill(rim)
+    worst = 0.0
+    for e in rim:
+        for t in (0.1, 0.3, 0.5, 0.7, 0.9):
+            p = e.point_at(t)
+            a, b = hole.faces()[0].normal_at(p), cap.faces()[0].normal_at(p)
+            worst = max(worst, math.degrees(math.acos(min(1.0, abs(a.dot(b))))))
+    assert len(cap.faces()) == 1 and worst < 0.05
+
+
 def test_fill_an_n_sided_hole_tangent():
     g = surface([[(x, y, 0.02 * (x * x + y * y)) for y in range(-20, 21, 5)] for x in range(-20, 21, 5)])
     from smlibpy import RegularPolygon
