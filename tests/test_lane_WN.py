@@ -521,14 +521,18 @@ def test_cells_of_a_merge_that_crashed_the_stitcher_come_back(mode):
     assert sum(c.volume for c in cells) == approx(m.volume, rel=1e-6)
 
 
+@pytest.mark.skipif(not HAS_FORK, reason="no os.fork (a helper process would not have the stand-in below)")
 def test_steps_stopped_after_the_time_limit_say_so(monkeypatch, tmp_path):
     # Fillets and chamfers of parts read from files run in another process (N1), stopped after
     # GUARD_SECONDS. They raised "KernelError: fillet failed: the radius may be too large for the
     # selected edges", the time limit only in .detail, and tried again with the finer tolerance.
+    # The forked copy's fillet waits 10 s: the plate's own finished within the limit in 3 of 100
+    # runs on macOS arm64, and in 0.6.0's release build on macOS with Python 3.14.
     plate = Box(60, 60, 10) - [Cylinder(2, 20).translate(x, y, 0) for x in (-20, 0, 20) for y in (-20, 0, 20)]
     export_step(plate, tmp_path / "plate.step")
     part = import_step(tmp_path / "plate.step")
     monkeypatch.setattr(defeature, "GUARD_SECONDS", 0.01)
+    monkeypatch.setattr(ext, "round_edges", lambda *args: time.sleep(10))
     started = time.perf_counter()
     with pytest.raises(_KernelFault, match=r"^fillet: the kernel did not finish within 0.01 s; smlibpy.defeature.GUARD"):
         part.fillet(part.edges().filter_by(lambda e: e.center().z > 4.9), 0.5)
