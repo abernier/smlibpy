@@ -1291,10 +1291,11 @@ function _gridNote(body: _Body, tolerance: number, angle: number, maxEdge: numbe
  * own (copied out of the body) get theirs this way, and the faces share the points where they
  * meet.
  */
-export function faceMeshes(shape: _Body | ShapeList<Shape>, tolerance: number | null = null, angle = 15): Mesh[] {
+export function faceMeshes(shape: Shape | ShapeList<Shape>, tolerance: number | null = null, angle = 15): Mesh[] {
   const mesh = _tessellate(shape, tolerance, angle, true)
   try {
-    return _faceMeshes(shape, mesh)
+    // (a shape of no body of its own is a TypeError there)
+    return _faceMeshes(shape as _Body | ShapeList<Shape>, mesh)
   } finally {
     mesh.dispose()
   }

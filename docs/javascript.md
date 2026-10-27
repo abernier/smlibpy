@@ -1921,6 +1921,7 @@ export class Mesh {
 export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | null, angle?: number, options?: {
     maxEdge?: number | null;
 }): Mesh;
+export function faceMeshes(shape: Shape | ShapeList<Shape>, tolerance?: number | null, angle?: number): Mesh[];
 ```
 
 ### Files

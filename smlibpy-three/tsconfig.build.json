@@ -1,0 +1,16 @@
+{
+  // The package build (npm run build): src/*.ts to dist/*.js with type declarations; the imports'
+  // .ts endings become .js. What the modules share with each other only (marked @internal) is
+  // left out of the declarations, which so name nothing of smlibwasm's.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": false,
+    "rewriteRelativeImportExtensions": true,
+    "stripInternal": true
+  },
+  "include": ["src"]
+}
