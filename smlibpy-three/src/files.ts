@@ -29,7 +29,7 @@ import * as THREE from 'three'
 import { DrawingView, kernelView } from './drawing.ts'
 import { KernelError, ModelingError } from './errors.ts'
 import { call, degrees, describe, location, matrix4, sm, vec, type SmBody } from './kernel.ts'
-import { STAGE } from './render.ts'
+import { STAGE } from './pictures.ts'
 import { assignedMaterial, Body, curveOf, BrepEdge, BrepFace, isMatrix4, isObject3D, operand, Part, sub, BrepVertex, Wire, wrap, type Shell, type Sketch } from './shapes.ts'
 
 // ------------------------------------------------------------------------------------------- STEP

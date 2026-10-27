@@ -1,4 +1,4 @@
-// The proposed Part and Shell methods (delegating to deform.ts and sheetmetal.ts), through index.ts.
+// The proposed Part and Shell methods (delegating to deformations.ts and sheetmetal.ts), through index.ts.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'

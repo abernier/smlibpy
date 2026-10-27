@@ -268,7 +268,7 @@ export function surfaceFillet(a: BrepFace | Shell, b: BrepFace | Shell, radius: 
 export interface BlendOptions {
   /** How smoothly the blend meets the sheets: 'G1' tangent, 'G2' (default) with the same curvature
    * across the edges too, 'G3' also the same change of curvature. */
-  continuity?: string | number
+  continuity?: 'G1' | 'G2' | 'G3' | number
   /** How far the blend runs on in each sheet's direction before it turns, as a part of the gap
    * (default 1): one number, or one per edge; less is tighter, more bulges. */
   tension?: number | readonly [number, number]

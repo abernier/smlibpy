@@ -235,6 +235,22 @@ function bendPlane(m: THREE.Matrix4): sm.Plane {
   return call(() => new sm.Plane(vec(origin), vec(x.normalize()), vec(normal.normalize())))
 }
 
+/**
+ * The shape deformed by a lattice of control points (see Lattice; it is in the shape's frame): the
+ * function form of `Part.deform` and `Shell.deform`, and of `lattice.apply` for curves and points.
+ * Shapes, curves and points as for `twist`.
+ */
+export function deform(shape: Part, lattice: Lattice, options?: { tolerance?: number | null }): Part
+export function deform(shape: Shell, lattice: Lattice, options?: { tolerance?: number | null }): Shell
+export function deform(shape: BrepEdge, lattice: Lattice, options?: { tolerance?: number | null }): BrepEdge
+export function deform(shape: Wire, lattice: Lattice, options?: { tolerance?: number | null }): Wire
+export function deform(point: THREE.Vector3Like, lattice: Lattice, options?: { tolerance?: number | null }): THREE.Vector3
+export function deform(points: readonly THREE.Vector3Like[], lattice: Lattice, options?: { tolerance?: number | null }): THREE.Vector3[]
+export function deform(shape: Input, lattice: Lattice, options: { tolerance?: number | null } = {}): Output {
+  if (!(lattice instanceof Lattice)) throw new TypeError(`deform: give the shape, then a Lattice, not ${describe(lattice)}`)
+  return lattice.apply(shape as Part, options)
+}
+
 // ---------------------------------------------------------------------------------- the lattice
 /** Which layers of a lattice along one axis: a number (negative ones count from the end), null for
  * all of them, or an array of numbers. */

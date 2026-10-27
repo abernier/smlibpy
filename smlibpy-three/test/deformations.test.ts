@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
 import { Box, CenterArc, Cylinder, BrepEdge, Helix, Segment, ModelingError, Part, Rectangle, Shell, Sketch, Wire } from '../src/index.ts'
-import { bend, Lattice, taper, twist, unroll } from '../src/deform.ts'
+import { bend, Lattice, taper, twist, unroll } from '../src/deformations.ts'
 import { box, close, closeBox, closeVector, Y } from './_util.ts'
 
 // every class smlibwasm exports, to find any of them in what the package gives

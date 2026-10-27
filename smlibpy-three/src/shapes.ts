@@ -57,7 +57,7 @@ import {
   type Problem,
   type RayHit,
 } from './properties.ts'
-import * as deformations from './deform.ts'
+import * as deformations from './deformations.ts'
 import * as sheetMetal from './sheetmetal.ts'
 import { tessellate as tessellateMesh, type TessellateOptions, type TriangleMesh } from './mesh.ts'
 import { track } from './memory.ts'
@@ -414,7 +414,7 @@ export function shapeFor(body: Body, k: sm.Face | sm.Edge | sm.Vertex): BrepFace
 }
 
 /** @internal */
-export function flatten<T>(items: readonly (T | Iterable<T>)[]): T[] {
+export function itemsOf<T>(items: readonly (T | Iterable<T>)[]): T[] {
   const out: T[] = []
   for (const item of items) {
     if (item !== null && typeof item === 'object' && Symbol.iterator in item && !isObject3D(item)) out.push(...(item as Iterable<T>))
@@ -807,7 +807,8 @@ export interface PushOptions {
   normal?: THREE.Vector3Like | null
   /** How far around `at` the face follows. */
   radius?: number | null
-  continuity?: string
+  /** How the face stays joined to its neighbours: 'G0', 'G1' (the default) or 'G2'. */
+  continuity?: 'G0' | 'G1' | 'G2'
 }
 
 function pushOptions(o: PushOptions): Record<string, unknown> {
@@ -996,8 +997,8 @@ export interface FilletOptions {
   fullness?: number
   /** Round the edges that continue the given ones tangentially too (default true). */
   propagate?: boolean
-  /** Where three rounds meet: "patch" (default) or "mitre". */
-  corners?: string
+  /** Where three rounds meet: 'patch' (default) or 'mitre' ('miter'). */
+  corners?: 'patch' | 'mitre' | 'miter'
   /** Rounds stop this far from corners of three or more rounded edges, joined by one larger patch. */
   setback?: number | null
 }
@@ -1012,8 +1013,8 @@ export interface ChamferOptions {
   reference?: BrepFace | Iterable<BrepFace> | null
   /** Bevel the edges that continue the given ones tangentially too (default true). */
   propagate?: boolean
-  /** Where three bevels meet: "patch" (default) or "mitre". */
-  corners?: string
+  /** Where three bevels meet: 'patch' (default) or 'mitre' ('miter'). */
+  corners?: 'patch' | 'mitre' | 'miter'
 }
 
 /** A solid: Booleans, fillets, chamfers, shells, splits and sections; volume and mass. */
@@ -1082,7 +1083,7 @@ export class Part extends Body {
 
   private boolean(op: 'fuse' | 'cut' | 'intersect', others: readonly (Part | Iterable<Part>)[]): Part {
     const value = kernelOf(this) as sm.Part
-    const tools = flatten(others).map((o) => operand(o, this, op) as sm.Part)
+    const tools = itemsOf(others).map((o) => operand(o, this, op) as sm.Part)
     return adopt(wrap(call(() => value[op](...tools))) as Part, this)
   }
 
@@ -1111,7 +1112,7 @@ export class Part extends Body {
    * grows the walls outward, `corners` 'round' or 'sharp', `walls` other thicknesses for some faces
    * (a Map of faces to thicknesses, or [faces, thickness] pairs).
    */
-  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: ReadonlyMap<BrepFace, number> | Iterable<readonly [FacesLike, number]> | null } = {}): Part {
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: 'round' | 'sharp' | null; walls?: ReadonlyMap<BrepFace, number> | Iterable<readonly [FacesLike, number]> | null } = {}): Part {
     const value = kernelOf(this) as sm.Part
     const o = openings === null ? null : ownFaces(this, openings, 'shell')
     const walls = options.walls == null ? options.walls : [...options.walls].map(([faces, t]) => [ownFaces(this, faces, 'shell'), t] as const)
@@ -1120,7 +1121,7 @@ export class Part extends Body {
 
   /** The part grown (or shrunk, for a negative distance) by `distance` all round; `corners` 'round'
    * or 'sharp'. */
-  offset(distance: number, options: { corners?: string } = {}): Part {
+  offset(distance: number, options: { corners?: 'round' | 'sharp' } = {}): Part {
     const value = kernelOf(this) as sm.Part
     return adopt(wrap(call(() => value.offset(distance, options))) as Part, this)
   }
@@ -1164,7 +1165,7 @@ export class Part extends Body {
    * part and the others (taken where they are). */
   merge(...others: (Part | Iterable<Part>)[]): Part {
     const value = kernelOf(this) as sm.Part
-    const parts = flatten(others).map((o) => operand(o, this, 'merge') as sm.Part)
+    const parts = itemsOf(others).map((o) => operand(o, this, 'merge') as sm.Part)
     return adopt(wrap(call(() => value.merge(...parts))) as Part, this)
   }
 
@@ -1181,17 +1182,17 @@ export class Part extends Body {
   }
 
   /** The cell of a merged part a point (in the part's frame) lies in; null outside. */
-  cellAt(point: THREE.Vector3Like, tol: number | null = null): Part | null {
+  cellAt(point: THREE.Vector3Like, tolerance: number | null = null): Part | null {
     const value = kernelOf(this) as sm.Part
-    const cell = call(() => value.cellAt(vec(point), tol))
+    const cell = call(() => value.cellAt(vec(point), tolerance))
     return cell === null ? null : (toThree(cell, this) as Part)
   }
 
   /** Where a point (in the part's frame) lies: 'inside', 'outside', or 'on' with the face, edge or
-   * vertex it lies on (within `tol`). */
-  classify(point: THREE.Vector3Like, tol: number | null = null): ['inside' | 'outside' | 'on', BrepFace | BrepEdge | BrepVertex | null] {
+   * vertex it lies on (within `tolerance`). */
+  classify(point: THREE.Vector3Like, tolerance: number | null = null): ['inside' | 'outside' | 'on', BrepFace | BrepEdge | BrepVertex | null] {
     const value = kernelOf(this) as sm.Part
-    const [where, shape] = call(() => value.classify(vec(point), tol))
+    const [where, shape] = call(() => value.classify(vec(point), tolerance))
     return [where as 'inside' | 'outside' | 'on', shape === null ? null : (toThree(shape, this) as BrepFace | BrepEdge | BrepVertex)]
   }
 
@@ -1281,14 +1282,14 @@ export class Part extends Body {
 
   /** A region of a face moved by `by` (a distance along its normal or a Vector3), the face bending
    * smoothly around it. */
-  warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Part {
+  warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part {
     const value = kernelOf(this) as sm.Part
     const [f] = ownFaces(this, face, 'warp')
     return adopt(wrap(call(() => value.warp(f, regionOf(region, this, 'warp') as never, typeof by === 'number' ? by : vec(by), options))) as Part, this)
   }
 
   /** A region of a face pressed flat onto a plane (a THREE.Plane in the part's frame, or a face). */
-  flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: string } = {}): Part {
+  flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part {
     const value = kernelOf(this) as sm.Part
     const [f] = ownFaces(this, face, 'flatten')
     const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'flatten') as sm.Face)
@@ -1445,8 +1446,8 @@ export class Shell extends Body {
   }
 
   /** The sheet extended past its free edges (or those given of them) by `distance`; `continuity`
-   * 'G1' or 'G2' with the surface. */
-  extend(distance: number, options: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: string } = {}): Shell {
+   * 'natural' (the default), 'G1' or 'G2' with the surface. */
+  extend(distance: number, options: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: 'natural' | 'G1' | 'G2' } = {}): Shell {
     const sides = options.sides == null ? options.sides : ownEdges(this, options.sides, 'extend')
     return same<Shell>(this, (v: sm.Shell) => v.extend(distance, { ...options, sides }))
   }
@@ -1472,14 +1473,14 @@ export class Shell extends Body {
   }
 
   /** A region of a face of the sheet moved by `by` (a distance along its normal or a Vector3). */
-  warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: string } = {}): Shell {
+  warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Shell {
     const [f] = ownFaces(this, face, 'warp')
     const r = regionOf(region, this, 'warp')
     return same<Shell>(this, (v: sm.Shell) => v.warp(f, r as never, typeof by === 'number' ? by : vec(by), options))
   }
 
   /** A region of a face of the sheet pressed flat onto a plane (a THREE.Plane in its frame, or a face). */
-  flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: string } = {}): Shell {
+  flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Shell {
     const [f] = ownFaces(this, face, 'flatten')
     const r = regionOf(region, this, 'flatten')
     const p = (plane as THREE.Plane).isPlane ? toPlane(plane as THREE.Plane) : (operand(plane, this, 'flatten') as sm.Face)
@@ -1488,19 +1489,19 @@ export class Shell extends Body {
 
   /** This sheet and other sheets, parts or faces (taken where they are), sewn into one where they meet. */
   fuse(...others: (Shell | Part | BrepFace | Iterable<Shell | Part | BrepFace>)[]): Shell {
-    const tools = flatten(others).map((o) => operand(o, this, 'fuse') as sm.Shell)
+    const tools = itemsOf(others).map((o) => operand(o, this, 'fuse') as sm.Shell)
     return same<Shell>(this, (v: sm.Shell) => v.fuse(...tools))
   }
 
   /** The sheet with what lies inside the parts (taken where they are) cut away. */
   cut(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell {
-    const tools = flatten(others).map((o) => operand(o, this, 'cut') as sm.Part)
+    const tools = itemsOf(others).map((o) => operand(o, this, 'cut') as sm.Part)
     return same<Shell>(this, (v: sm.Shell) => v.cut(...tools))
   }
 
   /** The piece of the sheet inside the parts (taken where they are). */
   intersect(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell {
-    const tools = flatten(others).map((o) => operand(o, this, 'intersect') as sm.Part)
+    const tools = itemsOf(others).map((o) => operand(o, this, 'intersect') as sm.Part)
     return same<Shell>(this, (v: sm.Shell) => v.intersect(...tools))
   }
 
@@ -1679,19 +1680,19 @@ export class Sketch extends Shell {
 
   private boolean(op: 'fuse' | 'cut' | 'intersect', others: readonly (Sketch | Iterable<Sketch>)[]): Sketch {
     const value = kernelOf(this) as sm.Sketch
-    const tools = flatten(others).map((o) => operand(o, this, op) as sm.Sketch)
+    const tools = itemsOf(others).map((o) => operand(o, this, op) as sm.Sketch)
     return adopt(wrap(call(() => value[op](...tools))) as Sketch, this)
   }
 
-  /** The region grown (shrunk, negative) by `distance` all round; `corners` 'round' or 'sharp'
-   * (`round` rounds the outside corners of an inward offset too). */
-  override offset(distance: number, options: { corners?: string; round?: boolean | null } = {}): Sketch {
+  /** The region grown (shrunk, negative) by `distance` all round; `corners` 'round' (the default),
+   * 'sharp' or 'chamfer'. */
+  override offset(distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer' } = {}): Sketch {
     return same<Sketch>(this, (v: sm.Sketch) => v.offset(distance, options))
   }
 
   /** The regions this one or the others cover, but not both. */
   xor(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
-    const tools = flatten(others).map((o) => operand(o, this, 'xor') as sm.Sketch)
+    const tools = itemsOf(others).map((o) => operand(o, this, 'xor') as sm.Sketch)
     return same<Sketch>(this, (v: sm.Sketch) => v.xor(...tools))
   }
 
@@ -1701,8 +1702,8 @@ export class Sketch extends Shell {
   }
 
   /** The region with its corners cut off (all, or those at `vertices`). */
-  chamfer(length: number, vertices: Iterable<BrepVertex | THREE.Vector3Like> | null = null): Sketch {
-    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof BrepVertex ? (subOf(x) as sm.Vertex) : vec(x)))
+  chamfer(length: number, vertices: BrepVertex | THREE.Vector3Like | Iterable<BrepVertex | THREE.Vector3Like> | null = null): Sketch {
+    const v = vertices === null ? null : corners(vertices).map((x) => (x instanceof BrepVertex ? (subOf(x) as sm.Vertex) : vec(x)))
     return same<Sketch>(this, (k: sm.Sketch) => k.chamfer(length, v))
   }
 
@@ -1746,11 +1747,17 @@ export class Sketch extends Shell {
   }
 
   /** The region with its corners rounded (all, or those at `vertices`). */
-  fillet(radius: number, vertices: Iterable<BrepVertex | THREE.Vector3Like> | null = null): Sketch {
+  fillet(radius: number, vertices: BrepVertex | THREE.Vector3Like | Iterable<BrepVertex | THREE.Vector3Like> | null = null): Sketch {
     const value = kernelOf(this) as sm.Sketch
-    const v = vertices === null ? null : [...vertices].map((x) => (x instanceof BrepVertex ? (subOf(x) as sm.Vertex) : vec(x)))
+    const v = vertices === null ? null : corners(vertices).map((x) => (x instanceof BrepVertex ? (subOf(x) as sm.Vertex) : vec(x)))
     return adopt(wrap(call(() => value.fillet(radius, v))) as Sketch, this)
   }
+}
+
+/** The corners a sketch's or wire's fillet or chamfer takes: one vertex or point, or several. */
+function corners(vertices: BrepVertex | THREE.Vector3Like | Iterable<BrepVertex | THREE.Vector3Like>): (BrepVertex | THREE.Vector3Like)[] {
+  if (vertices instanceof BrepVertex || typeof (vertices as THREE.Vector3Like).x === 'number') return [vertices as BrepVertex | THREE.Vector3Like]
+  return [...(vertices as Iterable<BrepVertex | THREE.Vector3Like>)]
 }
 
 Object.defineProperty(Sketch.prototype, 'isSketch', { value: true })
@@ -1957,9 +1964,16 @@ export class BrepFace extends THREE.Mesh {
     return call(() => f.distanceTo(o))
   }
 
+  /** The face's triangles as a TriangleMesh (smlibpy's `mesh`), where its body is: as finely as its
+   * body's geometry unless `options` say otherwise (`tolerance`, `angle` in radians). */
+  toMesh(options: TessellateOptions = {}): TriangleMesh {
+    const body = state(this).owner
+    return tessellateMesh(this, options.tolerance === undefined ? (body?.tolerance ?? null) : options.tolerance, options.angle ?? body?.angle ?? (15 * Math.PI) / 180, { maxEdge: options.maxEdge })
+  }
+
   /** The face's edges: its body's (with `seams`, also the seams where its surface meets itself). */
-  edges(seams = false): ShapeList<BrepEdge> {
-    return ownList(this, 'edges', (f) => (f as sm.Face).edges(seams))
+  edges(options: { seams?: boolean } = {}): ShapeList<BrepEdge> {
+    return ownList(this, 'edges', (f) => (f as sm.Face).edges(options))
   }
 
   vertices(): ShapeList<BrepVertex> {
@@ -2128,8 +2142,9 @@ export class BrepFace extends THREE.Mesh {
     return toThree(call(() => f.untrimmed()), this) as Shell
   }
 
-  /** The face extended past its edges (or those given of them) by `distance`, as a sheet. */
-  extend(distance: number, options: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: string } = {}): Shell {
+  /** The face extended past its edges (or those given of them) by `distance`, as a sheet;
+   * `continuity` 'natural' (the default), 'G1' or 'G2' with the surface. */
+  extend(distance: number, options: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: 'natural' | 'G1' | 'G2' } = {}): Shell {
     const f = this.face
     const owner = state(this).owner
     const sides = options.sides == null || owner === null ? options.sides : ownEdges(owner, options.sides, 'extend')
@@ -2367,10 +2382,10 @@ export class BrepEdge extends THREE.Line {
     return vector3(call(() => e.normal))
   }
 
-  /** How smoothly the edge's faces meet along it; `angleTol` in radians. */
-  continuity(samples = 16, options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+  /** How smoothly the edge's faces meet along it; `angleTolerance` in radians. */
+  continuity(samples = 16, options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
     const e = this.edge
-    return continuityOf(call(() => e.continuity(samples, { ...options, angleTol: options.angleTol === undefined ? undefined : degrees(options.angleTol) })))
+    return continuityOf(call(() => e.continuity(samples, { ...options, angleTolerance: options.angleTolerance === undefined ? undefined : degrees(options.angleTolerance) })))
   }
 
   /** The edge's point nearest to `point` (both in its frame). */
@@ -2399,7 +2414,7 @@ export class BrepEdge extends THREE.Line {
 
   /** The edge made longer by `distance` at its 'end' (default), 'start' or 'both'; `continuity`
    * 'G1', 'G2' or 'natural' for curves that are not lines or arcs. */
-  extend(distance: number, options: { end?: string; continuity?: string } = {}): BrepEdge {
+  extend(distance: number, options: { end?: 'start' | 'end' | 'both'; continuity?: 'G1' | 'G2' | 'natural' } = {}): BrepEdge {
     const e = this.edge
     return placedCurve(call(() => e.extend(distance, options)), this) as BrepEdge
   }
@@ -2760,7 +2775,7 @@ export class Wire extends THREE.Line {
 
   /** A parallel wire `distance` away in its plane (or `plane`, in its frame); `corners` 'round',
    * 'sharp' or 'chamfer'. */
-  offset(distance: number, options: { corners?: string; plane?: THREE.Plane | null } = {}): Wire {
+  offset(distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer'; plane?: THREE.Plane | null } = {}): Wire {
     const w = this.wire
     return placedCurve(call(() => w.offset(distance, { ...options, plane: options.plane == null ? options.plane : toPlane(options.plane) })), this) as Wire
   }
@@ -2783,10 +2798,10 @@ export class Wire extends THREE.Line {
     return call(() => w.minRadiusAt())
   }
 
-  /** How smoothly the wire's edges meet (the worst joint); `angleTol` in radians. */
-  continuity(options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+  /** How smoothly the wire's edges meet (the worst joint); `angleTolerance` in radians. */
+  continuity(options: { angleTolerance?: number; curvatureTolerance?: number } = {}): Continuity {
     const w = this.wire
-    return continuityOf(call(() => w.continuity({ ...options, angleTol: options.angleTol === undefined ? undefined : degrees(options.angleTol) })))
+    return continuityOf(call(() => w.continuity({ ...options, angleTolerance: options.angleTolerance === undefined ? undefined : degrees(options.angleTolerance) })))
   }
 
   /** The wire closed with a line from its end to its start. */
@@ -2820,9 +2835,9 @@ export class Wire extends THREE.Line {
   }
 
   /** The wire with its corners (all, or those at `vertices`) rounded. */
-  fillet(radius: number, vertices: Iterable<THREE.Vector3Like | BrepVertex> | null = null): Wire {
+  fillet(radius: number, vertices: BrepVertex | THREE.Vector3Like | Iterable<THREE.Vector3Like | BrepVertex> | null = null): Wire {
     const w = this.wire
-    const v = vertices === null ? null : [...vertices].map((x) => at(x) as sm.Vector | sm.Vertex)
+    const v = vertices === null ? null : corners(vertices).map((x) => at(x) as sm.Vector | sm.Vertex)
     return placedCurve(call(() => w.fillet(radius, v)), this) as Wire
   }
 
@@ -3121,19 +3136,19 @@ export class ShapeList<T = Item> extends Array<T> {
     return select(this, 'sortByDistance', [point, reverse])
   }
 
-  /** Groups of items with equal keys (within `tol`), in ascending key order. */
-  groupBy(key: SortKey<T> = UP, tol = 1e-4): ShapeList<T>[] {
-    return select(this, 'groupBy', [sortKey(key), tol])
+  /** Groups of items with equal keys (within `tolerance`), in ascending key order. */
+  groupBy(key: SortKey<T> = UP, tolerance = 1e-4): ShapeList<T>[] {
+    return select(this, 'groupBy', [sortKey(key), tolerance])
   }
 
-  /** The items with the greatest key (all of them, within `tol`). */
-  maxBy(key: SortKey<T> = UP, tol = 1e-4): ShapeList<T> {
-    return select(this, 'maxBy', [sortKey(key), tol])
+  /** The items with the greatest key (all of them, within `tolerance`). */
+  maxBy(key: SortKey<T> = UP, tolerance = 1e-4): ShapeList<T> {
+    return select(this, 'maxBy', [sortKey(key), tolerance])
   }
 
-  /** The items with the smallest key (all of them, within `tol`). */
-  minBy(key: SortKey<T> = UP, tol = 1e-4): ShapeList<T> {
-    return select(this, 'minBy', [sortKey(key), tol])
+  /** The items with the smallest key (all of them, within `tolerance`). */
+  minBy(key: SortKey<T> = UP, tolerance = 1e-4): ShapeList<T> {
+    return select(this, 'minBy', [sortKey(key), tolerance])
   }
 
   /** The edges where faces meet tangentially. */
@@ -3166,14 +3181,14 @@ export class ShapeList<T = Item> extends Array<T> {
     return select(this, 'hitBy', [ray])
   }
 
-  /** The items through a point (within `tol`). */
-  atPoint(point: THREE.Vector3Like, tol = 1e-4): ShapeList<T> {
-    return select(this, 'atPoint', [point, tol])
+  /** The items through a point (within `tolerance`). */
+  atPoint(point: THREE.Vector3Like, tolerance = 1e-4): ShapeList<T> {
+    return select(this, 'atPoint', [point, tolerance])
   }
 
   /** The items that came from these shapes' faces and edges (through the operations since). */
   derivedFrom(...shapes: (Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>)[]): ShapeList<T> {
-    return select(this, 'derivedFrom', flatten(shapes as (Body | BrepFace | BrepEdge)[]))
+    return select(this, 'derivedFrom', itemsOf(shapes as (Body | BrepFace | BrepEdge)[]))
   }
 
   /** The edges (or faces) where what came from `a` meets what came from `b`. */

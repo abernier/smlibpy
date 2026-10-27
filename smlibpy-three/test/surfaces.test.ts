@@ -160,7 +160,7 @@ test('stitch: the six faces of a box sew into a Part, pieces taken where they ar
 
 test('fill closes a hole tangent to its sheet: a ball cut off at its bottom, in the frame of the sheet', () => {
   // a ball (its poles on y) cut off below y = -8: its round face, a sheet with a hole, closed by a
-  // tangent cap (the kernel's tangent fill fails at the top: see the next test)
+  // tangent cap
   const cutter = new Box(30, 30, 30)
   cutter.position.y = -23
   const cut = new Ball(10).cut(cutter)
@@ -170,7 +170,7 @@ test('fill closes a hole tangent to its sheet: a ball cut off at its bottom, in 
   assert.ok(cap instanceof Shell)
   const ball = stitch(dome, cap)
   assert.ok(ball instanceof Part)
-  close(ball.volume, 4141.52, 0.01) // (smlibpy's)
+  close(ball.volume, 4141.58, 0.01) // (smlibpy's: its round rims cut into four equal sides)
   // the sheet moved: the cap is in its frame and still meets it
   dome.position.set(0, 40, 0)
   const moved = fill(dome.edges().filter((e) => e.faces().length === 1))
@@ -178,16 +178,15 @@ test('fill closes a hole tangent to its sheet: a ball cut off at its bottom, in 
   closeBox(moved.bbox(), cap.bbox(), 1e-9)
 })
 
-// (todo: the kernel's tangent fill fails on a sphere turned as Ball turns the kernel's sphere, whose
-// poles are on z, to stand on y: on such a sphere only the hole facing -y fills; on the kernel's own
-// sphere, the hole about its +z pole fills. src/cpp/fill.cpp, its tangent patches.)
-test('fill closes a hole at the top of a ball, as at its bottom', { todo: "the kernel's tangent fill fails on a turned sphere" }, () => {
+test('fill closes a hole at the top of a ball, as at its bottom', () => {
+  // (the kernel's tangent fill once failed on a turned sphere, as Ball turns the kernel's, whose poles
+  // are on z, to stand on y: only the hole facing -y filled)
   const cutter = new Box(30, 30, 30)
   cutter.position.y = 23
   const dome = stitch(new Ball(10).cut(cutter).faces().filter((f) => f.geomType === 'sphere'))
   const ball = stitch(dome, fill(dome.edges().filter((e) => e.faces().length === 1)))
   assert.ok(ball instanceof Part)
-  close(ball.volume, 4141.52, 0.01)
+  close(ball.volume, 4141.58, 0.01)
 })
 
 test('fill closes four curves with a Coons patch, in any order', () => {

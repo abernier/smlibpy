@@ -10,9 +10,9 @@ are, results in the frame of what an operation was called on, angles in radians.
 - [Solids](#solids): `Box`, `Cylinder`, `Cone`, `Ball`, `Torus`, `Pyramid`, `Wedge`, `AnnularSector`, `Hole`, `CounterBoreHole`, `CounterSinkHole`, `PlacementOptions`, `SectorOptions`, `BallOptions`, `TorusOptions`
 - [Sketches and text](#sketches-and-text): `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`, `RegularPolygon`, `TriangleSketch`, `Trapezoid`, `Slot`, `ArcSlot`, `Stroke`, `Hull`, `Text`, `Profile`, `OpenTypeFont`, `makeFace`, `loadFont`, `DEFAULT_FONT`, `CornerOptions`, `SketchPlacement`, `SketchPoint`, `TrapezoidOptions`, `StrokeOptions`, `HullItem`, `TextOptions`, `Coordinates`, `FontSource`, `PairAdjustment`, `Contour`
 - [Curves](#curves): `Segment`, `PolarLine`, `Polyline`, `FilletPolyline`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `SagittaArc`, `TangentArc`, `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spline`, `Bezier`, `Helix`, `Spiral`, `fitCurve`, `makeCompatible`, `ArcSideOptions`, `HelixOptions`, `FitCurveOptions`
-- [Operations and patterns](#operations-and-patterns): `extrude`, `revolve`, `sweep`, `loft`, `swing`, `fillet`, `chamfer`, `shell`, `offset`, `mirror`, `split`, `merge`, `section`, `thicken`, `GridLocations`, `PolarLocations`, `HexLocations`, `Locations`, `TOLERANCE`, `ACCURACY`, `X`, `Y`, `Z`, `ProfileLike`, `LoftOptions`
+- [Operations and patterns](#operations-and-patterns): `extrude`, `revolve`, `sweep`, `loft`, `swing`, `fillet`, `chamfer`, `shell`, `offset`, `mirror`, `split`, `merge`, `section`, `thicken`, `fuse`, `cut`, `intersect`, `xor`, `imprint`, `filletPreview`, `draft`, `moveFaces`, `offsetFaces`, `removeFaces`, `removeFillets`, `push`, `warp`, `flatten`, `extend`, `trim`, `matchEdge`, `mergeFaces`, `project`, `silhouette`, `intersectionCurves`, `partingLine`, `slices`, `scale`, `GridLocations`, `PolarLocations`, `HexLocations`, `Locations`, `TOLERANCE`, `ACCURACY`, `X`, `Y`, `Z`, `ProfileLike`, `LoftOptions`
 - [Measurements](#measurements): `MassProperties`, `SectionProperties`, `DraftAnalysis`, `ClosestPoints`, `Curvature`, `Continuity`, `RayHit`, `Problem`, `FaceDraft`, `BodyInfo`
-- [Deformations](#deformations): `Lattice`, `twist`, `taper`, `bend`, `unroll`, `RangeOptions`, `TwistOptions`, `TaperOptions`, `BendOptions`, `UnrollOptions`, `LatticeLayers`, `LatticeIndex`, `LatticeAxis`
+- [Deformations](#deformations): `Lattice`, `twist`, `taper`, `bend`, `unroll`, `deform`, `RangeOptions`, `TwistOptions`, `TaperOptions`, `BendOptions`, `UnrollOptions`, `LatticeLayers`, `LatticeIndex`, `LatticeAxis`
 - [Surfaces](#surfaces): `FitReport`, `StitchReport`, `surface`, `nurbsSurface`, `ruled`, `fill`, `network`, `surfaceFillet`, `blend`, `stitch`, `CurveLike`, `SurfaceOptions`, `NurbsSurfaceData`, `FillOptions`, `SurfaceFilletOptions`, `BlendOptions`, `StitchOptions`, `StitchPiece`
 - [Sheet metal](#sheet-metal): `Bend`, `FlatPattern`, `bendAllowance`, `bendDeduction`, `developedLength`, `fold`, `flange`, `bends`, `unfold`, `flatPattern`, `KFactor`, `BendAllowanceOptions`, `DevelopedLengthOptions`, `FoldOptions`, `FlangeOptions`, `UnfoldOptions`
 - [Triangle meshes](#triangle-meshes): `TriangleMesh`, `tessellate`, `TessellateOptions`, `DecimateOptions`, `RepairReport`, `MeshHit`
@@ -199,13 +199,13 @@ export class Part extends Body {
      */
     shell(thickness: number, openings?: FacesLike | null, options?: {
         outward?: boolean;
-        corners?: string | null;
+        corners?: 'round' | 'sharp' | null;
         walls?: ReadonlyMap<BrepFace, number> | Iterable<readonly [FacesLike, number]> | null;
     }): Part;
     /** The part grown (or shrunk, for a negative distance) by `distance` all round; `corners` 'round'
      * or 'sharp'. */
     offset(distance: number, options?: {
-        corners?: string;
+        corners?: 'round' | 'sharp';
     }): Part;
     /** The part on the side of `plane` (in its frame) the plane's normal points to, as three's
      * clipping keeps it; 'below' the other side, 'both' both. A face or sheet splits it too. */
@@ -227,10 +227,10 @@ export class Part extends Body {
     /** The parts a merged part was made of. */
     get sources(): Part[];
     /** The cell of a merged part a point (in the part's frame) lies in; null outside. */
-    cellAt(point: THREE.Vector3Like, tol?: number | null): Part | null;
+    cellAt(point: THREE.Vector3Like, tolerance?: number | null): Part | null;
     /** Where a point (in the part's frame) lies: 'inside', 'outside', or 'on' with the face, edge or
-     * vertex it lies on (within `tol`). */
-    classify(point: THREE.Vector3Like, tol?: number | null): ['inside' | 'outside' | 'on', BrepFace | BrepEdge | BrepVertex | null];
+     * vertex it lies on (within `tolerance`). */
+    classify(point: THREE.Vector3Like, tolerance?: number | null): ['inside' | 'outside' | 'on', BrepFace | BrepEdge | BrepVertex | null];
     /** The sheets a fillet of these edges would add, without making it (to show it before). */
     filletPreview(edges: EdgesLike, radius: number, options?: {
         propagate?: boolean;
@@ -275,11 +275,11 @@ export class Part extends Body {
     /** A region of a face moved by `by` (a distance along its normal or a Vector3), the face bending
      * smoothly around it. */
     warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: {
-        continuity?: string;
+        continuity?: 'crease' | 'G1' | 'G2';
     }): Part;
     /** A region of a face pressed flat onto a plane (a THREE.Plane in the part's frame, or a face). */
     flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: {
-        continuity?: string;
+        continuity?: 'crease' | 'G1' | 'G2';
     }): Part;
     /** The part placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (both in its frame):
      * its origin to the face's center, its z axis along the face's normal. */
@@ -351,10 +351,10 @@ export class Shell extends Body {
     /** The sheet with its normals turned the other way. */
     flipped(): Shell;
     /** The sheet extended past its free edges (or those given of them) by `distance`; `continuity`
-     * 'G1' or 'G2' with the surface. */
+     * 'natural' (the default), 'G1' or 'G2' with the surface. */
     extend(distance: number, options?: {
         sides?: BrepEdge | Iterable<BrepEdge> | null;
-        continuity?: string;
+        continuity?: 'natural' | 'G1' | 'G2';
     }): Shell;
     /** The sheet with one of its free edges moved onto a curve (taken where it is), the surface
      * following over `extent` of its width. */
@@ -367,11 +367,11 @@ export class Shell extends Body {
     push(face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Shell;
     /** A region of a face of the sheet moved by `by` (a distance along its normal or a Vector3). */
     warp(face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: {
-        continuity?: string;
+        continuity?: 'crease' | 'G1' | 'G2';
     }): Shell;
     /** A region of a face of the sheet pressed flat onto a plane (a THREE.Plane in its frame, or a face). */
     flatten(face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: {
-        continuity?: string;
+        continuity?: 'crease' | 'G1' | 'G2';
     }): Shell;
     /** This sheet and other sheets, parts or faces (taken where they are), sewn into one where they meet. */
     fuse(...others: (Shell | Part | BrepFace | Iterable<Shell | Part | BrepFace>)[]): Shell;
@@ -439,18 +439,17 @@ export class Sketch extends Shell {
     cut(...others: (Sketch | Iterable<Sketch>)[]): Sketch;
     /** What this region and the others share. */
     intersect(...others: (Sketch | Iterable<Sketch>)[]): Sketch;
-    /** The region grown (shrunk, negative) by `distance` all round; `corners` 'round' or 'sharp'
-     * (`round` rounds the outside corners of an inward offset too). */
+    /** The region grown (shrunk, negative) by `distance` all round; `corners` 'round' (the default),
+     * 'sharp' or 'chamfer'. */
     offset(distance: number, options?: {
-        corners?: string;
-        round?: boolean | null;
+        corners?: 'round' | 'sharp' | 'chamfer';
     }): Sketch;
     /** The regions this one or the others cover, but not both. */
     xor(...others: (Sketch | Iterable<Sketch>)[]): Sketch;
     /** The region facing the other way. */
     flipped(): Sketch;
     /** The region with its corners cut off (all, or those at `vertices`). */
-    chamfer(length: number, vertices?: Iterable<BrepVertex | THREE.Vector3Like> | null): Sketch;
+    chamfer(length: number, vertices?: BrepVertex | THREE.Vector3Like | Iterable<BrepVertex | THREE.Vector3Like> | null): Sketch;
     /** Area, centroid and second moments of the region. */
     sectionProperties(): SectionProperties;
     /** A solid: the region swung around an outline, as a rim or a frame is (smlibpy's swing): a
@@ -468,7 +467,7 @@ export class Sketch extends Shell {
     /** The region with these faces named. */
     nameFaces(faces: FacesLike, name: string | null): Sketch;
     /** The region with its corners rounded (all, or those at `vertices`). */
-    fillet(radius: number, vertices?: Iterable<BrepVertex | THREE.Vector3Like> | null): Sketch;
+    fillet(radius: number, vertices?: BrepVertex | THREE.Vector3Like | Iterable<BrepVertex | THREE.Vector3Like> | null): Sketch;
 }
 ```
 
@@ -503,8 +502,13 @@ export class BrepFace extends THREE.Mesh {
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The shortest distance to a point (in its body's frame) or to another shape (where it is). */
     distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
+    /** The face's triangles as a TriangleMesh (smlibpy's `mesh`), where its body is: as finely as its
+     * body's geometry unless `options` say otherwise (`tolerance`, `angle` in radians). */
+    toMesh(options?: TessellateOptions): TriangleMesh;
     /** The face's edges: its body's (with `seams`, also the seams where its surface meets itself). */
-    edges(seams?: boolean): ShapeList<BrepEdge>;
+    edges(options?: {
+        seams?: boolean;
+    }): ShapeList<BrepEdge>;
     vertices(): ShapeList<BrepVertex>;
     /** The faces of its body that share an edge with it. */
     neighbors(): ShapeList<BrepFace>;
@@ -575,10 +579,11 @@ export class BrepFace extends THREE.Mesh {
     flipped(): Shell;
     /** The face's whole surface, its trims taken off, as a sheet. */
     untrimmed(): Shell;
-    /** The face extended past its edges (or those given of them) by `distance`, as a sheet. */
+    /** The face extended past its edges (or those given of them) by `distance`, as a sheet;
+     * `continuity` 'natural' (the default), 'G1' or 'G2' with the surface. */
     extend(distance: number, options?: {
         sides?: BrepEdge | Iterable<BrepEdge> | null;
-        continuity?: string;
+        continuity?: 'natural' | 'G1' | 'G2';
     }): Shell;
     /** True for the same face of the same body (of a clone too). */
     equals(other: unknown): boolean;
@@ -645,10 +650,10 @@ export class BrepEdge extends THREE.Line {
     get direction(): THREE.Vector3;
     /** The normal of the plane of a planar curve (an arc's axis). */
     get normal(): THREE.Vector3;
-    /** How smoothly the edge's faces meet along it; `angleTol` in radians. */
+    /** How smoothly the edge's faces meet along it; `angleTolerance` in radians. */
     continuity(samples?: number, options?: {
-        angleTol?: number;
-        curvatureTol?: number;
+        angleTolerance?: number;
+        curvatureTolerance?: number;
     }): Continuity;
     /** The edge's point nearest to `point` (both in its frame). */
     closestPoint(point: THREE.Vector3Like | BrepVertex, target?: THREE.Vector3): THREE.Vector3;
@@ -661,8 +666,8 @@ export class BrepEdge extends THREE.Line {
     /** The edge made longer by `distance` at its 'end' (default), 'start' or 'both'; `continuity`
      * 'G1', 'G2' or 'natural' for curves that are not lines or arcs. */
     extend(distance: number, options?: {
-        end?: string;
-        continuity?: string;
+        end?: 'start' | 'end' | 'both';
+        continuity?: 'G1' | 'G2' | 'natural';
     }): BrepEdge;
     /** Where the edge crosses another shape (taken where it is), in its frame. */
     intersections(other: Body | BrepFace | BrepEdge | Wire | Iterable<Body | BrepFace | BrepEdge | Wire>, options?: {
@@ -791,7 +796,7 @@ export class Wire extends THREE.Line {
     /** A parallel wire `distance` away in its plane (or `plane`, in its frame); `corners` 'round',
      * 'sharp' or 'chamfer'. */
     offset(distance: number, options?: {
-        corners?: string;
+        corners?: 'round' | 'sharp' | 'chamfer';
         plane?: THREE.Plane | null;
     }): Wire;
     /** The wire as lines and arcs within `tolerance`. */
@@ -800,10 +805,10 @@ export class Wire extends THREE.Line {
     minRadius(): number;
     /** The fraction of the length where the radius of curvature is smallest. */
     minRadiusAt(): number;
-    /** How smoothly the wire's edges meet (the worst joint); `angleTol` in radians. */
+    /** How smoothly the wire's edges meet (the worst joint); `angleTolerance` in radians. */
     continuity(options?: {
-        angleTol?: number;
-        curvatureTol?: number;
+        angleTolerance?: number;
+        curvatureTolerance?: number;
     }): Continuity;
     /** The wire closed with a line from its end to its start. */
     close(): Wire;
@@ -816,7 +821,7 @@ export class Wire extends THREE.Line {
     /** The wire placed on a face (where it is), a THREE.Plane or a THREE.Matrix4 (in its frame). */
     on(target: BrepFace | THREE.Plane | THREE.Matrix4): Wire;
     /** The wire with its corners (all, or those at `vertices`) rounded. */
-    fillet(radius: number, vertices?: Iterable<THREE.Vector3Like | BrepVertex> | null): Wire;
+    fillet(radius: number, vertices?: BrepVertex | THREE.Vector3Like | Iterable<THREE.Vector3Like | BrepVertex> | null): Wire;
     /** three's raycast for a wire of its own; a body's is drawn as a highlight, not hit. */
     raycast(raycaster: THREE.Raycaster, intersects: THREE.Intersection[]): void;
     /** The region a closed, planar wire bounds. */
@@ -917,12 +922,12 @@ export class ShapeList<T = Item> extends Array<T> {
     filterBy(criterion: THREE.Vector3Like | string | ((item: T) => boolean)): ShapeList<T>;
     /** Sorted by distance from a point (in the body's frame), nearest first. */
     sortByDistance(point: THREE.Vector3Like, reverse?: boolean): ShapeList<T>;
-    /** Groups of items with equal keys (within `tol`), in ascending key order. */
-    groupBy(key?: SortKey<T>, tol?: number): ShapeList<T>[];
-    /** The items with the greatest key (all of them, within `tol`). */
-    maxBy(key?: SortKey<T>, tol?: number): ShapeList<T>;
-    /** The items with the smallest key (all of them, within `tol`). */
-    minBy(key?: SortKey<T>, tol?: number): ShapeList<T>;
+    /** Groups of items with equal keys (within `tolerance`), in ascending key order. */
+    groupBy(key?: SortKey<T>, tolerance?: number): ShapeList<T>[];
+    /** The items with the greatest key (all of them, within `tolerance`). */
+    maxBy(key?: SortKey<T>, tolerance?: number): ShapeList<T>;
+    /** The items with the smallest key (all of them, within `tolerance`). */
+    minBy(key?: SortKey<T>, tolerance?: number): ShapeList<T>;
     /** The edges where faces meet tangentially. */
     smooth(): ShapeList<T>;
     /** The edges that run on tangentially from these, these included. */
@@ -935,8 +940,8 @@ export class ShapeList<T = Item> extends Array<T> {
     fillets(maxRadius?: number | null): ShapeList<T>;
     /** The items a ray (in the body's frame) hits. */
     hitBy(ray: THREE.Ray): ShapeList<T>;
-    /** The items through a point (within `tol`). */
-    atPoint(point: THREE.Vector3Like, tol?: number): ShapeList<T>;
+    /** The items through a point (within `tolerance`). */
+    atPoint(point: THREE.Vector3Like, tolerance?: number): ShapeList<T>;
     /** The items that came from these shapes' faces and edges (through the operations since). */
     derivedFrom(...shapes: (Body | BrepFace | BrepEdge | Iterable<Body | BrepFace | BrepEdge>)[]): ShapeList<T>;
     /** The edges (or faces) where what came from `a` meets what came from `b`. */
@@ -1005,7 +1010,8 @@ export interface PushOptions {
     normal?: THREE.Vector3Like | null;
     /** How far around `at` the face follows. */
     radius?: number | null;
-    continuity?: string;
+    /** How the face stays joined to its neighbours: 'G0', 'G1' (the default) or 'G2'. */
+    continuity?: 'G0' | 'G1' | 'G2';
 }
 ```
 
@@ -1031,8 +1037,8 @@ export interface FilletOptions {
     fullness?: number;
     /** Round the edges that continue the given ones tangentially too (default true). */
     propagate?: boolean;
-    /** Where three rounds meet: "patch" (default) or "mitre". */
-    corners?: string;
+    /** Where three rounds meet: 'patch' (default) or 'mitre' ('miter'). */
+    corners?: 'patch' | 'mitre' | 'miter';
     /** Rounds stop this far from corners of three or more rounded edges, joined by one larger patch. */
     setback?: number | null;
 }
@@ -1051,8 +1057,8 @@ export interface ChamferOptions {
     reference?: BrepFace | Iterable<BrepFace> | null;
     /** Bevel the edges that continue the given ones tangentially too (default true). */
     propagate?: boolean;
-    /** Where three bevels meet: "patch" (default) or "mitre". */
-    corners?: string;
+    /** Where three bevels meet: 'patch' (default) or 'mitre' ('miter'). */
+    corners?: 'patch' | 'mitre' | 'miter';
 }
 ```
 
@@ -1100,7 +1106,7 @@ export type SortKey<T> = THREE.Vector3Like | string | ((item: T) => number);
 
 ## Solids
 
-smlibpy's solids, made as three's geometries are; heights run along y.
+smlibpy's solids, made as three's geometries are: their arguments, defaults and placement.
 
 ### Box
 
@@ -1350,7 +1356,7 @@ export interface TorusOptions extends PlacementOptions {
 
 ## Sketches and text
 
-Regions in the sketch's own 2D coordinates, on the ground of its frame (three's XZ plane), facing up.
+Regions in the sketch's own 2D coordinates, which are three's x and y: in the XY plane of its frame, facing +z.
 
 ### Rectangle
 
@@ -1873,7 +1879,7 @@ export type Contour = THREE.Vector2[][];
 
 ## Curves
 
-Edges and wires of their own: points are Vector3s, angles radians, planar curves lie on the ground.
+Edges and wires of their own: points are Vector3s, angles radians, planar curves lie in the XY plane.
 
 ### Segment
 
@@ -2161,7 +2167,7 @@ export interface FitCurveOptions {
 
 ## Operations and patterns
 
-Free functions take their first shape as the receiver; patterns are Matrix4s.
+Every operation of a body is a method and a function: the function takes the body first, as the receiver. Patterns are Matrix4s.
 
 ### extrude
 
@@ -2234,25 +2240,25 @@ export function chamfer(vertices: BrepVertex | readonly BrepVertex[], length: nu
 ### shell
 
 ```ts
-/** A hollow part (see Part.shell). */
+/** A hollow part: `Part.shell`. */
 export function shell(part: Part, thickness: number, openings?: FacesLike | null, options?: Parameters<Part['shell']>[2]): Part;
 ```
 
 ### offset
 
 ```ts
-/** A shape grown (or shrunk) by `distance`: a part all round, a sketch's region in its plane, a sheet
- * or face along its normals, a curve in its plane. */
+/** A shape grown (or shrunk) by `distance`: a part all round (`Part.offset`), a sketch's region in its
+ * plane (`Sketch.offset`), a sheet or face along its normals, a curve in its plane (`Wire.offset`,
+ * `BrepEdge.offset`). */
 export function offset(shape: Part, distance: number, options?: {
-    corners?: string;
+    corners?: 'round' | 'sharp';
 }): Part;
 export function offset(shape: Sketch, distance: number, options?: {
-    corners?: string;
-    round?: boolean | null;
+    corners?: 'round' | 'sharp' | 'chamfer';
 }): Sketch;
 export function offset(shape: Shell | BrepFace, distance: number): Shell;
 export function offset(shape: Wire, distance: number, options?: {
-    corners?: string;
+    corners?: 'round' | 'sharp' | 'chamfer';
     plane?: THREE.Plane | null;
 }): Wire;
 export function offset(shape: BrepEdge, distance: number, options?: {
@@ -2263,14 +2269,14 @@ export function offset(shape: BrepEdge, distance: number, options?: {
 ### mirror
 
 ```ts
-/** A shape mirrored in `plane` (in its frame). */
+/** A shape mirrored in `plane` (in its frame): `mirror` of a Part, Shell, Sketch, BrepEdge or Wire. */
 export function mirror<S extends Part | Shell | Sketch | BrepEdge | Wire>(shape: S, plane: THREE.Plane): S;
 ```
 
 ### split
 
 ```ts
-/** The part split by a plane (see Part.split). */
+/** The part split by a plane, a face or a sheet: `Part.split`. */
 export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep: 'both'): [Part, Part];
 export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep?: 'above' | 'below'): Part;
 ```
@@ -2278,24 +2284,247 @@ export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep?: 
 ### merge
 
 ```ts
-/** A part of several cells, of these parts (each where it is), in the frame of the first. */
+/** A part of several cells, of these parts (each where it is), in the frame of the first: `Part.merge`. */
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 ```
 
 ### section
 
 ```ts
-/** The section of a part by a plane (in its frame). */
+/** The section of a part by a plane (in its frame): `Part.section`. */
 export function section(part: Part, plane: THREE.Plane): Sketch;
 ```
 
 ### thicken
 
 ```ts
-/** A solid of a sheet or face grown by `thickness` (`both`: half to each side). */
+/** A solid of a sheet or face grown by `thickness` (`both`: half to each side): `Shell.thicken`. */
 export function thicken(surface: Shell | BrepFace, thickness: number, options?: {
     both?: boolean;
 }): Part;
+```
+
+### fuse
+
+```ts
+/** The shape and the others (each where it is) fused: `fuse` of a Part, Shell or Sketch. */
+export function fuse(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch;
+export function fuse(shape: Shell, ...others: (Shell | Part | BrepFace | Iterable<Shell | Part | BrepFace>)[]): Shell;
+export function fuse(shape: Part, ...others: (Part | Iterable<Part>)[]): Part;
+```
+
+### cut
+
+```ts
+/** The shape with the others (each where it is) cut away: `cut` of a Part, Shell or Sketch. */
+export function cut(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch;
+export function cut(shape: Shell, ...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell;
+export function cut(shape: Part, ...others: (Part | Iterable<Part>)[]): Part;
+```
+
+### intersect
+
+```ts
+/** What the shape and the others (each where it is) share: `intersect` of a Part, Shell or Sketch
+ * (a part and a sheet: the sheet's part inside the part). */
+export function intersect(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch;
+export function intersect(shape: Shell, ...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell;
+export function intersect(shape: Part, sheet: Shell | BrepFace): Shell;
+export function intersect(shape: Part, ...others: (Part | Iterable<Part>)[]): Part;
+```
+
+### xor
+
+```ts
+/** The regions the sketch or the others cover, but not both: `Sketch.xor`. */
+export function xor(sketch: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch;
+```
+
+### imprint
+
+```ts
+/** The part with a tool's outline imprinted on its faces: `Part.imprint`. */
+export function imprint(part: Part, tool: Body | BrepFace | BrepEdge | Wire | Iterable<BrepFace | BrepEdge | Wire>, direction?: THREE.Vector3Like | null, options?: {
+    nearest?: boolean;
+}): Part;
+```
+
+### filletPreview
+
+```ts
+/** The faces a fillet of these edges (of one part) would add, as sheets: `Part.filletPreview`. */
+export function filletPreview(edges: EdgesLike, radius: number, options?: {
+    propagate?: boolean;
+}): ShapeList<Shell>;
+```
+
+### draft
+
+```ts
+/** The part with these faces drafted by `angle` radians from a neutral plane or face: `Part.draft`. */
+export function draft(part: Part, faces: FacesLike, angle: number, neutralPlane: THREE.Plane | BrepFace): Part;
+```
+
+### moveFaces
+
+```ts
+/** The part with these faces moved, the faces around them following: `Part.moveFaces`. */
+export function moveFaces(part: Part, faces: FacesLike, by: THREE.Matrix4 | THREE.Vector3Like): Part;
+```
+
+### offsetFaces
+
+```ts
+/** The part with these faces moved `distance` along their normals: `Part.offsetFaces`. */
+export function offsetFaces(part: Part, faces: FacesLike, distance: number): Part;
+```
+
+### removeFaces
+
+```ts
+/** The part without these faces, the faces around them closing the gap: `Part.removeFaces`. */
+export function removeFaces(part: Part, faces: FacesLike, options?: {
+    partial?: boolean;
+}): Part;
+```
+
+### removeFillets
+
+```ts
+/** The part without its fillets (or these of them): `Part.removeFillets`. */
+export function removeFillets(part: Part, faces?: FacesLike | null, options?: {
+    maxRadius?: number | null;
+    partial?: boolean;
+}): Part;
+```
+
+### push
+
+```ts
+/** The body with a region of a face pushed, the face bending smoothly around it: `push` of a Part or
+ * Shell. */
+export function push(shape: Part, face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Part;
+export function push(shape: Shell, face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Shell;
+```
+
+### warp
+
+```ts
+/** The body with a region of a face moved by `by`, the face bending smoothly around it: `warp` of a
+ * Part or Shell. */
+export function warp(shape: Part, face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: {
+    continuity?: 'crease' | 'G1' | 'G2';
+}): Part;
+export function warp(shape: Shell, face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: {
+    continuity?: 'crease' | 'G1' | 'G2';
+}): Shell;
+```
+
+### flatten
+
+```ts
+/** The body with a region of a face pressed flat onto a plane or face: `flatten` of a Part or Shell. */
+export function flatten(shape: Part, face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: {
+    continuity?: 'crease' | 'G1' | 'G2';
+}): Part;
+export function flatten(shape: Shell, face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: {
+    continuity?: 'crease' | 'G1' | 'G2';
+}): Shell;
+```
+
+### extend
+
+```ts
+/** A curve made longer (`BrepEdge.extend`), or a sheet or face extended past its edges
+ * (`Shell.extend`, `BrepFace.extend`). */
+export function extend(shape: BrepEdge, distance: number, options?: {
+    end?: 'start' | 'end' | 'both';
+    continuity?: 'G1' | 'G2' | 'natural';
+}): BrepEdge;
+export function extend(shape: Shell | BrepFace, distance: number, options?: {
+    sides?: BrepEdge | Iterable<BrepEdge> | null;
+    continuity?: 'natural' | 'G1' | 'G2';
+}): Shell;
+```
+
+### trim
+
+```ts
+/** A sheet trimmed by curves on it (`Shell.trim`), or a curve trimmed to a part of it (`BrepEdge.trim`,
+ * `Wire.trim`). */
+export function trim(shape: Shell, curves: BrepEdge | Wire | Iterable<BrepEdge | Wire>, keep: THREE.Vector3Like | 'split'): Shell;
+export function trim(shape: BrepEdge, start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): BrepEdge;
+export function trim(shape: Wire, start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): Wire;
+```
+
+### matchEdge
+
+```ts
+/** The sheet with one of its free edges moved onto a curve, the sheet following: `Shell.matchEdge`. */
+export function matchEdge(sheet: Shell, edge: BrepEdge, target: BrepEdge | Wire, options?: {
+    extent?: number;
+}): Shell;
+```
+
+### mergeFaces
+
+```ts
+/** The sheet with two neighbouring faces made one: `Shell.mergeFaces`. */
+export function mergeFaces(sheet: Shell, a: BrepFace, b: BrepFace): Shell;
+```
+
+### project
+
+```ts
+/** A curve projected onto a face (`BrepFace.project`) or onto a body along a direction
+ * (`Body.project`). */
+export function project(shape: BrepFace, curve: BrepEdge | Wire): ShapeList<BrepEdge>;
+export function project(shape: Part | Shell, curve: BrepEdge | Wire, direction?: THREE.Vector3Like, options?: {
+    nearest?: boolean;
+}): ShapeList<BrepEdge>;
+```
+
+### silhouette
+
+```ts
+/** The body's contour seen along a direction: `Body.silhouette`. */
+export function silhouette(shape: Part | Shell, direction?: THREE.Vector3Like): ShapeList<BrepEdge>;
+```
+
+### intersectionCurves
+
+```ts
+/** The curves where the body meets another body, a face or a plane: `Body.intersectionCurves`. */
+export function intersectionCurves(shape: Part | Shell, other: Part | Shell | BrepFace | THREE.Plane): ShapeList<BrepEdge>;
+```
+
+### partingLine
+
+```ts
+/** The line a mold parts along, seen along `direction`: `Part.partingLine`. */
+export function partingLine(part: Part, direction: THREE.Vector3Like): ShapeList<Wire>;
+```
+
+### slices
+
+```ts
+/** Sections `step` apart along `axis`: a part's as sketches (`Part.slices`), a triangle mesh's as
+ * wires (`TriangleMesh.slices`). */
+export function slices(shape: Part, step: number, axis?: THREE.Vector3Like): Sketch[];
+export function slices(shape: TriangleMesh, step: number, axis?: THREE.Vector3Like): ShapeList<Wire>[];
+```
+
+### scale
+
+```ts
+/**
+ * A copy of the shape scaled by `factor` (a number, or one per axis: a THREE.Vector3; none zero)
+ * about `center` (in its frame; default its origin), in its frame with its transform: the body (or
+ * curve, or triangle mesh) itself scaled, where its `scale` (three's, the object's transform) only
+ * places it so. A factor different per axis makes B-splines of round faces. (A function only: the
+ * method's name is three's.)
+ */
+export function scale<S extends Part | Shell | Sketch | BrepEdge | Wire | TriangleMesh>(shape: S, factor: number | THREE.Vector3Like, center?: THREE.Vector3Like): S;
 ```
 
 ### GridLocations
@@ -2406,7 +2635,7 @@ export interface LoftOptions {
 
 ## Measurements
 
-Records in three's types and axes, in the frame of what was measured.
+Records in three's types, in the frame of what was measured.
 
 ### MassProperties
 
@@ -2789,6 +3018,34 @@ export function unroll(point: THREE.Vector3Like, options: UnrollOptions): THREE.
 export function unroll(points: readonly THREE.Vector3Like[], options: UnrollOptions): THREE.Vector3[];
 ```
 
+### deform
+
+```ts
+/**
+ * The shape deformed by a lattice of control points (see Lattice; it is in the shape's frame): the
+ * function form of `Part.deform` and `Shell.deform`, and of `lattice.apply` for curves and points.
+ * Shapes, curves and points as for `twist`.
+ */
+export function deform(shape: Part, lattice: Lattice, options?: {
+    tolerance?: number | null;
+}): Part;
+export function deform(shape: Shell, lattice: Lattice, options?: {
+    tolerance?: number | null;
+}): Shell;
+export function deform(shape: BrepEdge, lattice: Lattice, options?: {
+    tolerance?: number | null;
+}): BrepEdge;
+export function deform(shape: Wire, lattice: Lattice, options?: {
+    tolerance?: number | null;
+}): Wire;
+export function deform(point: THREE.Vector3Like, lattice: Lattice, options?: {
+    tolerance?: number | null;
+}): THREE.Vector3;
+export function deform(points: readonly THREE.Vector3Like[], lattice: Lattice, options?: {
+    tolerance?: number | null;
+}): THREE.Vector3[];
+```
+
 ### RangeOptions
 
 ```ts
@@ -3141,7 +3398,7 @@ export interface SurfaceFilletOptions {
 export interface BlendOptions {
     /** How smoothly the blend meets the sheets: 'G1' tangent, 'G2' (default) with the same curvature
      * across the edges too, 'G3' also the same change of curvature. */
-    continuity?: string | number;
+    continuity?: 'G1' | 'G2' | 'G3' | number;
     /** How far the blend runs on in each sheet's direction before it turns, as a part of the gap
      * (default 1): one number, or one per edge; less is tighter, more bulges. */
     tension?: number | readonly [number, number];
@@ -3631,7 +3888,7 @@ export interface MeshHit extends RayHit {
 
 ## Files
 
-Loaders (THREE.Loader: load, loadAsync, parse) and exporters (parse); files are Z up as smlibpy's.
+Loaders (THREE.Loader: load, loadAsync, parse) and exporters (parse); files are read and written as they are.
 
 ### STEPLoader
 

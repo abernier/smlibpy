@@ -1,9 +1,12 @@
-// smlibpy's free functions, patterns and constants. The functions take their first shape as
-// smlibpy's methods take `self`: the result is in its frame and has its transform; the other
-// shapes are taken where they are. Patterns are THREE.Matrix4s in the XY plane, where sketches
-// lie: give them to `shape.at(locations)` for copies there.
+// smlibpy's functions, patterns and constants. Every operation of a body is a method and a function,
+// as smlibpy's are: the function takes the body first, as the method takes `this`, and gives what the
+// method gives (in the body's frame, with its transform); the other shapes are taken where they are.
+// Sweeps of profiles (extrude, revolve, sweep, swing) and what makes a shape of several (loft,
+// merge) are here too. Patterns are THREE.Matrix4s in the XY plane, where sketches lie: give them to
+// `shape.at(locations)` for copies there.
 import * as THREE from 'three'
-import { call, degrees, matrix4, sm, vec } from './kernel.ts'
+import { call, degrees, describe, matrix4, sm, vec } from './kernel.ts'
+import { TriangleMesh, kernelMesh, meshResult } from './mesh.ts'
 import {
   Body,
   BrepEdge,
@@ -20,15 +23,19 @@ import {
   kernelOfShape,
   operand,
   pathOf,
+  placedCurve,
   toKernel,
   toThree,
   wrap,
+  type ShapeList,
   type ChamferOptions,
   type EdgesLike,
   type ExtrudeOptions,
   type FacesLike,
   type FilletOptions,
   type FilletRadius,
+  type PushOptions,
+  type RegionLike,
   type SweepOptions,
 } from './shapes.ts'
 
@@ -167,52 +174,237 @@ function ownerOf(x: unknown, what: string): Body {
   return owner
 }
 
-/** A hollow part (see Part.shell). */
+// ------------------------------------------------------------ every operation of a body, as a function
+// Each is its method's function form, as smlibpy's are: the same name and parameters, the body first
+// (fillet, chamfer and filletPreview take the edges and find their part). The method does the work;
+// the function delegates, and a shape it does not take is a TypeError that says what it takes.
+
+/** `shape` if it is one of `kinds`, else a TypeError that says what `what` takes. */
+function shapeOf<T>(shape: unknown, kinds: readonly Function[], what: string, takes: string): T {
+  if (kinds.some((k) => shape instanceof k)) return shape as T
+  throw new TypeError(`${what} takes ${takes} first, not ${describe(shape)}`)
+}
+
+/** A hollow part: `Part.shell`. */
 export function shell(part: Part, thickness: number, openings: FacesLike | null = null, options: Parameters<Part['shell']>[2] = {}): Part {
-  return part.shell(thickness, openings, options)
+  return shapeOf<Part>(part, [Part], 'shell', 'a Part').shell(thickness, openings, options)
 }
 
-/** A shape grown (or shrunk) by `distance`: a part all round, a sketch's region in its plane, a sheet
- * or face along its normals, a curve in its plane. */
-export function offset(shape: Part, distance: number, options?: { corners?: string }): Part
-export function offset(shape: Sketch, distance: number, options?: { corners?: string; round?: boolean | null }): Sketch
+/** A shape grown (or shrunk) by `distance`: a part all round (`Part.offset`), a sketch's region in its
+ * plane (`Sketch.offset`), a sheet or face along its normals, a curve in its plane (`Wire.offset`,
+ * `BrepEdge.offset`). */
+export function offset(shape: Part, distance: number, options?: { corners?: 'round' | 'sharp' }): Part
+export function offset(shape: Sketch, distance: number, options?: { corners?: 'round' | 'sharp' | 'chamfer' }): Sketch
 export function offset(shape: Shell | BrepFace, distance: number): Shell
-export function offset(shape: Wire, distance: number, options?: { corners?: string; plane?: THREE.Plane | null }): Wire
+export function offset(shape: Wire, distance: number, options?: { corners?: 'round' | 'sharp' | 'chamfer'; plane?: THREE.Plane | null }): Wire
 export function offset(shape: BrepEdge, distance: number, options?: { plane?: THREE.Plane | null }): BrepEdge
-export function offset(shape: Part | Sketch | Shell | BrepFace | Wire | BrepEdge, distance: number, options: { corners?: string; round?: boolean | null; plane?: THREE.Plane | null } = {}): Part | Sketch | Shell | Wire | BrepEdge {
-  if (shape instanceof Sketch) return shape.offset(distance, options)
-  if (shape instanceof Part) return shape.offset(distance, options)
-  if (shape instanceof Shell || shape instanceof BrepFace) return shape.offset(distance)
-  return shape.offset(distance, options)
+export function offset(shape: Part | Sketch | Shell | BrepFace | Wire | BrepEdge, distance: number, options: { corners?: 'round' | 'sharp' | 'chamfer'; plane?: THREE.Plane | null } = {}): Part | Sketch | Shell | Wire | BrepEdge {
+  const s = shapeOf<Part | Shell | BrepFace | Wire | BrepEdge>(shape, [Part, Shell, BrepFace, Wire, BrepEdge], 'offset', 'a Part, Sketch, Shell, BrepFace, Wire or BrepEdge')
+  if (s instanceof Sketch) return s.offset(distance, options as { corners?: 'round' | 'sharp' | 'chamfer' })
+  if (s instanceof Part) return s.offset(distance, options as { corners?: 'round' | 'sharp' })
+  if (s instanceof Shell || s instanceof BrepFace) return s.offset(distance)
+  return s instanceof Wire ? s.offset(distance, options) : s.offset(distance, options)
 }
 
-/** A shape mirrored in `plane` (in its frame). */
+/** A shape mirrored in `plane` (in its frame): `mirror` of a Part, Shell, Sketch, BrepEdge or Wire. */
 export function mirror<S extends Part | Shell | Sketch | BrepEdge | Wire>(shape: S, plane: THREE.Plane): S {
-  return (shape as unknown as { mirror(p: THREE.Plane): S }).mirror(plane)
+  return (shapeOf(shape, [Part, Shell, BrepEdge, Wire], 'mirror', 'a Part, Shell, Sketch, BrepEdge or Wire') as unknown as { mirror(p: THREE.Plane): S }).mirror(plane)
 }
 
-/** The part split by a plane (see Part.split). */
+/** The part split by a plane, a face or a sheet: `Part.split`. */
 export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep: 'both'): [Part, Part]
 export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep?: 'above' | 'below'): Part
 export function split(part: Part, plane: THREE.Plane | BrepFace | Shell, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
-  return part.split(plane, keep as 'both')
+  return shapeOf<Part>(part, [Part], 'split', 'a Part').split(plane, keep as 'both')
 }
 
-/** A part of several cells, of these parts (each where it is), in the frame of the first. */
+/** A part of several cells, of these parts (each where it is), in the frame of the first: `Part.merge`. */
 export function merge(...parts: (Part | Iterable<Part>)[]): Part {
-  const list = parts.flatMap((p) => (p instanceof Part ? [p] : [...p]))
+  const list: unknown[] = []
+  for (const p of parts) {
+    if (isObject3D(p)) list.push(p)
+    else list.push(...(p as Iterable<Part>))
+  }
   if (!list.length) throw new RangeError('merge: give at least one part')
-  return list[0].merge(...list.slice(1))
+  return shapeOf<Part>(list[0], [Part], 'merge', 'Parts').merge(...(list.slice(1) as Part[]))
 }
 
-/** The section of a part by a plane (in its frame). */
+/** The section of a part by a plane (in its frame): `Part.section`. */
 export function section(part: Part, plane: THREE.Plane): Sketch {
-  return part.section(plane)
+  return shapeOf<Part>(part, [Part], 'section', 'a Part').section(plane)
 }
 
-/** A solid of a sheet or face grown by `thickness` (`both`: half to each side). */
+/** A solid of a sheet or face grown by `thickness` (`both`: half to each side): `Shell.thicken`. */
 export function thicken(surface: Shell | BrepFace, thickness: number, options: { both?: boolean } = {}): Part {
-  return surface instanceof BrepFace ? surface.toShell().thicken(thickness, options) : surface.thicken(thickness, options)
+  const s = shapeOf<Shell | BrepFace>(surface, [Shell, BrepFace], 'thicken', 'a Shell or BrepFace')
+  return s instanceof BrepFace ? s.toShell().thicken(thickness, options) : s.thicken(thickness, options)
+}
+
+/** The shape and the others (each where it is) fused: `fuse` of a Part, Shell or Sketch. */
+export function fuse(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch
+export function fuse(shape: Shell, ...others: (Shell | Part | BrepFace | Iterable<Shell | Part | BrepFace>)[]): Shell
+export function fuse(shape: Part, ...others: (Part | Iterable<Part>)[]): Part
+export function fuse(shape: Part | Shell, ...others: unknown[]): Part | Shell {
+  return shapeOf<Part>(shape, [Part, Shell], 'fuse', 'a Part, Shell or Sketch').fuse(...(others as Part[]))
+}
+
+/** The shape with the others (each where it is) cut away: `cut` of a Part, Shell or Sketch. */
+export function cut(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch
+export function cut(shape: Shell, ...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell
+export function cut(shape: Part, ...others: (Part | Iterable<Part>)[]): Part
+export function cut(shape: Part | Shell, ...others: unknown[]): Part | Shell {
+  return shapeOf<Part>(shape, [Part, Shell], 'cut', 'a Part, Shell or Sketch').cut(...(others as Part[]))
+}
+
+/** What the shape and the others (each where it is) share: `intersect` of a Part, Shell or Sketch
+ * (a part and a sheet: the sheet's part inside the part). */
+export function intersect(shape: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch
+export function intersect(shape: Shell, ...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell
+export function intersect(shape: Part, sheet: Shell | BrepFace): Shell
+export function intersect(shape: Part, ...others: (Part | Iterable<Part>)[]): Part
+export function intersect(shape: Part | Shell, ...others: unknown[]): Part | Shell {
+  return shapeOf<Part>(shape, [Part, Shell], 'intersect', 'a Part, Shell or Sketch').intersect(...(others as Part[]))
+}
+
+/** The regions the sketch or the others cover, but not both: `Sketch.xor`. */
+export function xor(sketch: Sketch, ...others: (Sketch | Iterable<Sketch>)[]): Sketch {
+  return shapeOf<Sketch>(sketch, [Sketch], 'xor', 'a Sketch').xor(...others)
+}
+
+/** The part with a tool's outline imprinted on its faces: `Part.imprint`. */
+export function imprint(part: Part, tool: Body | BrepFace | BrepEdge | Wire | Iterable<BrepFace | BrepEdge | Wire>, direction: THREE.Vector3Like | null = null, options: { nearest?: boolean } = {}): Part {
+  return shapeOf<Part>(part, [Part], 'imprint', 'a Part').imprint(tool, direction, options)
+}
+
+/** The faces a fillet of these edges (of one part) would add, as sheets: `Part.filletPreview`. */
+export function filletPreview(edges: EdgesLike, radius: number, options: { propagate?: boolean } = {}): ShapeList<Shell> {
+  const [first, list] = firstOf(edges)
+  return (ownerOf(first, 'filletPreview') as Part).filletPreview(list as EdgesLike, radius, options)
+}
+
+/** The part with these faces drafted by `angle` radians from a neutral plane or face: `Part.draft`. */
+export function draft(part: Part, faces: FacesLike, angle: number, neutralPlane: THREE.Plane | BrepFace): Part {
+  return shapeOf<Part>(part, [Part], 'draft', 'a Part').draft(faces, angle, neutralPlane)
+}
+
+/** The part with these faces moved, the faces around them following: `Part.moveFaces`. */
+export function moveFaces(part: Part, faces: FacesLike, by: THREE.Matrix4 | THREE.Vector3Like): Part {
+  return shapeOf<Part>(part, [Part], 'moveFaces', 'a Part').moveFaces(faces, by)
+}
+
+/** The part with these faces moved `distance` along their normals: `Part.offsetFaces`. */
+export function offsetFaces(part: Part, faces: FacesLike, distance: number): Part {
+  return shapeOf<Part>(part, [Part], 'offsetFaces', 'a Part').offsetFaces(faces, distance)
+}
+
+/** The part without these faces, the faces around them closing the gap: `Part.removeFaces`. */
+export function removeFaces(part: Part, faces: FacesLike, options: { partial?: boolean } = {}): Part {
+  return shapeOf<Part>(part, [Part], 'removeFaces', 'a Part').removeFaces(faces, options)
+}
+
+/** The part without its fillets (or these of them): `Part.removeFillets`. */
+export function removeFillets(part: Part, faces: FacesLike | null = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
+  return shapeOf<Part>(part, [Part], 'removeFillets', 'a Part').removeFillets(faces, options)
+}
+
+/** The body with a region of a face pushed, the face bending smoothly around it: `push` of a Part or
+ * Shell. */
+export function push(shape: Part, face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Part
+export function push(shape: Shell, face: BrepFace, at: THREE.Vector3Like, options?: PushOptions): Shell
+export function push(shape: Part | Shell, face: BrepFace, at: THREE.Vector3Like, options: PushOptions = {}): Part | Shell {
+  return (shapeOf<Part | Shell>(shape, [Part, Shell], 'push', 'a Part or Shell') as Part).push(face, at, options)
+}
+
+/** The body with a region of a face moved by `by`, the face bending smoothly around it: `warp` of a
+ * Part or Shell. */
+export function warp(shape: Part, face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Part
+export function warp(shape: Shell, face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Shell
+export function warp(shape: Part | Shell, face: BrepFace, region: RegionLike, by: number | THREE.Vector3Like, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part | Shell {
+  return (shapeOf<Part | Shell>(shape, [Part, Shell], 'warp', 'a Part or Shell') as Part).warp(face, region, by, options)
+}
+
+/** The body with a region of a face pressed flat onto a plane or face: `flatten` of a Part or Shell. */
+export function flatten(shape: Part, face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Part
+export function flatten(shape: Shell, face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options?: { continuity?: 'crease' | 'G1' | 'G2' }): Shell
+export function flatten(shape: Part | Shell, face: BrepFace, region: RegionLike, plane: THREE.Plane | BrepFace, options: { continuity?: 'crease' | 'G1' | 'G2' } = {}): Part | Shell {
+  return (shapeOf<Part | Shell>(shape, [Part, Shell], 'flatten', 'a Part or Shell') as Part).flatten(face, region, plane, options)
+}
+
+/** A curve made longer (`BrepEdge.extend`), or a sheet or face extended past its edges
+ * (`Shell.extend`, `BrepFace.extend`). */
+export function extend(shape: BrepEdge, distance: number, options?: { end?: 'start' | 'end' | 'both'; continuity?: 'G1' | 'G2' | 'natural' }): BrepEdge
+export function extend(shape: Shell | BrepFace, distance: number, options?: { sides?: BrepEdge | Iterable<BrepEdge> | null; continuity?: 'natural' | 'G1' | 'G2' }): Shell
+export function extend(shape: BrepEdge | Shell | BrepFace, distance: number, options: Record<string, unknown> = {}): BrepEdge | Shell {
+  const s = shapeOf<BrepEdge | Shell | BrepFace>(shape, [BrepEdge, Shell, BrepFace], 'extend', 'a BrepEdge, Shell or BrepFace')
+  return (s as BrepEdge).extend(distance, options as never)
+}
+
+/** A sheet trimmed by curves on it (`Shell.trim`), or a curve trimmed to a part of it (`BrepEdge.trim`,
+ * `Wire.trim`). */
+export function trim(shape: Shell, curves: BrepEdge | Wire | Iterable<BrepEdge | Wire>, keep: THREE.Vector3Like | 'split'): Shell
+export function trim(shape: BrepEdge, start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): BrepEdge
+export function trim(shape: Wire, start: number | THREE.Vector3Like | BrepVertex, end: number | THREE.Vector3Like | BrepVertex): Wire
+export function trim(shape: Shell | BrepEdge | Wire, a: unknown, b: unknown): Shell | BrepEdge | Wire {
+  return shapeOf<Shell>(shape, [Shell, BrepEdge, Wire], 'trim', 'a Shell, BrepEdge or Wire').trim(a as never, b as never)
+}
+
+/** The sheet with one of its free edges moved onto a curve, the sheet following: `Shell.matchEdge`. */
+export function matchEdge(sheet: Shell, edge: BrepEdge, target: BrepEdge | Wire, options: { extent?: number } = {}): Shell {
+  return shapeOf<Shell>(sheet, [Shell], 'matchEdge', 'a Shell').matchEdge(edge, target, options)
+}
+
+/** The sheet with two neighbouring faces made one: `Shell.mergeFaces`. */
+export function mergeFaces(sheet: Shell, a: BrepFace, b: BrepFace): Shell {
+  return shapeOf<Shell>(sheet, [Shell], 'mergeFaces', 'a Shell').mergeFaces(a, b)
+}
+
+/** A curve projected onto a face (`BrepFace.project`) or onto a body along a direction
+ * (`Body.project`). */
+export function project(shape: BrepFace, curve: BrepEdge | Wire): ShapeList<BrepEdge>
+export function project(shape: Part | Shell, curve: BrepEdge | Wire, direction?: THREE.Vector3Like, options?: { nearest?: boolean }): ShapeList<BrepEdge>
+export function project(shape: Part | Shell | BrepFace, curve: BrepEdge | Wire, direction?: THREE.Vector3Like, options: { nearest?: boolean } = {}): ShapeList<BrepEdge> {
+  const s = shapeOf<Part | Shell | BrepFace>(shape, [Part, Shell, BrepFace], 'project', 'a Part, Shell or BrepFace')
+  return s instanceof BrepFace ? s.project(curve) : s.project(curve, direction, options)
+}
+
+/** The body's contour seen along a direction: `Body.silhouette`. */
+export function silhouette(shape: Part | Shell, direction?: THREE.Vector3Like): ShapeList<BrepEdge> {
+  return shapeOf<Part | Shell>(shape, [Part, Shell], 'silhouette', 'a Part or Shell').silhouette(direction)
+}
+
+/** The curves where the body meets another body, a face or a plane: `Body.intersectionCurves`. */
+export function intersectionCurves(shape: Part | Shell, other: Part | Shell | BrepFace | THREE.Plane): ShapeList<BrepEdge> {
+  return shapeOf<Part | Shell>(shape, [Part, Shell], 'intersectionCurves', 'a Part or Shell').intersectionCurves(other)
+}
+
+/** The line a mold parts along, seen along `direction`: `Part.partingLine`. */
+export function partingLine(part: Part, direction: THREE.Vector3Like): ShapeList<Wire> {
+  return shapeOf<Part>(part, [Part], 'partingLine', 'a Part').partingLine(direction)
+}
+
+/** Sections `step` apart along `axis`: a part's as sketches (`Part.slices`), a triangle mesh's as
+ * wires (`TriangleMesh.slices`). */
+export function slices(shape: Part, step: number, axis?: THREE.Vector3Like): Sketch[]
+export function slices(shape: TriangleMesh, step: number, axis?: THREE.Vector3Like): ShapeList<Wire>[]
+export function slices(shape: Part | TriangleMesh, step: number, axis?: THREE.Vector3Like): Sketch[] | ShapeList<Wire>[] {
+  const s = shapeOf<Part | TriangleMesh>(shape, [Part, TriangleMesh], 'slices', 'a Part or TriangleMesh')
+  return s instanceof Part ? s.slices(step, axis) : s.slices(step, axis)
+}
+
+/**
+ * A copy of the shape scaled by `factor` (a number, or one per axis: a THREE.Vector3; none zero)
+ * about `center` (in its frame; default its origin), in its frame with its transform: the body (or
+ * curve, or triangle mesh) itself scaled, where its `scale` (three's, the object's transform) only
+ * places it so. A factor different per axis makes B-splines of round faces. (A function only: the
+ * method's name is three's.)
+ */
+export function scale<S extends Part | Shell | Sketch | BrepEdge | Wire | TriangleMesh>(shape: S, factor: number | THREE.Vector3Like, center: THREE.Vector3Like = new THREE.Vector3()): S {
+  const s = shapeOf<Body | BrepEdge | Wire | TriangleMesh>(shape, [Body, BrepEdge, Wire, TriangleMesh], 'scale', 'a Part, Shell, Sketch, BrepEdge, Wire or TriangleMesh')
+  const f = typeof factor === 'number' ? factor : vec(factor)
+  const c = vec(center)
+  if (s instanceof Body) return adopt(wrap(call(() => kernelOf(s).scale(f, c))), s) as S
+  if (s instanceof TriangleMesh) return meshResult(call(() => kernelMesh(s).scale(f, c)), s) as S
+  return placedCurve(call(() => (kernelOfShape(s) as sm.Edge | sm.Wire).scale(f, c)), s) as S
 }
 
 const matrices = (locations: Iterable<sm.Location>) => [...locations].map((l) => matrix4(l))

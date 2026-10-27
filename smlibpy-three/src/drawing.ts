@@ -3,11 +3,11 @@
 // XY plane, as sketches do: a drawing's 2D point (u, v) is three's (u, v, 0), so three's default
 // camera (from +Z) shows the sheet as it is drawn, and the front view lies where the parts' front
 // is. DXFExporter and SVGExporter (files.ts) write them. (The kernel names its views for Z up: it
-// draws the parts turned onto render's stage.)
+// draws the parts turned onto pictures' stage.)
 import * as THREE from 'three'
 import { box3, call, describe, sm, vec } from './kernel.ts'
 import { Body, curveOf, BrepEdge, isObject3D, operand, ShapeList } from './shapes.ts'
-import { STAGE, staged } from './render.ts'
+import { STAGE, staged } from './pictures.ts'
 
 const UNSTAGE = STAGE.clone().transpose()
 

@@ -7,7 +7,7 @@
 // `new BrepEdge(new THREE.CatmullRomCurve3(points))`.
 import * as THREE from 'three'
 import { call, degrees, describe, sm, vec } from './kernel.ts'
-import { curveOf, BrepEdge, flatten, internal, operand, placedCurve, setCurve, Wire } from './shapes.ts'
+import { curveOf, BrepEdge, itemsOf, internal, operand, placedCurve, setCurve, Wire } from './shapes.ts'
 
 const point = (v: THREE.Vector3Like | null | undefined) => (v == null ? null : vec(v))
 
@@ -283,7 +283,7 @@ export function fitCurve(points: Iterable<THREE.Vector3Like>, options: FitCurveO
  * placed as the first edge is (in its frame, with its transform).
  */
 export function makeCompatible(...edges: (BrepEdge | Iterable<BrepEdge>)[]): BrepEdge[] {
-  const list = flatten<BrepEdge>(edges)
+  const list = itemsOf<BrepEdge>(edges)
   for (const e of list as unknown[]) {
     if (!(e instanceof BrepEdge)) {
       throw new TypeError(`makeCompatible takes edges, not ${describe(e)}${e instanceof Wire ? ' (give wire.edges())' : ''}`)

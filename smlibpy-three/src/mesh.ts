@@ -16,7 +16,7 @@
 import * as THREE from 'three'
 import { axis as toAxis, box3, call, degrees, describe, location, plane as toPlane, sm, vec, vector3 } from './kernel.ts'
 import { MassProperties, type RayHit } from './properties.ts'
-import { Body, BrepFace, Part, ShapeList, curveOf, flatten, frameOf, operand, wrap, type Wire } from './shapes.ts'
+import { Body, BrepFace, Part, ShapeList, curveOf, itemsOf, frameOf, operand, wrap, type Wire } from './shapes.ts'
 import { track } from './memory.ts'
 
 // --------------------------------------------------------------------------------------- state
@@ -119,6 +119,12 @@ function relative(o: THREE.Object3D, into: THREE.Object3D | null): THREE.Matrix4
     m.premultiply(into.matrixWorld.clone().invert())
   }
   return m.elements.every((e, i) => Math.abs(e - IDENTITY.elements[i]) < 1e-12) ? null : m
+}
+
+/** @internal
+ * A result of an operation called on `like` (a TriangleMesh), as `adopt` makes one. */
+export function meshResult(value: sm.Mesh, like: TriangleMesh): TriangleMesh {
+  return adopt(value, like)
 }
 
 /** A result of an operation called on `like`: in its frame, with its transform, name and the
@@ -224,7 +230,7 @@ export class TriangleMesh extends THREE.Mesh {
     let value: sm.Mesh
     if (source == null) value = new sm.Mesh([], [])
     else if ((source as THREE.BufferGeometry).isBufferGeometry === true) value = weld(source as THREE.BufferGeometry)
-    else value = tessellated(flatten([source as Body | BrepFace | Iterable<Body | BrepFace>]), null, options.tolerance ?? null, options.angle ?? DEFAULT_ANGLE, options.maxEdge ?? null, 'TriangleMesh')
+    else value = tessellated(itemsOf([source as Body | BrepFace | Iterable<Body | BrepFace>]), null, options.tolerance ?? null, options.angle ?? DEFAULT_ANGLE, options.maxEdge ?? null, 'TriangleMesh')
     s.held = { value, source: null, refs: 1, geometry: null }
   }
 
@@ -415,7 +421,7 @@ export class TriangleMesh extends THREE.Mesh {
 
   private boolean(op: 'fuse' | 'cut' | 'intersect', others: readonly (TriangleMesh | Iterable<TriangleMesh>)[]): TriangleMesh {
     const value = kernelMesh(this)
-    const tools = flatten(others).map((o) => meshOperand(o, this, op))
+    const tools = itemsOf(others).map((o) => meshOperand(o, this, op))
     if (!tools.length) throw new RangeError(`${op}: give a TriangleMesh or more`)
     return adopt(
       call(() => tools.reduce((a, b) => a[op](b), value)),
@@ -546,7 +552,7 @@ Object.defineProperty(TriangleMesh.prototype, 'material', {
  * triangle may have. (`new TriangleMesh(bodies)` takes them into the world's frame instead.)
  */
 export function tessellate(shapes: Body | BrepFace | Iterable<Body | BrepFace>, tolerance: number | null = null, angle: number = DEFAULT_ANGLE, options: { maxEdge?: number | null } = {}): TriangleMesh {
-  const list = flatten([shapes])
+  const list = itemsOf([shapes])
   const first = list[0]
   if (!(first instanceof Body || first instanceof BrepFace)) {
     throw new TypeError(first === undefined ? 'tessellate: give a body or more' : `tessellate: give bodies (Part, Shell, Sketch) or faces, not ${describe(first)}`)

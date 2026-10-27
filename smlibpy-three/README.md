@@ -35,10 +35,10 @@ hit.brep // the BrepFace that was hit (a THREE.Mesh); on part.edgeLines, the Bre
 
 ![The example page: hovering the top face of the boss](example/hover.jpg)
 
-Status: a draft, not published. It wraps all of smlibwasm 0.5's public API (what is left out, and
-why, is listed below), with 186 tests (`npm test`; one is marked todo: the kernel's tangent `fill`
-fails on a turned sphere) and an example page (`npm run example`).
-[API.md](API.md) is the API reference; [WRAPPING.md](WRAPPING.md) says how a feature is wrapped.
+Status: a draft, not published. It wraps all of smlibwasm's public API as `next` has it (0.5.1:
+what is left out, and why, is listed below, and `test/forms.test.ts` checks it name by name), with
+191 tests (`npm test`) and an example page (`npm run example`). [API.md](API.md) is the API
+reference; [WRAPPING.md](WRAPPING.md) says how a feature is wrapped.
 
 ## Using it
 
@@ -175,6 +175,25 @@ The other way, `edge.curve` is a `THREE.Curve` along the exact edge:
   function's first shape plays that object.
 - A body's faces, edges and vertices are where the body is.
 
+### One API: methods and functions
+
+The package follows the repository's rules for the API (AGENTS.md), as smlibpy and smlibwasm do:
+
+- **Every operation of a body is a method and a function.** `part.draft(faces, angle, plane)` is
+  `draft(part, faces, angle, plane)`: the function has the method's name and parameters, takes the
+  body first, gives what the method gives (in the body's frame, with its transform), and is a
+  TypeError, saying what it takes, for a shape it does not take. `fillet`, `chamfer` and
+  `filletPreview` take the edges and find their part. Two names are three's: `scale` is a function
+  only (an object's `scale` is its transform) and `outline` a method only (three's TSL has an
+  `outline`).
+- What stays a method: selections and topology (`faces()`, `top()`), measuring and checking
+  (`bbox`, `classify`, `check`), placing (three's transforms, `at`, `on`), representations (`toMesh`,
+  `toNurbs`). What stays a function: what makes a shape of several (`loft`, `blend`, `network`,
+  `fitCurve`), files (loaders and exporters), pictures (`render`).
+- **Parameters are named in full** (`tolerance`, `angleTolerance`), **choices are typed**
+  (`corners: 'round' | 'sharp'`), every export has a doc comment, and modules are named as
+  smlibwasm's (`deformations`, `pictures`), never after a function they hold.
+
 ### Values and objects
 
 Operations return new objects and leave their inputs as they were, as smlibpy's do
@@ -278,7 +297,7 @@ The draft's open questions, as they were decided:
 
 ## Coverage
 
-All of smlibwasm 0.5's public API, by area ([API.md](API.md) has every signature):
+All of smlibwasm's public API as `next` has it, by area ([API.md](API.md) has every signature):
 
 | area | what |
 |---|---|
@@ -286,9 +305,9 @@ All of smlibwasm 0.5's public API, by area ([API.md](API.md) has every signature
 | Solids | `Box`, `Cylinder`, `Cone`, `Ball`, `Torus`, `Wedge`, `Pyramid`, `AnnularSector`, `Hole`, `CounterBoreHole`, `CounterSinkHole`; `new Part(bufferGeometry)` |
 | Sketches and text | `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`, `RegularPolygon`, `TriangleSketch`, `Trapezoid`, `Slot`, `ArcSlot`, `Stroke`, `Hull`, `makeFace`, `Text`, `new Sketch(threeShapes)`, `Profile`, `OpenTypeFont`, `loadFont`, `DEFAULT_FONT` |
 | Curves | `Segment`, `PolarLine`, `Polyline`, `FilletPolyline`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `SagittaArc`, `TangentArc`, `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spline`, `Bezier`, `Helix`, `Spiral`, `fitCurve`, `makeCompatible`, `BrepEdge.fromNurbs`, `new BrepEdge(threeCurve)`, `new Wire(edges or curvePath)` |
-| Operations and patterns | `extrude`, `revolve`, `sweep`, `loft`, `swing` (solids of sketches, sheets of curves), `fillet`, `chamfer`, `shell`, `offset`, `mirror`, `split`, `merge`, `section`, `thicken`; `GridLocations`, `PolarLocations`, `HexLocations`, `Locations`; `TOLERANCE`, `ACCURACY`, `X`, `Y`, `Z` |
+| Operations and patterns | every operation of a body as a function too: `fuse`, `cut`, `intersect`, `xor`, `fillet`, `chamfer`, `filletPreview`, `shell`, `offset`, `mirror`, `scale`, `split`, `merge`, `section`, `thicken`, `imprint`, `draft`, `moveFaces`, `offsetFaces`, `removeFaces`, `removeFillets`, `push`, `warp`, `flatten`, `extend`, `trim`, `matchEdge`, `mergeFaces`, `project`, `silhouette`, `intersectionCurves`, `partingLine`, `slices`; the sweeps `extrude`, `revolve`, `sweep`, `loft`, `swing` (solids of sketches, sheets of curves); `GridLocations`, `PolarLocations`, `HexLocations`, `Locations`; `TOLERANCE`, `ACCURACY`, `X`, `Y`, `Z` |
 | Measurements | `MassProperties`, `SectionProperties`, `DraftAnalysis`, closest points, curvature, continuity, exact ray hits, checks, `info` |
-| Deformations | `twist`, `taper`, `bend`, `unroll` (of parts, sheets, curves and points), `Lattice` |
+| Deformations | `twist`, `taper`, `bend`, `unroll`, `deform` (of parts, sheets, curves and points), `Lattice` |
 | Surfaces | `surface`, `nurbsSurface`, `ruled`, `stitch`, `surfaceFillet`, `blend`, `fill`, `network`, `FitReport`, `StitchReport` |
 | Sheet metal | `fold`, `flange`, `bends`, `unfold`, `flatPattern`, `Bend`, `FlatPattern`, `bendAllowance`, `bendDeduction`, `developedLength` |
 | Triangle meshes | `TriangleMesh` (mesh Booleans, decimation, repair, sections and slices, `toPart`, exact rays), `tessellate`, `body.toMesh()` |
@@ -301,12 +320,16 @@ Left out, and why:
 
 - smlibwasm's value classes (`Vector`, `Axis`, `Location`, `Plane`, `BoundBox`, `Pos`, `Rot`, `Hit`,
   `Nurbs`, ...): three's types stand in for them, and the package's records for its results.
-- `translate`, `rotate`, `moved`, `scale` and `Locations.mul`: placement is three's transforms
-  (`position`, `rotation`, `scale`, `applyMatrix4`) and `shape.at(locations)`.
+- `translate`, `rotate`, `moved` and `Locations.mul`: placement is three's transforms (`position`,
+  `rotation`, `scale`, `applyMatrix4`) and `shape.at(locations)`; scaling a body itself is the
+  function `scale(shape, factor)`. A face, edge or vertex of a body is where its body is: it is not
+  placed or mirrored on its own (`face.toShell()` is a sheet of it), and has no faces, edges or
+  vertices of its own kind (it is one).
 - Members under names three's objects have: smlibpy's `raycast` is `intersectRay` (three's
   `raycast` keeps its protocol), `Edge.add`/`Wire.add` is `new Wire([a, b])`, a mesh's `length` is
-  `triangleCount`, a whole body's `named`/`colored` is its object's `name` and material (faces:
-  `nameFaces`, `colorFaces`).
+  `triangleCount`, `mesh` is `toMesh` (a curve's mesh: its polyline geometry), a whole body's
+  `named`/`colored` is its object's `name` and material (faces: `nameFaces`, `colorFaces`), and the
+  function `outline` is three's (a TSL node): call the method.
 - The viewer (`show`, `htmlPage`): three is the viewer.
 - Mesh formats (STL, OBJ, glTF/GLB): three's own loaders and exporters do them; a body is a Mesh,
   and a `TriangleMesh` is made of any BufferGeometry.
@@ -327,11 +350,11 @@ Left out, and why:
 | `src/properties.ts` | the records of measurements and checks |
 | `src/primitives.ts` | the solids, as three's geometries |
 | `src/sketches.ts`, `src/curves.ts`, `src/profiles.ts`, `src/font.ts` | sketches and text, curves, Profile, fonts |
-| `src/operations.ts` | the free functions, patterns and constants |
-| `src/deform.ts`, `src/surfaces.ts`, `src/sheetmetal.ts` | deformations, surfaces, sheet metal |
-| `src/mesh.ts`, `src/render.ts` | triangle meshes, pictures (and the stage render and drawings draw on) |
+| `src/operations.ts` | every operation of a body as a function, the sweeps, patterns and constants |
+| `src/deformations.ts`, `src/surfaces.ts`, `src/sheetmetal.ts` | deformations, surfaces, sheet metal |
+| `src/mesh.ts`, `src/pictures.ts` | triangle meshes, pictures (and the stage render and drawings draw on) |
 | `src/files.ts`, `src/drawing.ts` | loaders and exporters, drawing views |
 | `src/memory.ts`, `src/worker.ts`, `src/init.ts` | scope and settings, the worker entry, the init entry |
 | `scripts/` | the declarations check, the API reference |
-| `test/` | one file per area |
+| `test/` | one file per area; `forms.test.ts` holds the API to smlibwasm's, name by name |
 | `example/` | a three.js page: a part, a raycast hover, click an edge to round it |

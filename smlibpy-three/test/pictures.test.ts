@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
 import { Box, Cylinder, Segment, Part, Rectangle } from '../src/index.ts'
 import { TriangleMesh } from '../src/mesh.ts'
-import { ImageDiff, Picture, VIEWS, diffImages, render } from '../src/render.ts'
+import { ImageDiff, Picture, VIEWS, diffImages, render } from '../src/pictures.ts'
 import { close, closeVector } from './_util.ts'
 
 // every class smlibwasm exports, to find any of them in what the package gives
