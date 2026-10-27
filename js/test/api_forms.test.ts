@@ -172,3 +172,41 @@ test('a function says what it takes', () => {
   assert.throws(() => smlibwasm.section('abc' as Any), /section takes a part or a mesh, not a string/)
   assert.throws(() => smlibwasm.outline(box(), [0, 0, 1] as Any), /cannot use Array as a plane/)
 })
+
+/** What `fn` gives, and the warnings it gives on the way. */
+function warned<R>(fn: () => R): [R, string[]] {
+  const said: string[] = []
+  smlibwasm.setWarningHandler((m) => said.push(m))
+  try {
+    return [fn(), said]
+  } finally {
+    smlibwasm.setWarningHandler((m) => console.warn(m))
+  }
+}
+
+test('renamed options still work for a release, with a warning', () => {
+  const [level, said] = warned(() => Box(10, 10, 10).edges()[0].continuity(16, { angleTol: 1 } as Any).level)
+  assert.equal(level, 'G0')
+  assert.deepEqual(said, ['Edge.continuity: angleTol is angleTolerance since smlibwasm 0.6.0; angleTol will be removed'])
+  const [area, said2] = warned(() => Rectangle(20, 10).offset(1, { round: false } as Any).area)
+  approx(area, 22 * 12, 1e-9)
+  assert.deepEqual(said2, ['Sketch.offset: round is corners since smlibwasm 0.6.0; round will be removed'])
+  assert.throws(() => Box(10, 10, 10).edges()[0].continuity(16, { angleTol: 1, angleTolerance: 1 } as Any), {
+    name: 'TypeError',
+    message: 'Edge.continuity: angleTol is angleTolerance since smlibwasm 0.6.0; pass angleTolerance alone',
+  })
+})
+
+test('options that were positional still work by position for a release, with a warning', () => {
+  const pipe = Cylinder(5, 10)
+  const withSeams = pipe.edges({ seams: true }).length
+  assert.ok(withSeams > pipe.edges().length) // (the seam of the cylinder)
+  const [edges, said] = warned(() => pipe.edges(true as Any))
+  assert.equal(edges.length, withSeams)
+  assert.deepEqual(said, ['_Body.edges: pass seams as an option, edges({ seams: true }), since smlibwasm 0.6.0; a positional seams will be refused'])
+  const side = pipe.faces().cylinders().one()
+  const [sideEdges, said2] = warned(() => side.edges(true as Any))
+  assert.equal(sideEdges.length, side.edges({ seams: true }).length)
+  assert.ok(sideEdges.length > side.edges().length)
+  assert.equal(said2.length, 1)
+})

@@ -179,9 +179,49 @@ def render() -> str:
     return "".join(lines)
 
 
+def deprecations() -> dict[str, dict[str, object]]:
+    """The old forms Python still takes for a release (smlibpy/_renamed.py), where smlibwasm must take
+    them too (js/src/_renamed.ts), under the table's names, camelCase: keyword-only parameters that were
+    renamed ({old option: new option}), and parameters that were positional before they became
+    keyword-only (options)."""
+    renamed: dict[str, dict[str, str]] = {}
+    positional: dict[str, list[str]] = {}
+
+    def visit(name: str, fn: object) -> None:
+        try:
+            params = inspect.signature(fn).parameters  # type: ignore[arg-type]
+        except (TypeError, ValueError):  # (a constant)
+            return
+        options = {camel(old): camel(new) for old, new in getattr(fn, "__renamed__", {}).items()
+                   if new in params and params[new].kind == params[new].KEYWORD_ONLY}
+        if options:
+            renamed[name] = options
+        if getattr(fn, "__keyword_only__", ()):
+            positional[name] = [camel(p) for p in fn.__keyword_only__]  # type: ignore[attr-defined]
+
+    for name in exports():
+        obj = python_object(name)
+        if obj is None or isinstance(obj, enum.EnumMeta):
+            continue
+        if not inspect.isclass(obj):
+            visit(name, obj)
+            continue
+        for cls in obj.__mro__:
+            if not cls.__module__.startswith("smlibpy"):
+                continue
+            for attr, value in vars(cls).items():
+                if isinstance(value, (staticmethod, classmethod)):
+                    value = value.__func__
+                if not attr.startswith("_") and inspect.isfunction(value):
+                    owner, _, method = value.__qualname__.rpartition(".")
+                    visit(f"{owner}.{camel(method)}", value)
+    return {"renamed": dict(sorted(renamed.items())), "positional": dict(sorted(positional.items()))}
+
+
 def api() -> dict[str, object]:
     """The names smlibwasm must have: smlibpy's exports, and the methods and properties of the classes
-    the MCP lists (its method index), camelCase."""
+    the MCP lists (its method index), camelCase; and the old forms it must still take
+    (:func:`deprecations`)."""
     import smlibpy
     from smlibpy.mcp import discovery
 
@@ -191,7 +231,7 @@ def api() -> dict[str, object]:
         if entry.kind in ("method", "property") and "." in entry.key:
             cls, name = entry.key.split(".", 1)
             members.setdefault(cls, set()).add(RENAMES.get(entry.key, camel(name)))
-    return {"names": names, "members": {c: sorted(m) for c, m in sorted(members.items())}}
+    return {"names": names, "members": {c: sorted(m) for c, m in sorted(members.items())}, **deprecations()}
 
 
 def render_api() -> str:

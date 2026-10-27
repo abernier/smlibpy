@@ -10,7 +10,7 @@ other way. Lines stay lines and arcs stay arcs.
 - `corners`: the corners the offset pulls apart (convex ones when growing, concave ones when
   shrinking): `"round"` (arcs of radius `|distance|`), `"sharp"` (the sides extended until
   they meet) or `"chamfer"` (cut straight across). Corners the offset pushes together are sharp
-  in every style. (`round=False`, the spelling before 0.5.1, still works with a DeprecationWarning.)
+  in every style. (`round=False`, the spelling before 0.6.0, still works with a DeprecationWarning.)
 
 ## Returns
 A new `Sketch` on the same plane, with exact `line` and `circle` edges:

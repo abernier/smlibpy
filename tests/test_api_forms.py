@@ -348,7 +348,7 @@ def test_flags_are_keywords():
 
 
 def test_renamed_keywords_still_work_with_a_warning():
-    with pytest.warns(DeprecationWarning, match="tol= is tolerance= since smlibpy 0.5.1"):
+    with pytest.warns(DeprecationWarning, match="tol= is tolerance= since smlibpy 0.6.0"):
         assert Vector(1, 0, 0).is_close((1, 0, 1e-7), tol=1e-6)
     with pytest.warns(DeprecationWarning, match="angle_tol= is angle_tolerance="):
         assert Box(10, 10, 10).edges()[0].continuity(angle_tol=1).level == "G0"
@@ -358,3 +358,20 @@ def test_renamed_keywords_still_work_with_a_warning():
         Vector(1, 0, 0).is_close((1, 0, 0), tol=1, tolerance=1)
     assert list(inspect.signature(Vector.is_close).parameters) == ["self", "other", "tolerance"]
     assert "round" not in inspect.signature(Sketch.offset).parameters
+
+
+def test_flags_made_keyword_only_still_work_by_position_with_a_warning():
+    pipe = Cylinder(5, 10)
+    with_seams = len(pipe.edges(seams=True))
+    assert with_seams > len(pipe.edges())  # (the seam of the cylinder)
+    with pytest.warns(DeprecationWarning, match=r"pass seams= by name \(seams is keyword-only since smlibpy 0.6.0\)"):
+        assert len(pipe.edges(True)) == with_seams
+    side = pipe.faces().cylinders().one()
+    with pytest.warns(DeprecationWarning, match="pass seams= by name"):
+        assert len(side.edges(True)) == len(side.edges(seams=True)) > len(side.edges())
+    with pytest.raises(TypeError, match="seams given twice"):
+        pipe.edges(True, seams=True)
+    with pytest.raises(TypeError, match="positional argument"):
+        pipe.edges(True, False)
+    params = inspect.signature(Part.edges).parameters  # (the signature shows the new form only)
+    assert list(params) == ["self", "seams"] and params["seams"].kind is inspect.Parameter.KEYWORD_ONLY

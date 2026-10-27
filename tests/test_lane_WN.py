@@ -1265,6 +1265,45 @@ def test_a_fork_waits_for_another_threads_kernel_call():
     th.join()
 
 
+@pytest.mark.skipif(not HAS_FORK, reason="no os.fork")
+def test_a_forked_copy_frees_bodies_before_smlibpys_fork_hook_runs():
+    # Python runs a copy's at-fork hooks in the order they were registered: threading's, and any
+    # registered before smlibpy was imported, before smlibpy's. A garbage collection in one of those
+    # freed a body, whose finalizer waited for ever for the kernel lock the copy started with (held
+    # across the fork by the forking thread, which the copy does not have): the guarded step "cells"
+    # of tools/parity.py never finished in its copy on Linux with Python 3.10, where threading's hook
+    # happened to collect. The copy gets its new lock inside fork() now, before its Python code runs.
+    import subprocess
+    import textwrap
+
+    code = textwrap.dedent("""
+        import gc, os, sys, time
+        os.register_at_fork(after_in_child=gc.collect)  # (before smlibpy registers its hooks)
+        from smlibpy import Box
+        from smlibpy._kernel import BrepHandle
+        gc.disable()
+        cycle = [BrepHandle(Box(1, 1, 1)._copy_brep())]
+        cycle.append(cycle)  # (garbage that only a collection frees: the hook's, in the copy)
+        del cycle
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0 if Box(2, 2, 2).volume == 8 else 2)
+        deadline = time.monotonic() + 20
+        while True:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            if time.monotonic() > deadline:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+                sys.exit("the forked copy waited for ever for the kernel lock")
+            time.sleep(0.01)
+        sys.exit(0 if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 else f"the copy ended with {status}")
+    """)
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
 # The SmPyLib bindings bound again with the GIL let go (src/cpp/nogil.cpp), and a hash of the source
 # each was copied from (from `m.def("name"` to its docstring, blanks collapsed). A change upstream
 # fails here: copy it into nogil.cpp, then update the hash.
