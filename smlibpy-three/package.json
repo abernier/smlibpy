@@ -1,10 +1,9 @@
 {
   "name": "@classcad/smlibpy-three",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.6.0",
   "description": "smlibpy's CAD modeling API for three.js: exact B-rep parts, sketches and curves that are three.js objects, on the SMLib kernel (smlibwasm)",
   "license": "MIT",
-  "homepage": "https://github.com/awv-informatik/smlibpy/tree/next/smlibpy-three",
+  "homepage": "https://github.com/awv-informatik/smlibpy/tree/main/smlibpy-three#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/awv-informatik/smlibpy.git",
@@ -18,7 +17,8 @@
     "solid-modeling",
     "step",
     "three",
-    "threejs"
+    "threejs",
+    "webassembly"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -48,10 +48,14 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p example",
     "test": "node --test 'test/*.test.ts'",
     "example": "vite example",
-    "example:build": "vite build example"
+    "example:build": "vite build example",
+    "prepack": "node scripts/prepack.mjs"
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "three": ">=0.170"
