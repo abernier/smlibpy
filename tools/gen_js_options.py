@@ -1,12 +1,16 @@
-"""Generate js/src/_options.ts, the option keys smlibwasm accepts, from smlibpy's signatures.
+"""Generate js/src/_options.ts, the option keys smlibwasm accepts, from smlibpy's signatures, and
+js/test/_python_api.json, the names smlibwasm must have.
 
 smlibwasm takes Python's keyword-only parameters as a trailing options object with camelCase keys
 (js/PORTING.md), and checks its keys against this table as Python checks keyword arguments. The
-table covers the package's exports (js/src/index.ts) and the methods of its classes. Run this
-after changing a public signature; tests/test_js_options.py fails while the file is behind:
+table covers the package's exports (js/src/index.ts) and the methods of its classes. The list of
+names holds smlibpy's exports and the methods and properties of the classes the MCP lists,
+camelCase (``RENAMES``: where smlibwasm spells one otherwise); js/test/api_forms.test.ts checks
+that smlibwasm has each. Run this after changing a public name or signature;
+tests/test_js_options.py fails while either file is behind:
 
-    python tools/gen_js_options.py           # write the file
-    python tools/gen_js_options.py --check   # exit 1 if it is behind
+    python tools/gen_js_options.py           # write the files
+    python tools/gen_js_options.py --check   # exit 1 if one is behind
 """
 
 from __future__ import annotations
@@ -19,7 +23,12 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGET = ROOT / "js" / "src" / "_options.ts"
+API_TARGET = ROOT / "js" / "test" / "_python_api.json"
 INDEX = ROOT / "js" / "src" / "index.ts"
+
+# smlibpy's names that smlibwasm spells otherwise (js/PORTING.md): `export` cannot name a function,
+# an Array's `at` takes an index, `new` names no method well, a JavaScript tuple is an array.
+RENAMES = {"export": "exportFile", "ShapeList.at": "atPoint", "ShapeList.new": "newSince", "Vector.to_tuple": "toArray"}
 
 # smlibwasm's names that differ from Python's: `export` cannot name a function, and the files in
 # memory (toStep, fromStep, ...) take the options of Python's functions for files (toStep without
@@ -170,14 +179,36 @@ def render() -> str:
     return "".join(lines)
 
 
+def api() -> dict[str, object]:
+    """The names smlibwasm must have: smlibpy's exports, and the methods and properties of the classes
+    the MCP lists (its method index), camelCase."""
+    import smlibpy
+    from smlibpy.mcp import discovery
+
+    names = sorted(RENAMES.get(n, camel(n)) for n in smlibpy.__all__)
+    members: dict[str, set[str]] = {}
+    for entry in discovery.methods():
+        if entry.kind in ("method", "property") and "." in entry.key:
+            cls, name = entry.key.split(".", 1)
+            members.setdefault(cls, set()).add(RENAMES.get(entry.key, camel(name)))
+    return {"names": names, "members": {c: sorted(m) for c, m in sorted(members.items())}}
+
+
+def render_api() -> str:
+    import json
+
+    return json.dumps(api(), indent=1) + "\n"
+
+
 def main() -> int:
-    text = render()
+    files = {TARGET: render(), API_TARGET: render_api()}
     if "--check" in sys.argv[1:]:
-        if TARGET.read_text() != text:
-            print(f"{TARGET.relative_to(ROOT)} is behind smlibpy's signatures: run python tools/gen_js_options.py")
-            return 1
-        return 0
-    TARGET.write_text(text)
+        behind = [path for path, text in files.items() if path.read_text() != text]
+        for path in behind:
+            print(f"{path.relative_to(ROOT)} is behind smlibpy: run python tools/gen_js_options.py")
+        return 1 if behind else 0
+    for path, text in files.items():
+        path.write_text(text)
     return 0
 
 

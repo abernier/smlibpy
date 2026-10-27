@@ -167,7 +167,7 @@ def test_old_names_keep_working():
     assert RoundedRectangle(40, 20, 0).area == approx(800)
     with pytest.raises(ValueError, match="corner radius is larger than half the shorter side"):
         RoundedRectangle(40, 20, 10.0001)
-    assert Rectangle(40, 20).offset(2, round=False).area == approx(44 * 24)
+    assert Rectangle(40, 20).offset(2, corners="sharp").area == approx(44 * 24)
     assert FilletPolyline((0, 0), (20, 0), (20, 10), (0, 10), radius=2, close=True).length > 0
     assert make_face(Polyline((0, 0), (10, 0), (0, 10), close=True)).area == approx(50)
     assert Slot(30, 8).area == approx(22 * 8 + 16 * PI, rel=1e-6)

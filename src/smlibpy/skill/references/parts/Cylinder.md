@@ -40,8 +40,8 @@ direction +Z).
 ## Errors
 
 - `radius <= 0` or `height <= 0`: `ValueError: radius and height must be positive`.
-- `Cylinder(5, 10, angle=180)`: `TypeError: unexpected keyword argument 'angle'` (it is
-  `arc_size`).
+- `Cylinder(5, 10, angle=180)`: `TypeError: Cylinder() got an unexpected keyword argument
+  'angle'` (it is `arc_size`).
 - `arc_size` 0, negative or above 360: `ValueError: Cylinder: arc_size must be more than 0 and at
   most 360 degrees, got 0`.
 

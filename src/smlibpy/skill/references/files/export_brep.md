@@ -45,6 +45,9 @@ in FreeCAD: `Part.read("plate.brep")`.
   as `is_valid()` would.
 - A `Mesh` raises `TypeError` (write `export_stl`), so do edges, wires and points; an empty part
   (a Boolean that left nothing) raises `ValueError: export_brep: the Part has no faces to write`.
+- A merged part (`merge`, cells that share faces) is written, but `import_brep` cannot read that
+  file back (`IndexError: unordered_map::at: key not found`). Write its `cells()` instead (a
+  solid each), or STEP.
 - Binary `.brep` (`BinTools::Write`) is read (`import_brep`) but not written.
 
 ## Related

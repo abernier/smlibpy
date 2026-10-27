@@ -52,7 +52,7 @@ export interface DxfReadOptions {
   layers?: Iterable<string> | string | null
   /** The unit of the drawing ("mm", "cm", "m", "um", "inch", "ft"), instead of the file's
    * `$INSUNITS`. A file without a unit is read as mm. */
-  unit?: string | null
+  unit?: 'mm' | 'cm' | 'm' | 'um' | 'inch' | 'in' | 'ft' | null
   /** Ends closer than this (mm) are joined. Default: 1e-7 of the drawing's size. */
   tolerance?: number | null
 }
@@ -61,7 +61,7 @@ export interface DxfReadOptions {
 export interface DxfWriteOptions {
   /** Unit of the file: "mm" (default), "cm", "m", "um", "inch" or "ft". The model (in mm) is
    * converted to it and `$INSUNITS` says so. */
-  unit?: string
+  unit?: 'mm' | 'cm' | 'm' | 'um' | 'inch' | 'in' | 'ft'
   /** The plane of the drawing; the shapes are written in its coordinates and must lie in planes
    * parallel to it. Default: the world XY plane when the shapes are parallel to it, otherwise the
    * plane of the first sketch (a section in `Plane.XZ` is drawn in that plane's coordinates). */
@@ -69,7 +69,7 @@ export interface DxfWriteOptions {
   /** 'exact' (default) writes splines and ellipses as SPLINE and ELLIPSE; 'arcs' writes them as LINE
    * and ARC within `tolerance` (`Edge.toArcs`), for CNC, laser and plasma software that reads only
    * lines and arcs. */
-  curves?: string
+  curves?: 'exact' | 'arcs'
   /** For `curves: 'arcs'`: the largest distance between a curve and its lines and arcs, in
    * millimeters (the model's unit; default 0.01). */
   tolerance?: number

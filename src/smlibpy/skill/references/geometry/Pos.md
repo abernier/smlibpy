@@ -26,8 +26,8 @@ A `Location` with no rotation; it prints as `Pos(10, 0, 5)`.
   `Pos(face.normal_at() * 5)` or `Plane.offset`.
 - `Pos(0, 0, 10) * Rot(x=90) * shape` and `Rot(x=90) * Pos(0, 0, 10) * shape` differ: the
   second turns the offset too (it ends up at (0, -10, 0)).
-- Centers of curved parts carry integration noise (`Vector(10, -1.1e-07, 5)`); compare
-  with a tolerance.
+- Centers of curved parts carry rounding noise (`a.center().to_tuple()` below is
+  `(10.0, -5.1e-16, 5.0)`); compare with a tolerance (Vector `==` allows 1e-6).
 
 ## Errors
 - `ValueError: expected 2 or 3 coordinates, got 1` for `Pos("a")` or a 1-element tuple.

@@ -49,12 +49,12 @@ part 1 km from the origin keeps its shape (float32 positions there are off by 0.
 
 ## Example
 ```python
+part = (Box(60, 40, 8) - Cylinder(4, 10)).named("bracket")
 bracket = part.colored("steelblue")
 cover = Box(60, 40, 2).translate(0, 0, 10).named("cover").colored("#d9925a")
 export_glb([bracket, cover], "assembly.glb")       # meters, Z up turned to Y up, edges as lines
 export_gltf(bracket, "bracket.gltf", edges=True, edge_color="red")
 ```
-(`part` is the bracket from `export_stl.md`.)
 
 ## Related
 `show` (embeds the same GLB in an HTML page), `export_stl`, `export_obj`, `tessellate`.

@@ -15,29 +15,32 @@ through sections in one direction; `surface` through a grid of points.)
 
 ## Returns
 A `Shell` of one B-spline face through every curve. Its normal is the first `u` curve's direction
-crossed with the first `v` curve's, where they cross. With two curves in a direction the surface
-is linear that way (2 x 2 curves: a Coons patch of the four).
+crossed with the first `v` curve's, where they cross. With two curves in a direction they are
+blended linearly across (2 x 2 curves: a Coons patch of the four).
 
 The curves are made compatible first: each is sampled so that its crossings fall at parameters
 common to its set (arc length mapped through a monotone cubic between the crossings) and
 interpolated, then the surface is built at those parameters and measured against the curves as
 given. The kernel's own `CreateGordonSurface` misses an uneven network by up to 4e-2 on a 10 mm
 patch, and still 5.7e-4 after the curves are made compatible (it intersects them again and
-reparameterizes them to what it finds). About 20 to 70 ms.
+reparameterizes them to what it finds). 9 ms for 2 x 2 curves, 45 ms for 3 x 3, 0.2 s for 5 x 4.
 
 ## Measured
-- 3 x 3 splines over 10 x 10 mm, `u` curves of different heights: the surface runs through all
-  six to 3e-8 (area 103.8296); shuffled and reversed curves give the same surface. 5 x 4: 7.5e-8.
+- 3 x 3 splines over 10 x 10 mm, `u` curves of different heights (the example): the surface runs
+  through all six to 3e-8 (area 103.8296); shuffled and reversed curves give the same surface. The
+  outer 2 x 2 of them: 103.8279. 5 x 4 splines of the same sheet: 6.3e-7.
 
 ## Errors
 - `ValueError: network: at least two curves in each direction`.
 - `ValueError: network: u curve 0 and v curve 2 do not cross (they come 0.942 close at (...))`.
 - `ValueError: network: v curve 1 runs 3.04 past the outer u curves; each curve must end on the
   outer curves of the other set`: trim the curves to the outer ones (or extend those).
-- `ValueError: network: u curve 1 crosses the v curves in another order ...`.
+- `ValueError: network: u curve 1 crosses the v curves in another order than the first u curve
+  does`.
 - `ModelingError: network: the surface misses the curves by ...`: more than 1e-4 of the size (a
   very uneven network: curves of more even spacing, or more of them, help).
-- More than 640 curves in a direction: `ValueError` (the kernel's fixed arrays).
+- `ValueError: network: at most 640 curves in each direction (the kernel's limit)`.
+- `TypeError: network: u is a list of curves`: one curve given where a list belongs.
 
 ## Example
 ```python

@@ -24,8 +24,7 @@ normal and x direction). Holes come back as inner loops; separate pieces as sepa
 - A plane that misses the part: `ValueError: the plane does not cut the part`.
 - A plane that only touches the part (tangent to the side of a cylinder, through an edge of a
   turned box, around the top of a torus): `ValueError: the plane only touches the part (along a
-  line or a curve, or at a point), so the section has no area; move the plane into the part`. (It
-  raised a bare `KernelError`, and the torus gave a disc that is not in the part.)
+  line or a curve, or at a point), so the section has no area; move the plane into the part`.
 - A plane lying on a face of the part returns that face's area.
 - A part made by `merge`: the sections of the cells the plane cuts, a region per cell
   (`merge(Box(40, 40, 20), Cylinder(6, 30)).section(Plane.XY)`: 2 faces, the block's 1486.903

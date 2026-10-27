@@ -27,17 +27,20 @@ as `Axis.X`, `Axis.Y`, `Axis.Z`.
 | `parallel_to`, `facing` | yes | yes, a direction tuple |
 | `silhouette`, `project`, `draft_analysis`, `parting_line`, `extrude(direction=)`, `Helix(direction=)` | yes, its direction | yes, a direction tuple |
 | `sort_by`, `group_by` | yes | no: `TypeError: cannot sort by (0, 0, 1)` |
-| `shape.mirror(...)` | no: needs a `Plane` | no |
+| `shape.mirror(...)`, `mirror(shape, ...)` | a part: no, it needs a `Plane`; a sketch: an axis in its plane | no |
 
 ## Gotchas
 - `X`, `Y`, `Z` are axes, not vectors: `Vector + X` fails; use `X.direction`.
 - `part.rotate((0, 0, 1), 90)` raises `AttributeError: 'tuple' object has no attribute
   'direction'`. Wrap it: `Axis((0, 0, 0), (0, 0, 1))`.
-- `part.mirror(X)` raises `AttributeError: 'Axis' object has no attribute 'z_dir'`; mirror
-  takes a plane (`Plane.YZ` mirrors x to -x).
+- `part.mirror(X)` raises `TypeError: cannot use Axis as a plane`; a part mirrors in a plane
+  (`Plane.YZ` mirrors x to -x). A sketch also mirrors in an axis of its plane:
+  `sketch.mirror(Y)` mirrors x to -x (see `sketches/mirror`).
 - The world axes pass through the origin. To rotate about a part's own axis, build an Axis
   through its center: `Axis(part.center(), (0, 0, 1))`.
-- `face.axis` gives the axis of a cylinder, cone, sphere or torus face (origin at the base).
+- `face.axis` gives the axis of a cylinder, cone, sphere, torus or revolution face. Its origin
+  lies on the axis, not always on the face: at the base of a `Cylinder` or `Cone` (also of one
+  used as a tool), at the center of a `Sphere` or `Torus`.
 
 ## Errors
 - `ValueError: cannot normalize a zero-length vector` for a zero direction.

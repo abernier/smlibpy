@@ -16,7 +16,7 @@ become arcs joined tangentially (kinks of about 1e-6 degrees), and lines where t
 straight. Each arc is an exact circle (`ThreePointArc`).
 - `Spline((0, 0), (10, 5), (20, -3), (30, 4))`: 26 arcs at 0.01, 52 at 0.001. (The kernel's
   `k.convert_to_lines_and_arcs` gives one rational B-spline 0.0037 off for 0.001.)
-- A full ellipse 40 x 20: 48 arcs at 0.01.
+- A full ellipse of radii 40 and 20 (`Ellipse(40, 20)`): 48 arcs at 0.01; radii 20 and 10: 38.
 
 ## Errors
 - `ValueError: to_arcs: the tolerance must be positive, got 0`.

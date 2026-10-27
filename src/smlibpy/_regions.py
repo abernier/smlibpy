@@ -823,6 +823,8 @@ def offset_wire(edges: list[Edge], distance: float, corners: str, plane: Any, wh
         out = offset_chain(segs, e, corners, closed, tol)
     except NeedBooleans as ex:
         raise ModelingError(_offset_problem(what, distance, str(ex), closed)) from None
+    except GeometryError:  # (a side that shrinks to nothing, which leaves no direction to move it in)
+        raise ModelingError(_offset_problem(what, distance, "a side of it shrinks to nothing", closed)) from None
     hit = first_crossing(out, closed, tol)
     if hit is not None and first_crossing(segs, closed, tol) is None:  # (a wire that crosses itself: its offset may)
         raise ModelingError(_crossing_problem(what, distance, fr.fp(hit[2]), closed))

@@ -63,6 +63,7 @@ class Locations(list[Location]):
 
     @property
     def points(self) -> list[Vector]:
+        """Where the locations move the origin to."""
         return [l.position for l in self]
 
     def __repr__(self) -> str:

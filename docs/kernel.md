@@ -23,15 +23,18 @@ smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL/U
 
 The kernel sources come in as a git submodule (`third_party/usd-brep`) and are compiled
 with CMake into a single, self-contained Python extension. The submodule stays as published.
-Kernel defects that smlibpy cannot work around from outside are fixed in copies of fourteen
+Kernel defects that smlibpy cannot work around from outside are fixed in copies of twenty-seven
 kernel source files and one header in `third_party/patches`, which the build uses in place of
 the originals: fillet removal that removed nothing, reads and writes of freed memory in
 Booleans, fillets and the offset code behind `shell`, `offset` and `thicken`, a crash of the
-planar Boolean, a plane test that flattened B-spline faces with a bump, a seam check that leaked
-on every STEP import, bounding boxes that reached past the ends of an edge, a read past a stack
-array in the curve intersection, and error reports that release builds compiled out. Its README
-lists every change and what it was measured to change. Where smlibpy needs more than the published bindings offer, its own C++ module
-(`src/cpp/ext.cpp`) calls the kernel directly.
+planar Boolean, a plane test and analytic copies that flattened B-spline faces with a bump, a
+seam check that leaked on every STEP import, points near a seam snapped onto it (rays missed the
+hits beside it), bounding boxes that reached past the ends of an edge, a read past a stack array
+in the curve intersection, a corner blend that `fill` met spheres with at an angle, random
+numbers seeded from the clock, leaks on failure paths, and error reports that release builds
+compiled out; the copies also give steps that loop a deadline. Its README lists every change and
+what it was measured to change. Where smlibpy needs more than the published bindings offer, its
+own C++ (`src/cpp`) calls the kernel directly.
 
 ## Accuracy
 
@@ -43,15 +46,15 @@ lists every change and what it was measured to change. Where smlibpy needs more 
   (`src/cpp/measure.cpp`): the kernel's (`SmBrep::ComputePreciseProperties`) controls its
   steps by the area alone and measures them against the running sum along each trim curve,
   so its volumes and moments can be far worse than asked for (the swept spring of
-  `examples/spring.py`: 2.9e-5 at 1e-7, still 2.8e-7 at 1e-9 after 12 s). smlibpy integrates
+  `examples/spring.py`: 1.4e-6 at 1e-7, still 2.1e-8 at 1e-9 after 28 s). smlibpy integrates
   the same surface integrals over the faces' trim curves (Green's theorem in the parameter
   plane) with adaptive Gauss–Kronrod quadrature, split at the knots, until every estimate is
   ten times below the accuracy asked for. It evaluates B-spline surfaces itself, along each
   line of integration from the poles, and integrates the knot spans of dense faces with 7
-  points instead of 15. It is also faster: the spring takes 55 ms instead of 1.1 s, a
-  thickened surface with 46,000 knot spans on a face 0.6 s (the kernel: 0.4 s, 2e-8 off),
-  most parts a few milliseconds. The validity check (`is_valid()`, and the check of each
-  feature's input) integrates the same way at 1e-4, with the gaps between the faces; the
+  points instead of 15. It is also faster: the spring takes 0.1 s instead of 2.3 s, a
+  thickened surface with 46,000 knot spans on a face 0.6 s (the kernel: 0.4 s, 8e-8 off),
+  most parts a few milliseconds (Apple M4 Pro). The validity check (`is_valid()`, and the check
+  of each feature's input) integrates the same way at 1e-4, with the gaps between the faces; the
   quick checks inside operations (did a fillet or a deformation change the volume plausibly,
   can the tools of an empty cut hold the part) still use the kernel's integration at a coarse
   accuracy.
@@ -68,15 +71,16 @@ lists every change and what it was measured to change. Where smlibpy needs more 
   files back with OpenCASCADE and checks validity and volume.
 - **STEP import** rebuilds every face on its exact surface and keeps the file's topology,
   so faces share edges and vertices instead of being stitched by tolerance.
-- **The builds differ in the last bits.** The native build for arm64 (macOS, Linux on ARM) lets
-  the compiler contract `a * b + c` into one instruction (FMA), which rounds once instead of
-  twice; x86_64 builds and smlibwasm's WebAssembly do not. Volumes then differ by about 1e-9 of
-  their value, and now and then a step that is close to a tolerance in the kernel succeeds in one
-  build and fails in the other: all-edge fillets of usd-brep's `vase1.smb` and `vase3.smb` succeed
-  on arm64 and fail in smlibwasm, and in a native build without the contraction
+- **The builds differ in the last bits.** The native build for macOS on arm64 (clang) lets the
+  compiler contract `a * b + c` into one instruction (FMA), which rounds once instead of twice;
+  the builds with GCC (Linux, also on ARM: `-ffp-contract=off`), the other x86_64 builds and
+  smlibwasm's WebAssembly do not. Volumes then differ by about 1e-9 of their value, and now and
+  then a step that is close to a tolerance in the kernel succeeds in one build and fails in the
+  other: all-edge fillets of usd-brep's `vase1.smb` and `vase3.smb` succeed on macOS arm64 and
+  fail in smlibwasm, and in a native build without the contraction
   (`-ffp-contract=off`), where the kernel's drop of a corner's guess point onto the filleted edge
-  finds not one point. `tools/parity.py` lists the known cases. The native build keeps the
-  contraction: built without it on arm64, the test suite lost the two vase fillets and found a
+  finds not one point. `tools/parity.py` lists the known cases. The macOS arm64 build keeps the
+  contraction: built without it there, the test suite lost the two vase fillets and found a
   crash of the kernel (a sweep along a closed spline with a kink; Linux x86_64 crashed there too,
   fixed now), and seeds 7 and 8 of the fuzz run diverged from smlibwasm in 12 operations, not
   10. Without the contraction the native build does not compute as smlibwasm does (libm and the
@@ -129,7 +133,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The curve intersection of the API takes the whole curves with a fixed tolerance of 0.001 and fails where it finds nothing: skew lines 0.0005 apart crossed, overlapping segments gave one point | intersects the edges' intervals itself (`SmCurve::GlobalCurveIntersect`) with 1e-6 or 1e-9 of the size; no point is an empty list, an overlap gives both its ends |
 | SmPyLib registers no Python class for ellipses, so the calls that take a B-spline curve refused them (`project`, `sweep`, `ruled`) | registers ellipse, parabola and hyperbola curves |
 | The curve offset of the API approximates within a fixed 0.001 (an offset of 2 was 1.99945 to 2.00085 from its spline) and makes a cusp or a loop where the curve bends more tightly than the distance | offsets splines itself (`SmBSplineCurve::CreateSimpleOffset`) within 1e-6 of the size, measured, with exact ends, and refuses where the curve's radius of curvature on that side reaches the distance; lines and arcs exactly |
-| The point approximation of the API takes no tolerance (a fixed share of the points as control points) | fits through `SmBSplineCurve::ApproximatePoints` with the tolerance asked for, measures the distance of every point, and fits again with less where it is off |
+| The point approximation of the API takes no tolerance (a fixed share of the points as control points) | `fit_curve` fits a least-squares B-spline itself, with the fewest control points that keep every point within the tolerance, measured to the nearest point of the curve (80 noisy points round a ring within 0.6: 13 control points, where the kernel's `SmBSplineCurve::ApproximatePoints` takes 31) |
 | The conversion to lines and arcs of the API asks NLib for 0.001 and returns one rational B-spline 0.0037 off: NLib fits the arcs within ten times the tolerance it is given | asks for a tenth, measures both ways, asks for less while the result is off, and returns the spans as separate lines and arcs |
 | The projection of a curve onto a body of the API (`SmApiProjectCurve`) passes no tolerance: its pieces were 9.4e-5 off a sphere of radius 10 | projects with `SmBrep::CreateParallelProjectionCurves` within 1e-7 of the size (2.5e-8 off that sphere), knows each piece's face, and keeps only what the curve sees where asked (`nearest=True`) |
 | The projection onto one surface of the API takes the curve's own size as the tolerance of the drop and returned a piece of a cylinder's seam for a line in front of it; the drop of the API drops within 10 and lifts within 0.001 (7.5e-4 off a cylinder) | projects onto a face along its normals with `SmBrep::CreateNormalProjectionCurves` within 1e-8 of the size, trimmed to the face (`Face.project`) |
@@ -137,7 +141,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | `SmBSplineCurve::ForceThroughPoint` missed its point by 1.9e-4 and moved the clamped start of the curve by 2e-4; the constraint solver of NLib is compiled out | `Edge.through` moves the control points itself (the least change that passes the point, ends kept, exact); `Edge.match` uses `SmCurve::DeformToEndPointTargets` |
 | The 2D fillet of curves (`SmCurveFilletExecutive`) is unused and untested in the kernel, cannot be told which side to round and takes the first of four offset combinations it finds | rounds corners at splines and ellipses itself: the arc's center where the curves' offsets meet, refined until it lies at the radius from both curves to 1e-9 (OpenCASCADE's 2D fillet agrees to 5e-8) |
 | The tight box of a curve (`SmCurve::CalculateTightBoundingBox`) takes the corners of the whole curve, not of the interval asked for | computes the box of a free curve from its ends, its corners in the interval and the points where its tangent is perpendicular to an axis |
-| Mass properties control their integration steps by the area alone: a volume can be 300 times worse than the accuracy asked for | integrates areas, volumes, centers and inertia itself, with an error estimate for each |
+| Mass properties control their integration steps by the area alone: a volume can be 200 times worse than the accuracy asked for (a coil swept along a helix with the kernel's frame, at 1e-7) | integrates areas, volumes, centers and inertia itself, with an error estimate for each |
 | A curve's length leaves out a span that starts with a zero tangent (the outline of a cylinder had 30 mm top and bottom lines instead of 60) | integrates lengths and arc-length positions itself |
 | Tessellation cuts each face into a grid placed by the curves along its borders, so a face that is straight in one direction and twisted along it gets one facet across (a twisted bar: 1 mm off) | estimates for every face how far the grid would be off and halves all faces of such a body until they are flat; other bodies keep the kernel's triangles |
 | On a sphere the grid leaves long slivers along the seam near the poles (0.68 off at a tolerance of 0.01), and on a free-form face it can miss a bump between its lines | splits every edge whose middle lies off a sphere, torus, cone or cylinder by more than the tolerance, and halves a body whose free-form faces the grid misses at a control point |
@@ -163,6 +167,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The kernel's closest point on a body or face (`brep_closest_point`, `SmFace::ClosestPoint`) stops at a local minimum where a B-spline face folds back towards the point (5.83 where it is 5.71) | `distance_to` and `closest_point` of a point (bodies and faces) start from the kernel's point and search every face, and every knot span of its surface, that could hold a nearer point (by the box of the span's control points), by Newton's method from the nearest points of a grid over it, then the edges of those faces; `surface(..., report=True)` measures each point of a fit the same way |
 | Cylinders, cones, spheres, tori and surfaces of revolution evaluate to their seam for parameters up to about 1e-7 short of the end of their domain (`SmPolarConversion::ConvertToPolarParameter` asked `STEPInversion` with the context's zone tolerance), so ray and curve intersections missed the hits beside a seam (`Cylinder(10, 40).raycast((88.98, -1e-8, 4), (-1, 0, 0))` gave only the far side) | patched (`SmEllipse.cpp`) |
 | `SmBSplineSurface::CreateCoonsPatch` checks its four curves only with `SM_ASSERT` (compiled out) and reads four; `CreateNSidedPatch` reads a cross-derivative curve per boundary from an array its header says may be empty; `SmBrep::CreateCornerBlend` puts a three-sided loop's point curve at parameter 0 or 1 whatever the curve's interval, both of a two-sided loop's at one end, and where no edge lies on its surface's border only warns that it cannot tell which side the patch goes to. Its N-sided fill is tangent to about 1.4 degrees only | `fill` orders the loop itself, passes exactly what is read, puts the point curve where the sides meet, and checks every patch: through the curves, across each edge from its face (built again with the loop turned round where it folds back), tangent (0.5 degrees, 2 for N-sided fills) |
+| The four-sided corner blend (`SmBSplineSurface::CreateCornerBlend`) put only its left and right sides on [0, 1]: where the bottom and top were arcs of one length, the patch met the sheets up to 64 degrees off (5 of the 6 axis holes of `Sphere(10)` were refused) | patched (`third_party/patches`): all four sides on [0, 1]; `fill` cuts a rim that comes in pieces (where a seam crosses it) into four nearly equal sides, so a round hole gets the same cap wherever its rim was cut |
 | `SmBSplineSurface::CreateGordonSurface` needs a compatible network and misses an incompatible one by up to 4e-2 on a 10 mm patch; given a compatible one it intersects the curves again and reparameterizes them to what it finds (5.7e-4 off), maps the crossings to [0, 1] right only for curves whose parameters start at 0, and fills fixed arrays of 640 curves without a count check | `network` makes the curves compatible (their crossings at common parameters), calls `N_CreateGordonSrf` with those parameters (3e-8 on the same network), refuses more than 640 curves, and measures the surface against the curves given |
 | Moving a body with a 4x4 matrix (`SmBrep::Transform`) resets its tolerances from the box of its vertices, and the model size of the shared context with them: a moved torus (one vertex) gets tolerance 0 and its Booleans go wrong, a part over 500 across gets 1e-4 | applies rotations, reflections and uniform scales with a placement, as SM_API does, and sets the tolerances of a scaled body from its whole box |
 | Point classification (`SmBrep::Point3DClassify`) takes the region from one ray along +X; once a tight bounding box was computed, that ray can miss a face it crosses (a point inside a cylinder fused with a torus came out outside) | `classify` lets rays in two more directions off the axes vote, two more when they disagree |
@@ -188,7 +193,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The fillet geometry asked a missing boundary curve whether it was degenerate (`SmFilletGeom::MakeFaceBrep`), and the rollover read the surface of a side face it had not found (`SmFilletSolver::CreateCliffRollOverSideFG`): both killed the process (an all-edge chamfer and an all-edge fillet of Boolean parts) | patched (`third_party/patches`): the fillet fails, and the error names the edge |
 | The solution filter of the curve intersection (`sm_FilterSolution`) evaluated the curves with their first derivative only and read the second where the first is zero, past its stack array (reached from the seam check of `SmBrep::AssertValid`) | patched: it evaluates the second derivative too |
 | A body moved with a matrix that is no similarity (a scale that differs between the axes, a shear) has only B-spline faces and edges, and its first measure stores refitted trim curves in it (the volume of a stretched cylinder 6.8e-7 off) | recognizes planes, cylinders, cones, surfaces of revolution and extrusion, lines and circles on a copy right after the transform (`ConvertCurvesToAnalytics`, and `CreateAnalyticCurve` for circles), kept only where every face and edge lies within 1e-9 of the size of the old one |
-| The bend volume's exact surfaces (`SmBendVolume::MakeExactBSpline1stOutSurface`) put bend cylinders at the axis point and sample the surface's parameter box, not the face, so deformed faces are fitted B-splines | samples the exact map on each face and edge and builds planes, cylinders, cones, lines and circles where the image is one (`src/cpp/deform_analytic.cpp`), with trims rebuilt within 1e-8, else the fit |
+| The bend volume's exact surfaces (`SmBendVolume::MakeExactBSpline1stOutSurface`) put bend cylinders at the axis point and sample the surface's parameter box, not the face, so deformed faces are fitted B-splines | samples the exact map on each face and edge and builds planes, cylinders, cones, lines and circles where the image is one (`src/cpp/deform_analytic.cpp`), with trims rebuilt within 1e-8, else the fit (a bent plate's cylinders: for bends of up to 90 degrees and of 120, 135, 180, 240 and 270, fitted at other angles) |
 | The sheet-metal unbend fits the edges of a bend zone within 1e-4 (a hole across a bend became 3 arcs and 2 B-splines, 1.8e-5 off its circle) | takes the kernel's exact lines and arcs where it has them, else a fit within 1e-7 that keeps the curve's parameters, and makes the flat pattern's outline of lines, arcs and circles |
 | SM_API's projection of a body onto a plane keeps only the visible half of what the hidden-curve removal (`SmHCR`) computes, and SmHCR's seam and smooth-edge flags turned a cylinder's front rim hidden | `outline(hidden=True)` calls SmHCR itself, filters seams and tangent edges by geometry, and drops edges seen end-on, slivers and hidden pieces under visible lines |
 | `SmApiBooleanWithCurves` hands out the common edges of a merge after `BooleanPostProcess` deleted some of them (AddressSanitizer: freed edges in its result) | is not used; `ShapeList.joining` selects the edges where two bodies meet by exact classification, and the raw `_core.boolean_with_curves` is smlibpy's Boolean with the edges found that way |
@@ -227,9 +232,9 @@ matter here:
   circle of smlibwasm's (its `.brep` file reads as valid).
 - The kernel's hidden curve removal behind `outline` and `drawing_views` (`SmHCR`) can judge a
   piece of a tilted view wrongly: seen along (1, 1, 1), the flange example as built
-  (`examples/flange.py`) lacks an arc of its plate's rim and two pieces at its neck natively (61.4
-  mm of 1096.1; smlibwasm, and the same body read back from `.smb`, draw them). Views along the
-  axes were right in every case tested; check a tilted view of a symmetric part for symmetry.
+  (`examples/flange.py`) lacks an arc of its plate's rim and two pieces at its neck natively (61.3
+  mm of 1101.0; smlibwasm draws them). Views along the axes were right in every case tested;
+  check a tilted view of a symmetric part for symmetry.
 - Healing of imported periodic faces (tori, spheres) can go wrong.
 - A Boolean in which the faces cross along a curve tangent to a seam goes wrong in the kernel
   where smlibpy cannot move the seam away: the outer equator of a torus (no turn about the axis
@@ -295,7 +300,8 @@ matter here:
   between profiles, by 5e-3 with 64 and by 1.6e-4 with 1024 (1.5 s, 61065 control points).
   `loft(sections, rails=)` and `sweep(profile, path, rails=)` build Gordon surfaces instead
   (`N_CreateGordonSrf` on a network made to cross at common parameters), through sections and rails
-  exactly; a Gordon surface is open, so closed sections and profiles along rails raise `ValueError`.
+  within about 2e-7; a Gordon surface is open, so closed sections and profiles along rails raise
+  `ValueError`.
 - `fill(..., tangent=True)` cannot meet sheets that stand steep to the loop (a cylinder's wall
   round its open top, a sphere cut at its equator): a four-sided patch over a smooth closed loop has
   both parameter directions along the loop at its corners, and every construction of the kernel's
@@ -511,6 +517,6 @@ macOS and Linux by choosing it; it has not run on Windows itself.
 
 ## Building the kernel
 
-The build compiles about 250 C++ files and takes a minute or two. It is single threaded
+The build compiles about 340 C++ files and takes a minute or two. It is single threaded
 inside the kernel unless oneTBB is available (`-DSMLIBPY_USE_TBB=ON`, used for parallel
 tessellation and Boolean preprocessing).

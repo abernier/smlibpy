@@ -57,8 +57,8 @@ type SurfaceOptions = { interpolate?: boolean; controls?: number | readonly [num
  *   cloud. `smoothing` (clouds): how much the surface resists bending, against how close it comes
  *   to the points: 0 to 1, default 1e-2; for noisy points raise it (0.1 to 1), or take fewer
  *   control points. `report`: `true` returns `[sheet, report]`, a `FitReport`: how far each point
- *   lies from the surface (to its closest point), the largest and the rms distance; a few
- *   milliseconds for thousands of points.
+ *   lies from the surface (to its closest point), the largest and the rms distance; about 0.13 s
+ *   for 1,500 points, 3 s for 20,000 (smlibpy, natively).
  *
  * A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over). The
  * surface spans the smallest rectangle around the points in that plane; where there are no
@@ -343,7 +343,7 @@ export function surfaceFillet(
   a: Face | Shell,
   b: Face | Shell,
   radius: number,
-  options: { radius2?: number | null; shape?: string; sides?: readonly [number, number]; trim?: boolean } = {},
+  options: { radius2?: number | null; shape?: 'round' | 'chamfer'; sides?: readonly [number, number]; trim?: boolean } = {},
 ): Shell {
   return scope(() => {
     _opts('surfaceFillet', options)
@@ -464,7 +464,7 @@ function _freeEdges(body: Shell | Part): number {
 export function blend(
   edgeA: Edge,
   edgeB: Edge,
-  options: { continuity?: string | number; tension?: number | readonly [number, number]; join?: boolean } = {},
+  options: { continuity?: 'G1' | 'G2' | 'G3' | number; tension?: number | readonly [number, number]; join?: boolean } = {},
 ): Shell {
   _opts('blend', options)
   const fa = _freeFace(edgeA, 'edgeA')

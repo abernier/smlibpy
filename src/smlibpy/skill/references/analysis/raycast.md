@@ -40,7 +40,7 @@ A list of `Hit`, nearest first, `[]` when the ray misses. A `Hit` is a named tup
   tolerance (a `Sphere(10).mesh(0.01)`: 0.003).
 - Wall thickness along a normal: start a little outside, `part.raycast(p + n, -n)`, and take the
   difference of the first two distances. Starting exactly on the face also works (a hit at 0).
-- A ray costs about 0.05 ms on a part of a few faces (only faces whose box the ray crosses are
+- A ray costs about 0.1 ms on a part of a few faces (only faces whose box the ray crosses are
   intersected).
 
 ## Many rays: raycast_many
@@ -49,11 +49,12 @@ of points, `directions` one direction for all of them (a vector or an axis) or o
 The result has one entry per ray: the `Hit` that `raycast` gives first, or `None` for a miss.
 
 - A `Mesh`: the kernel's ray tracer sorts the triangles into a grid once per call, then a ray
-  costs about 0.01 ms (250 000 triangles: 0.8 s to build, `raycast` takes 36 ms a ray there).
+  costs about 0.01 ms (250 000 triangles: 0.8 s to build, `raycast` takes 32 ms a ray there).
   The hits are those of `raycast`, triangle and normal included.
 - A body: the rays go through a mesh of it (made once per body at 1e-4 of its size), and each
-  hit is moved onto the exact face the mesh says the ray meets first (0.02 to 0.05 ms a ray;
-  a plate with 144 holes: 0.05 ms, `raycast` 1 ms). Where that face is missed there, the ray is
+  hit is moved onto the exact face the mesh says the ray meets first (0.015 to 0.03 ms a ray; a
+  plate with 144 holes: 0.03 ms, `raycast` 0.8 ms; the first call on a body also makes its mesh:
+  10,000 rays on that plate took 0.17 ms a ray). Where that face is missed there, the ray is
   cast exactly, and so is a ray that passes within twice the mesh's tolerance of a triangle it
   does not meet: a ray that grazes a curved face along its outline gets the hit `raycast` gives.
   The points are exact (1e-12), like `raycast`'s.

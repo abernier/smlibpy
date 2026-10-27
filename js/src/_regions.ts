@@ -679,10 +679,10 @@ export function stroke(path: unknown, width: number, ends: string, corners: stri
     const innerArea = signedArea(loop)
     if (innerArea <= tol) throw new ModelingError('Stroke: the closed path encloses no area')
     const base = region(loop, fr)
-    const outer = base.offset(h, { corners })
+    const outer = base.offset(h, { corners: corners as 'round' | 'sharp' | 'chamfer' })
     let inner: Sketch
     try {
-      inner = base.offset(-h, { corners })
+      inner = base.offset(-h, { corners: corners as 'round' | 'sharp' | 'chamfer' })
     } catch (e) {
       if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       return outer
@@ -903,6 +903,8 @@ export function offsetWire(edges: Edge[], distance: number, corners: string, pla
   try {
     out = offsetChain(segs, e, corners, closed, tol)
   } catch (ex) {
+    // (a side that shrinks to nothing, which leaves no direction to move it in)
+    if (ex instanceof GeometryError) throw new ModelingError(_offsetProblem(what, distance, 'a side of it shrinks to nothing', closed))
     if (!(ex instanceof NeedBooleans)) throw ex
     throw new ModelingError(_offsetProblem(what, distance, ex.message, closed))
   }

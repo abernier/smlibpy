@@ -6,6 +6,7 @@ parts, and for getting a base shape back.
 
 ## Signature
 `part.remove_fillets(faces=None, *, max_radius=None, partial=False)`
+`remove_fillets(part, faces=None, *, max_radius=None, partial=False)` (the same, the part first)
 
 - `faces`: fillet faces of this part (a selection, one face). `None`: every fillet
   (`part.faces().fillets(max_radius)`). Faces of an earlier version of the part are matched by
@@ -20,11 +21,11 @@ A new `Part`; the input is unchanged. If there is nothing to take out, the part 
 | Part | Faces | Volume after |
 |---|---|---|
 | `Box(40, 30, 20)`, 4 vertical edges r 3 | 10 → 6 | 24000.000000000 |
-| all 12 edges r 3 (8 corner spheres) | 26 → 6 | 24000 − 1.1e-11 |
+| all 12 edges r 3 (8 corner spheres) | 26 → 6 | 24000 − 1.5e-11 |
 | 4 top edges r 3 (mitred corners), variable 2..4, G2 r 3 | 10 → 6 | 24000.000000000 |
 | plate + rectangular boss, base fillet r 2 (4 corner patches) | 19 → 11 | 15200.000000000 |
-| plate + cylinder boss, ring fillet r 2 | 9 → 8 | exact + 2.8e-8 |
-| STEP round trips of the fully rounded box and of the boss | same | error ≤ 4e-12 |
+| plate + cylinder boss, ring fillet r 2 | 9 → 8 | exact − 5.5e-12 |
+| STEP round trips of the fully rounded box and of the boss | same | error ≤ 1e-11 |
 
 Planes come back as planes, cylinders as cylinders (the faces are extended, not refitted).
 
@@ -43,11 +44,11 @@ Planes come back as planes, cylinders as cylinders (the faces are extended, not 
 ## Imported parts
 Exact on simple parts; on real parts the kernel cannot take out every fillet:
 - example bracket (5 fillets): all 5 go when it is made here (volume 31287.064 → 31376.338);
-  after a STEP round trip 2 go and 3 stay (`partial=True`).
+  after a STEP round trip 1 goes and 4 stay (`partial=True`).
 - example flange (ring fillet at the neck): native and STEP.
 - B-spline faces (many STEP files, `to_nurbs()`) are extended as smooth continuations: the
-  boss with B-spline faces came back within 1.3e-8 (relative), the fully rounded box within
-  1.1e-11, but the patches stay faces of their own (16 faces instead of 11, 12 instead of 6).
+  rectangular boss with B-spline faces came back within 2e-8 (relative), the fully rounded box
+  within 1e-15, but the patches stay faces of their own (16 faces instead of 11, 12 instead of 6).
 Use `partial=True` on imported parts and check `result.faces().fillets()` for what stayed.
 
 ## Crashes and hangs
@@ -57,16 +58,14 @@ macOS, a helper process on Windows; see `parts/guards`), and its result comes ba
 there, or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s), only drops that step,
 and this process goes on. A crash in the
 copy costs little, a hang the 20 s: on the example enclosure (20 fillet faces) 12 go and 8 stay,
-and with the stopped steps `remove_fillets(partial=True)` takes about 95 s. A set of fillets the
-kernel crashed or hung on is not tried again in the same call.
+and with the stopped steps `remove_fillets(partial=True)` takes about 95 s (the example bottle:
+9 fillet faces, 1 goes, about 110 s). A set of fillets the kernel crashed or hung on is not
+tried again in the same call.
 
-The copy catches what the kernel does every time. A defect that reads memory the kernel has
-already freed can still crash this process after the copy came through, because the two
-processes reuse freed memory differently. smlibpy's build of the kernel fixes the one that did
-that on an imported valve body with B-spline faces (13 fillet faces: 3 go, 10 stay); others
-of that kind remain (seen on the example bottle), so far always caught in the copy. In the MCP
-session such a crash ends the script, and the session builds its state again; in a plain
-script, save your work first.
+This process does not run the step itself: the body comes back as an exact copy (the kernel's
+binary format), so a defect that reads memory the kernel has already freed crashes the copy, not
+this process. Where no other process can run a step (a frozen application, `GUARD_SECONDS = 0`),
+it runs here, and a crash ends the process: save your work first.
 
 ## Errors
 - `ModelingError: remove_fillets: 1 of the faces are no fillets (plane); a fillet meets two faces tangentially along its length. Select fillets with part.faces().fillets(), or take other faces out with remove_faces`
@@ -76,8 +75,8 @@ script, save your work first.
 - The part must be valid (`ModelingError: remove_fillets: the part is not a valid solid ...`).
 
 ## Cost
-Box with 4 rounds 0.01 s, fully rounded box 0.27 s, example bracket 0.35 s. With the guard
-every kernel step runs twice (the copy, then here).
+Box with 4 rounds 0.015 s, fully rounded box 0.06 s, example bracket 0.18 s. Each kernel step
+runs once, in the other process; its body comes back as an exact copy.
 
 ## Example
 ```python

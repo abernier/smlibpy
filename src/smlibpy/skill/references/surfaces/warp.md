@@ -7,6 +7,7 @@ point use `push`; to make a region flat, `flatten`.
 ## Signature
 `part.warp(face, region, by, *, continuity="G2")`
 `sheet.warp(face, region, by, *, continuity="G2")`
+`warp(part_or_sheet, face, region, by, *, continuity="G2")`: the same, as a function
 
 - `face`: a face of the part or sheet.
 - `region`: the outline on the face: a closed `Wire` (on a curved face, `project` one onto it), a
@@ -33,7 +34,7 @@ control points instead of 23 x 23; `"crease"`: 23 x 23 instead of 25 x 25).
 - `warp(top, Circle(8).on(top), -3)`: 7 exactly at the middle.
 - `Cylinder(10, 40)` side, a region from 60 to 120 degrees, -6 < z < 6, `by=3`: y 13 exactly,
   smooth across the quarter turn; outside the region still the cylinder.
-- About 2 ms on a plane.
+- About 3 ms on a plane (4 with `"G1"` or `"crease"`).
 
 ## Errors
 - `ValueError: warp: the change reaches an edge of the face (...): keep the rectangle around the

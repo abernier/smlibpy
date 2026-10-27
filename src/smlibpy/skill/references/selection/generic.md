@@ -75,7 +75,8 @@ Print `len(sel)` after every selection that feeds a feature, or use `.one()` whe
   of holes and bosses never face a direction, so `faces().facing(-X)` of a holed block is its
   flat -X face alone.
 - `sort()` and `reverse()` are the in-place list methods and return `None`; use `sort_by`.
-- `sl.copy()` and `Pos(...) * sl` return a plain `list` without selectors; wrap in `ShapeList(...)`.
+- `sl.copy()` and `sorted(sl)` return a plain `list` without selectors; wrap in `ShapeList(...)`.
+  `Pos(...) * sl` and the transforms of `list_transforms` keep the ShapeList.
 
 ## Example
 ```python

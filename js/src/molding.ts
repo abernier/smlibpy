@@ -384,7 +384,7 @@ function _splitHalves(part: _Body, d: Vector, split: Vector, what: string): [_Bo
   }
   // The line: edges between the two halves.
   const line: Edge[] = []
-  for (const e of body.edges(true)) {
+  for (const e of body.edges({ seams: true })) {
     const fs = e.faces()
     if (fs.length === 2 && side.get(fs[0]._identity()) !== side.get(fs[1]._identity())) line.push(e)
   }

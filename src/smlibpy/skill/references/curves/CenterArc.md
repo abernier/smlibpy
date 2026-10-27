@@ -10,8 +10,8 @@ A circular arc or full circle around a center, given by start angle and angular 
 - `radius`: mm, > 0.
 - `start_angle`: degrees, counterclockwise from the plane's X axis towards its Y axis. Any
   value (720 = 0, -30 = 330).
-- `arc_size`: degrees. Positive runs counterclockwise, negative clockwise. `360` or `-360`
-  is a full circle starting at `start_angle`.
+- `arc_size`: degrees, not 0. Positive runs counterclockwise, negative clockwise. `360` or
+  `-360` is a full circle starting at `start_angle`.
 - `plane`: angle 0 points along `plane.x_dir`, 90 along `plane.y_dir`.
 
 ## Returns
@@ -27,7 +27,7 @@ An `Edge` with `geom_type == "circle"` (`radius`, `arc_center`, `normal` work).
 | `Plane.bottom` | +X | -Y |
 
 ## Gotchas
-- **`arc_size=0` gives a full circle**, not an error. Check sizes computed at run time.
+- `arc_size=0` raises; a full circle is `360`. Check sizes computed at run time.
 - `|arc_size| > 360` is clamped to a full circle.
 - `edge.normal` follows the direction: +plane normal for a positive `arc_size`, the opposite
   for a negative one.
@@ -41,6 +41,7 @@ An `Edge` with `geom_type == "circle"` (`radius`, `arc_center`, `normal` work).
 
 ## Errors
 - `ValueError: radius must be positive` for radius <= 0.
+- `ValueError: CenterArc: arc_size must not be zero (360 is a full circle)`.
 
 ## Example
 ```python

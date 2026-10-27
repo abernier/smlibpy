@@ -12,9 +12,10 @@ that are engraved into a part or stand out of it.
   default font).
 - `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font), `.woff` or `.woff2` file, the
   `bytes` of one (an upload, a font from a package's data; read once per contents), or a `Font`
-  from `load_font(path)` (read once). Default: Lato Regular, bundled (263 characters: Latin-1,
-  Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`). No other package is needed: WOFF2 web fonts, CFF accents
-  built with seac, and variable CFF2 fonts (their default instance) are read too.
+  from `smlibpy.font.load_font(path)` (read once; `from smlibpy import *` does not bring it).
+  Default: Lato Regular, bundled (263 characters: Latin-1, Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`).
+  No other package is needed: WOFF2 web fonts, CFF accents built with seac, and variable CFF2
+  fonts (their default instance) are read too.
 - `align`: where the *layout box* sits: from the start to the end of the longest line (advance
   widths, not ink) and from the baseline of the last line to the cap height of the first.
   One `Align` (or string) for x and y, or one per axis.

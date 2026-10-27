@@ -32,8 +32,8 @@ as a selection (to highlight them in a picture, or to `remove_faces`).
 ## Accuracy
 Planes, cylinders and cones are exact: a 3 degree taper reads 3.000000000, a cone with radii 10
 and 5 over 20 reads 14.036243468 (atan(5/20)). Other faces are sampled on a grid of their
-parameters and along their edges, then the least and greatest values are refined. 1 to 4 ms per
-part for the examples here.
+parameters and along their edges, then the least and greatest values are refined. 0.3 ms (the
+box) to 9 ms (the tapered core) for the examples here.
 
 ## Gotchas
 - One pull direction: every face that turns away from it is an `undercut`, the bottom of a box

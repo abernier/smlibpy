@@ -29,16 +29,18 @@ volume π·30·20·40 = 75398.224. A frustum profile (30 at the bottom, 15 at th
 
 ## Returns
 A `Part` (an open curve: a `Shell`) of B-spline faces, one per profile edge and outline edge
-(the flat bottom and top are planar B-splines: `Face.is_planar` is True, `faces().planes()`
-does not find them). The name and color are the profile's.
+(the flat bottom and top are planar B-splines: `Face.is_planar` is True, so `faces().planar()`
+finds them, `faces().of_type("plane")` does not). The name and color are the profile's.
 
 ## Gotchas
 - The profile must lie in the XZ plane: a sketch drawn in XY and not placed raises
   `ValueError: swing: the profile must lie in the XZ plane ...`. Use `.on(Plane.front)`.
-- The outline sets the shape, the profile the size: an outline crossing +X at 32.2 (a rounded
-  rectangle turned by 30 degrees) is scaled by 30 / 32.2 where the profile is at 30.
-- An outline that does not surround the Z axis, or that a ray from the axis crosses twice (a
-  star with deep notches, a C shape), raises; so does a region with holes as the outline.
+- The outline sets the shape, the profile the size: an outline crossing +X at 32.2
+  (`RoundedRectangle(60, 40, 10)` turned by 30 degrees) is scaled by 30 / 32.2 where the
+  profile is at 30.
+- An outline that does not surround the Z axis (a C shape open across it), or that a ray from
+  the axis crosses more than once (a notch that hooks under the outline), raises; so does a
+  region with holes as the outline. A star about the axis is fine: every ray crosses it once.
 - To place the result elsewhere move it afterwards (`.translate`, `.rotate`, `.moved`).
 
 ## Errors
@@ -59,7 +61,7 @@ flask = bottle.swing(RoundedRectangle(40, 30, 8))                      # 40 x 30
 print(flask.bbox(), len(flask.solids()))
 
 shade = swing(Spline((0, 0, 0), (25, 0, 10), (15, 0, 30), (20, 0, 45), (0, 0, 50)), Ellipse(30, 20))
-print(type(shade).__name__, round(shade.area, 1))                      # Shell
+print(type(shade).__name__, round(shade.area, 1))                      # Shell 6564.1
 ```
 
 ## Related

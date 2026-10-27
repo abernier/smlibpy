@@ -69,7 +69,7 @@ export function _push(body: _Body, face: unknown, at: VectorLike, by: number | V
   let shrink: boolean
   if (radius == null) {
     // as far as the nearest edge of the face; smaller where that would still move one
-    r = Math.min(...f.edges(true).map((e) => e.distanceTo(q)))
+    r = Math.min(...f.edges({ seams: true }).map((e) => e.distanceTo(q)))
     if (!(r > 1e-9 * size)) throw new RangeError('push: the point lies on an edge of the face, which stays where it is: push a point inside the face')
     shrink = true
   } else {

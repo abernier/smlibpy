@@ -35,7 +35,12 @@ export_step(plate, "plate.step")
 - Millimeters and degrees. Z is up. Primitives are centered on the origin unless `align=` says
   otherwise.
 - Shapes are values: every operation returns a new shape and leaves its input unchanged.
-  `a + b` fuses, `a - b` cuts, `a & b` intersects; the right side may be a list.
+  `a + b` fuses, `a - b` cuts, `a & b` intersects (by name: `a.fuse(b)`, `a.cut(b)`,
+  `a.intersect(b)`, on parts, sheets and sketches; `a ^ b` or `a.xor(b)` for sketches); the
+  right side may be a list.
+- Every operation is a method and a function of the same name and parameters, the function taking
+  the body first: `part.draft(faces, 3, Plane.XY)` is `draft(part, faces, 3, Plane.XY)`,
+  `a.fuse(b)` is `fuse(a, b)` (`fillet(edges, r)` and `chamfer(edges, d)` take the edges alone).
 - Select by geometry (`part.faces().top()`, `part.edges().parallel_to(Z).concave()`), never by
   index: indices change whenever the model changes.
 - Sketches are drawn on the XY plane around the origin, then placed with `.on(plane_or_face)`.
@@ -69,10 +74,10 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
 | curves | `curves/*` | Line, arcs, conic arcs (ParabolicArc, HyperbolicArc, ConicArc), Spline, Bezier, Helix, Spiral (flat), Polyline, Wire; split, trim, extend, intersections; through (bend through a point), match (move the ends); offset (parallel curves); fit_curve (a curve near many points); min_radius (curvature, inflections); to_arcs (lines and arcs for CNC); NURBS data of an edge (nurbs) and back (from_nurbs), make_compatible, remove_knots |
 | features | `features/*` | extrude, revolve, swing (revolve along an outline), loft, sweep, fillet, chamfer, shell, offset, mirror, split (also along a sheet), imprint (split lines on faces, also along curves), section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); moving and offsetting faces of any part, also imported ones (move_faces, offset_faces: push-pull, moving and resizing holes and bosses); merge and cells (one part of several cells, as for several materials) |
-| deform | `deform/*` | twist, taper, bend, unroll and Lattice (free-form deformation) of finished parts, and of edges, wires and points (`deform/curves`); analytic faces where the image is a plane, cylinder or cone, exact NURBS elsewhere |
+| deform | `deform/*` | twist, taper, bend, unroll and Lattice (free-form deformation) of finished parts, and of edges, wires and points (`deform/curves`); analytic faces where the image is a plane, cylinder or cone, NURBS elsewhere (exact for lattices and tapers, within 1e-6 mm for twists, bends and unrolls) |
 | surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points, with how far the points lie), nurbs_surface (from control points, knots and weights), ruled, stitch, surface_fillet (a round or chamfer between two sheets), blend (a bridge between the edges of two sheets), trim (cut a sheet along curves on it), fill (close a hole, a Coons or N-sided patch), network (a surface through crossing curves), extend (grow a sheet past its edges, untrim a face), push (a local dent or bump at a point of a face), warp (raise or sink a region of a face), flatten (press a region of a face onto a plane), match_edge (move a sheet's edge onto a curve), merge_faces (two faces made one), Shell; curves on faces: iso (constant parameter), wrap (a drawing laid onto a face, as a label); iso curves and NURBS data of faces |
 | analysis | `analysis/*` | mass properties, section properties, measures, distances and closest points, curvature, continuity (G0/G1/G2), ray casting, intersections, silhouettes, projections (onto bodies, the near side only, onto a face along its normals), validity (is_valid, check: what is wrong and where), draft analysis and parting lines for molding and casting |
-| files | `files/*` | STEP in and out (also coordinate systems and curves), IGES in, USD in and out (exact bodies), OpenCASCADE `.brep` in and out, DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans; colors and names of single faces (face_colors) |
+| files | `files/*` | STEP in and out (also coordinate systems and curves), IGES in, USD in and out (exact bodies), OpenCASCADE `.brep` in and out, DXF in and out, STL, glTF, OBJ, the native format, files in memory (to_step, from_step, ...), render, diff_images, show, drawings with hidden lines (drawing_views, SVG and DXF), meshes (mesh Booleans, decimate, fill_holes, sections, repaired); colors and names of single faces (face_colors) |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold (also rolled parts and curls), flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API

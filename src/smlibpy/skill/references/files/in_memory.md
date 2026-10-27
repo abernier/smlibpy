@@ -10,11 +10,12 @@ the same keywords.
 | Format | Write | Read | Contents |
 |---|---|---|---|
 | STEP | `to_step(shapes, *, unit, name, assembly)` | `from_step(data, *, heal, strict)`, `from_step_model(data, ...)` | `str` (ASCII); read from `str` or `bytes` |
-| STL | `to_stl(shapes, *, tolerance, angle, ascii)` | `from_stl(data)` | `bytes`; read from `bytes` (or the text of an ASCII file) |
-| OBJ | `to_obj(shapes, *, tolerance, angle)` | | `str` |
-| glTF | `to_glb(shapes, *, tolerance, angle, edges, edge_color)`, `to_gltf(...)` | | `bytes`, `str` (JSON, buffer as a data URI) |
-| DXF | `to_dxf(shapes, *, unit, plane)` | `from_dxf(data, *, layers, unit, tolerance)`, `from_dxf_wires(...)` | `str`; read from `str` or `bytes` |
-| USD | `to_usd(shapes, *, mesh, tolerance, angle, materials)` | `from_usd(data, *, ..., resolve)` | `str` (`.usda`); read from `str` or `bytes` |
+| STL | `to_stl(shapes, *, tolerance, angle, ascii, max_edge)` | `from_stl(data)` | `bytes`; read from `bytes` (or the text of an ASCII file) |
+| OBJ | `to_obj(shapes, *, tolerance, angle, max_edge)` | | `str` |
+| glTF | `to_glb(shapes, *, tolerance, angle, edges, edge_color, max_edge)`, `to_gltf(...)` | | `bytes`, `str` (JSON, buffer as a data URI) |
+| DXF | `to_dxf(shapes, *, unit, plane, curves, tolerance)` | `from_dxf(data, *, layers, unit, tolerance)`, `from_dxf_wires(...)` | `str`; read from `str` or `bytes` |
+| SVG | `to_svg(shapes, *, margin, stroke)` | | `str` |
+| USD | `to_usd(shapes, *, mesh, tolerance, angle, materials, max_edge)` | `from_usd(data, *, ..., resolve)` | `str` (`.usda`); read from `str` or `bytes` |
 | IGES | | `from_iges(data, *, heal, strict)` | read from `str` or `bytes` |
 | OpenCASCADE `.brep` | `to_brep(shapes)` | `from_brep(data, *, heal, check, strict)` | `str` (ASCII); read from `str` or `bytes` (ASCII or binary) |
 | SMLib | `to_smb(shapes, *, ascii)`, `to_smp(shapes, *, ascii)` | `from_smb(data)`, `from_smp(data)` | `bytes` |
@@ -27,7 +28,8 @@ the same keywords.
   `resolve(asset, from_)`: `asset` as written, `from_` the name of the layer that names it (`""`
   for the text given); it returns their text or bytes, or None. Without it they are not read (a
   warning names them).
-- Fonts too: `Text("Hi", 10, font=data)` and `load_font(data)` take the bytes of a font file.
+- Fonts too: `Text("Hi", 10, font=data)` and `smlibpy.font.load_font(data)` take the bytes of a
+  font file.
 
 ## Example
 ```python

@@ -1,7 +1,9 @@
 # Deforming parts
 
 `twist`, `taper`, `bend` and `Lattice` change a finished part as a whole: model it straight
-and simple, with the features that should follow the deformation, then deform it. The
+and simple, with the features that should follow the deformation, then deform it. Each is a
+method and a function (`part.twist(45)` is `twist(part, 45)`); a lattice applies with
+`lattice.apply(part)`, `part.deform(lattice)` or `deform(part, lattice)`, all the same. The
 guides are `deform/generic`, `deform/twist`, `deform/taper`, `deform/bend`, `deform/Lattice`;
 edges, wires and points deform too (`deform/curves`).
 
@@ -58,7 +60,7 @@ print(fan.is_valid(), len(fan.faces()))
 # bent handle: holes first, then bend; the legs come back over each other
 bar = Box(200, 20, 8) - Locations((-80, 0, 0), (80, 0, 0)) * Cylinder(3, 20)
 handle = bar.bend(180, radius=30)
-holes = [f for f in handle.faces() if f.geom_type == "cylinder"]
+holes = [f for f in handle.faces() if f.geom_type == "cylinder" and abs(f.radius - 3) < 1e-6]   # (the bend is cylinders too)
 print(handle.is_valid(), sorted((round(f.center().x, 3), round(f.center().z, 3)) for f in holes))
 
 # tapered grip, bored after the taper so the bore stays round
@@ -74,19 +76,25 @@ lat.move((1, 1, -1), (0, 0, 6))
 cushion = lat.apply(block)
 print(cushion.is_valid(), round(cushion.bbox().max.z, 3))
 ```
-prints `True 27`, `True 23`, `True [(-80.0, -0.0), (-80.0, 60.0)]` (the two holes line up
+prints `True 27`, `True 23`, `True [(-80.0, 0.0), (-80.0, 60.0)]` (the two holes line up
 60 apart), `True 1`, `True 11.5`.
 
 ## Limits
 - Faces whose image is a plane, cylinder or cone are exact analytic faces (a bent plate's
   cylinders, a tapered cylinder's cone); other twisted, bent or unrolled faces are within
-  `tolerance` (1e-6 mm); lattices and tapers are exact up to degree 12.
+  `tolerance` (1e-6 mm); lattices and tapers are exact up to degree 12. A plate's bend comes
+  out as cylinders up to 90° and at 120°, 135°, 180°, 240° and 270°; at the other angles
+  measured (100° to 290° in steps of 10°) its faces are B-splines.
 - Meshes, STL and snapshots of twisted parts keep to the tolerance but take many more
   triangles (2076 for `Box(20, 20, 100).twist(90)`, the box 12; about 1 / tolerance more for a
   finer one). Do not ask for a finer mesh than needed. STEP is exact.
-- `part.volume` is exact on deformed parts (no `accuracy=` needed).
+- `part.volume` needs no `accuracy=` on deformed parts: `Box(20, 20, 100).twist(90).volume` is
+  39999.99991, 2e-9 off 40000 (its faces lie within the tolerance).
 - For sheet metal, `fold`/`flange` bend at a line with an inside radius and a K-factor; a plate
-  bent with `bend` is sheet metal too (`bends()`, `unfold`), and `unroll` lays a rolled part flat.
+  bent with `bend` is sheet metal too (`bends()`, `unfold`) where its bend is cylinders and at
+  most 180° (`Box(300, 20, 2).bend(150, radius=20).bends()` is empty, and a plate bent 240° or
+  270° raises `ModelingError: unfold: unrolling a bend failed ...`), and `unroll` lays a rolled
+  part flat.
 - Bends stay under 360°; legs crossing after a large bend are not detected.
 - A lattice point moved past its neighbours folds space and is refused.
 - A range inside the part splits the faces it crosses (more faces).

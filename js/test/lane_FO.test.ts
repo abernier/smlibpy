@@ -433,7 +433,7 @@ test('mitred corners', () => {
   assert.equal(hexagon.fillet(hexagon.edges(), 1, { corners: 'mitre' }).faces().length, 26)
   // where no corner takes a mitre, and for other styles
   assert.throws(() => cube.fillet(cube.edges().filter((e) => e.center().z > 9), 2, { corners: 'mitre' }), { name: 'RangeError', message: /the selection has none/ })
-  assert.throws(() => cube.fillet(cube.edges(), 2, { corners: 'round' }), { name: 'RangeError', message: /corners must be "patch" or "mitre"/ })
+  assert.throws(() => cube.fillet(cube.edges(), 2, { corners: 'round' as never }), { name: 'RangeError', message: /corners must be "patch" or "mitre"/ })
 })
 
 test('chamfers of circular edges are exact cones', () => {
@@ -608,7 +608,7 @@ test('shell corners pick the kernel mode', () => {
   assert.equal(Box(10, 10, 10).offset(1).info().corners, 'sharp')
   assert.equal(Box(10, 10, 10).offset(1, { corners: 'round' }).info().corners, 'round')
   assert.ok(!('corners' in Box(10, 10, 10).info()) && !('corners' in sharp.translate(1, 0, 0).info()))
-  assert.throws(() => L.shell(2, top, { corners: 'soft' }), (e: Error) => e instanceof RangeError && /corners must be "round" or "sharp"/.test(e.message))
+  assert.throws(() => L.shell(2, top, { corners: 'soft' as never }), (e: Error) => e instanceof RangeError && /corners must be "round" or "sharp"/.test(e.message))
 })
 
 // O11: split at the parting line, draft each half about it, fuse (the recipe in docs/features.md).

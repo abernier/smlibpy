@@ -35,13 +35,15 @@ methods below.
 | `mass_properties(density=1.0)`, `centroid` | `MassProperties`, `Vector` | of what a closed mesh encloses, exact for its triangles (see `mass_properties`) |
 | `section(plane)`, `slices(step, axis=Z)` | `ShapeList[Wire]`, list of them | where a plane cuts the triangles, chained into loops (see `Mesh-section`, `slices`) |
 | `decimate(fraction)`, `decimate(triangles=n)`, `decimate(tolerance=t)` | `Mesh` | fewer triangles, closed meshes stay closed (see `decimate`) |
-| `fill_holes()`, `repaired()` | `Mesh`, `(Mesh, dict)` | holes closed; also merged points, triangles turned outward (see `repaired`) |
+| `fill_holes()`, `repaired()` | `Mesh`, `(Mesh, RepairReport)` | holes closed; also merged points, triangles turned outward (see `repaired`) |
 | `to_part(max_faces=5000)`, `Part.from_mesh(mesh)` | `Part` | a faceted part, for exact Booleans and STEP (see `to_part`) |
 | `is_closed()` | bool | every edge shared by exactly two triangles (watertight) |
 | `raycast(origin, direction)` | list of `Hit` | where a ray meets the triangles, nearest first (see `raycast`) |
 | `raycast_many(origins, directions)` | list of `Hit` or `None` | the first hit of each of many rays, by the kernel's ray tracer (see `raycast`) |
 | `m1 + m2`, `m1 - m2`, `m1 & m2` | `Mesh` | mesh Booleans, see below |
 | `translate`, `rotate`, `mirror`, `scale`, `moved` | `Mesh` | a moved copy, as for shapes (normals turn along; a mirrored mesh still faces outward) |
+
+The functions `scale(mesh, factor)` and `slices(mesh, step)` take a mesh too.
 
 ## Tolerance and triangle count
 | Shape | tolerance / angle | triangles | volume error |
@@ -50,11 +52,11 @@ methods below.
 | Cylinder(10, 20) | 0.001 / 15 | 1640 (411 segments) | |
 | Sphere(10) | default / 15 | 3596 | -0.41 % |
 | Sphere(10) | 0.01 / 15 | 15004 | -0.10 % |
-| Sphere(10) | 0.001 / 15 | 136872 (0.75 s) | -0.012 % |
+| Sphere(10) | 0.001 / 15 | 136872 (0.9 s) | -0.012 % |
 | Box | anything | 12 | 0 |
 | Box(20, 20, 100).twist(90) | default (0.108) / 15 | 2076 | +0.15 % |
-| Box(20, 20, 100).twist(90) | 0.001 / 15 | 131596 (0.6 s) | -0.004 % |
-| ruled loft, square to circle | default (0.035) / 15 | 2316 | -0.06 % |
+| Box(20, 20, 100).twist(90) | 0.001 / 15 | 131596 (0.7 s) | -0.004 % |
+| ruled loft, `Rectangle(20, 20)` to `Circle(10)` 20 above | default (0.035) / 15 | 2684 | -0.07 % |
 
 The stricter of the two limits wins. A mesh of a closed part is closed and outward, so `volume`
 is positive.
@@ -73,9 +75,10 @@ the kernel's triangles unchanged.
 
 ## Mesh Booleans
 `m1 + m2`, `m1 - m2`, `m1 & m2` work on closed meshes from anywhere: `tessellate`, `import_stl`,
-`Mesh(...)`. The result is a closed mesh. For meshes that have no exact part behind them (scans,
-STL files from elsewhere); with exact parts, do the Boolean on the parts and mesh the result
-(exact, and the mesh then follows the tolerance).
+`Mesh(...)`. The result is a closed mesh. They are operators only: `fuse(m1, m2)` raises
+`TypeError: fuse takes a part, a sheet or a sketch, not a Mesh`. For meshes that have no exact
+part behind them (scans, STL files from elsewhere); with exact parts, do the Boolean on the parts
+and mesh the result (exact, and the mesh then follows the tolerance).
 
 - The result's triangles take the corner normals of the operand triangles they lie on (turned
   on the inside of a cut): it shades as its operands do. Meshes without normals (`import_stl`,
@@ -84,7 +87,8 @@ STL files from elsewhere); with exact parts, do the Boolean on the parts and mes
   `ModelingError: mesh union: the kernel's mesh Boolean returned a volume of 0, where 8000 to
   9685.51 is possible; ...` where the kernel fails. It still does for some meshes (a slanted
   pin through a box).
-- The time grows fast with the triangles: 2000 triangles 0.03 s, 260000 triangles 13 s.
+- The time grows with the triangles: 3600 triangles 0.03 s, 274000 (two spheres meshed at
+  0.001) 3.3 s.
 - Open meshes are not checked (they have no volume to compare): check `is_closed()` of both
   first.
 
@@ -94,6 +98,8 @@ STL files from elsewhere); with exact parts, do the Boolean on the parts and mes
 - Unlike shapes, a `Mesh` is mutable: `m.vertices += [10, 0, 0]` moves it in place, and mesh
   Booleans, exports and `render` all use the arrays as they are then. `m.translate(10, 0, 0)`
   returns a moved copy instead. It has no `name` or `color`.
+- `m.dispose()` frees the kernel's copy of a mesh at once (an internal tessellation can keep
+  one); the arrays stay, and the mesh stays usable.
 - Use the exact shape for measurements (`part.volume`, `part.area`). Mesh values are off by
   the tolerance.
 

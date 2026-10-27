@@ -3,8 +3,9 @@
 A scaled copy of a shape: uniform or per axis, about a center point.
 
 ## Signature
-`shape.scale(factor, center=(0, 0, 0))`. `factor` is a number or `(sx, sy, sz)`.
-`center` is the fixed point; it defaults to the **world origin**, not the shape's center.
+`shape.scale(factor, center=(0, 0, 0))` and the function `scale(shape, factor, center=(0, 0, 0))`,
+which also scales a `Mesh`. `factor` is a number or `(sx, sy, sz)`. `center` is the fixed
+point; it defaults to the **world origin**, not the shape's center.
 
 ## Returns
 A new shape of the same type. Volume changes by `sx * sy * sz` (`factor**3` for a uniform
@@ -32,7 +33,8 @@ factor); areas of sketches by `sx * sy`.
 - `scale(2)` on a part away from the origin also moves it. Pass `center=part.center()` (or a
   corner) to keep it in place.
 - `scale(0)`, a zero per-axis factor (`(1, 0, 1)`) and a NaN or infinite factor raise
-  `ValueError`: they would flatten the shape.
+  `ValueError: scale: every factor must be finite and not zero (got 0)`: they would flatten
+  the shape.
 - `scale(-1)` is a point reflection (valid, positive volume). Use `mirror` for a reflection
   in a plane.
 

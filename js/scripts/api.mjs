@@ -20,13 +20,13 @@ const SECTIONS = [
   ['Curves', ['curves']],
   ['Sketches and text', ['profiles', 'sketches', 'text', 'font']],
   ['Parts and patterns', ['parts', 'locations']],
-  ['Features', ['operations', 'defeature', 'draft']],
-  ['Deformations', ['deform']],
+  ['Features', ['operations', 'defeature', 'molding']],
+  ['Deformations', ['deformations']],
   ['Surfaces', ['surfaces']],
   ['Sheet metal', ['sheetmetal']],
   ['Meshes', ['mesh']],
   ['Files', ['exporters', 'step_import', 'iges_import', 'dxf', 'drawing', 'usd', 'occt', '_bytes']],
-  ['Pictures and the viewer', ['render', 'viewer']],
+  ['Pictures and the viewer', ['pictures', 'viewer']],
   ['Errors and memory', ['_errors', 'kernel']],
 ]
 // the package's other entries (the exports of package.json), each with everything it exports

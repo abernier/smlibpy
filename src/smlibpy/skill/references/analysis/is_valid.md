@@ -6,7 +6,7 @@ whose faces meet.
 
 ## Signature
 
-`part.is_valid(strict=False) -> bool` (only on `Part`)
+`part.is_valid(*, strict=False) -> bool` (only on `Part`)
 
 With `strict=True`, the kernel's own checks of every face, edge and vertex (`check`) must find
 nothing too: a stitched or imported body can be closed and enclose its volume while its vertices
@@ -16,11 +16,12 @@ lie farther from its faces than their tolerances allow (see `check`).
 
 ```python
 {'type': 'Part', 'faces': 6, 'edges': 12, 'vertices': 8,
- 'bbox': ((-5.0, -10.0, -15.0), (5.0, 10.0, 15.0))}
+ 'bbox': ((-5.0, -10.0, -15.0), (5.0, 10.0, 15.0)), 'solids': 1, 'voids': 0}
 ```
 
 `bbox` is `(min, max)` as plain tuples. Edge counts include seam edges (a cylinder: 3), so
-`info()["edges"]` can be larger than `len(part.edges())`.
+`info()["edges"]` can be larger than `len(part.edges())`. `solids` and `voids` (cavities) are a
+Part's only; a part made by `shell` or `offset` also has `corners`, `"round"` or `"sharp"`.
 
 ## What valid means
 
@@ -79,7 +80,7 @@ def check(part, expected_volume, rel=1e-5):
     return part.info()
 
 print(check(Box(10, 20, 30), 6000))
-# {'type': 'Part', 'faces': 6, 'edges': 12, 'vertices': 8, 'bbox': ((-5.0, -10.0, -15.0), (5.0, 10.0, 15.0))}
+# {'type': 'Part', 'faces': 6, 'edges': 12, 'vertices': 8, 'bbox': ((-5.0, -10.0, -15.0), (5.0, 10.0, 15.0)), 'solids': 1, 'voids': 0}
 
 empty = Box(10, 10, 10) - Box(20, 20, 20)                      # the tool encloses the part
 print(empty.is_valid(), len(empty.faces()))                    # False 0

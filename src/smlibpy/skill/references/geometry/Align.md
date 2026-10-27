@@ -4,9 +4,11 @@ Where a new primitive or sketch sits relative to the origin, per axis: `Align.MI
 `Align.CENTER`, `Align.MAX`.
 
 ## Usage
-`align=` on `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge` and on the sketch
-constructors (`Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`,
-`RegularPolygon`, `Slot`, `Trapezoid`). `Hole` and its variants have no `align`.
+`align=` on `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `AnnularSector`, `Pyramid`
+and on the sketch constructors (`Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`,
+`Polygon`, `RegularPolygon`, `Triangle`, `Trapezoid`, `Slot`, `ArcSlot`, `Text`). `Hole` and
+its variants have no `align`. `Text` aligns its layout box (from the last baseline to the
+first cap height), not its outline's bbox (see `sketches/Text`).
 
 - One value applies to every axis: `Box(10, 10, 10, align=Align.MIN)` fills x, y, z 0..10.
 - A tuple sets each axis: `(Align.CENTER, Align.CENTER, Align.MIN)` stands a part on XY.
@@ -20,7 +22,7 @@ constructors (`Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`,
 
 ## Defaults
 Primitives and most sketches are centered. `Polygon` defaults to `align=None`: its points
-stay where you gave them.
+stay where you gave them. `ArcSlot` too: the center of its arc stays on the origin.
 
 ## Gotchas
 - `RegularPolygon` (odd side counts) is centered on its circumcenter, not its bbox, when

@@ -15,7 +15,7 @@ process never runs the step itself.
   `"helper"`, one helper process for the session that gets the bodies as `.smb` (Windows, and
   processes that must not fork); `"auto"`, fork where the system can, the helper elsewhere.
   Anything else: `ValueError: smlibpy.defeature.GUARD_PROCESS must be 'auto', 'fork' or
-  'helper'`.
+  'helper', not 'spawn'`.
 - `GUARD_BOOLEANS = False`: `True` runs every Boolean (`+`, `-`, `&`, `merge`) in the other
   process too, for long batch runs over unknown inputs (STEP files) that must not end on a crash.
 
@@ -28,8 +28,9 @@ smlibpy.defeature.GUARD_BOOLEANS = True   # a batch over unknown files
 ## Guarded steps
 
 `remove_fillets`, `remove_faces`, `surface_fillet`, `shell`, `offset`, `thicken`, `Part.cells()`;
-`fillet` and `chamfer` of parts read from files (`import_step`, `load`, `import_usd`) and of the
-parts made from them; Booleans with `GUARD_BOOLEANS`.
+`fillet`, `chamfer` and `fillet_preview` of parts read from files (`import_step`, `import_iges`,
+`import_usd`, `import_brep`, `load`, the `from_*` functions) and of the parts made from them;
+Booleans with `GUARD_BOOLEANS`.
 
 ## Errors
 

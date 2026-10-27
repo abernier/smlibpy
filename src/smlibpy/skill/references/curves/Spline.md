@@ -40,8 +40,8 @@ Without `tangents`, each end tangent comes from the parabola through the three e
 ## Errors
 - `ValueError: a spline needs at least two points`.
 - `ValueError: spline points must be distinct` for consecutive duplicates.
-- `ValueError: cannot normalize a zero-length vector` for a zero tangent, or two points with
-  `closed=True`.
+- `ValueError: cannot normalize a zero-length vector` for a zero tangent.
+- `ValueError: a closed spline needs at least three points` for two points with `closed=True`.
 - `ValueError: Spline: tangents are (start, end) or one per point (4), got 1` for `tangents=((1, 0),)`.
 
 ## Example

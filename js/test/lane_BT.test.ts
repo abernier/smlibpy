@@ -1062,3 +1062,8 @@ test('T8: named and colored share the Brep, not the identity', () => {
   const s = Rectangle(10, 4).on(Plane.XZ).named('r')
   assert.ok(s.plane.zDir.equals(Plane.XZ.zDir))
 })
+
+test('an unknown color name is not read as hex', () => {
+  assert.throws(() => toRgb('maroon'), /unknown color 'maroon'/)
+  assert.deepEqual(toRgb('abc'), toRgb('#aabbcc'))
+})

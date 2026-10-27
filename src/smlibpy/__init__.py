@@ -8,8 +8,10 @@
     plate.export("plate.step")
 """
 
+import sys as _sys
+
 from .align import Align
-from .deform import Lattice, bend, taper, twist, unroll
+from .deformations import Lattice, bend, deform, taper, twist, unroll
 from .curves import (
     Bezier,
     CenterArc,
@@ -35,8 +37,11 @@ from .geometry import (TOLERANCE, Axis, BoundBox, ClosestPoints, Continuity, Cur
                        Plane, Pos, Rot, Vector, X, Y, Z)
 from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, RepairReport, tessellate
-from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
-                         swing, thicken)
+from .operations import (chamfer, cut, draft, extend, extrude, fillet, fillet_preview, flatten, fuse, imprint,
+                         intersect, intersection_curves, loft, match_edge, merge, merge_faces, mirror, move_faces,
+                         offset, offset_faces, outline, parting_line, project, push, remove_faces, remove_fillets,
+                         revolve, scale, section, shell, silhouette, slices, split, sweep, swing, thicken, trim, warp,
+                         xor)
 from .parts import AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Pyramid, Sphere, Torus, Wedge
 from .profiles import Profile
 from .shapes import (Edge, Face, MassProperties, Part, Problem, SectionProperties, Shape, ShapeList, Shell, Sketch,
@@ -56,7 +61,7 @@ from .dxf import export_dxf, from_dxf, from_dxf_wires, import_dxf, import_dxf_wi
 from .usd import export_usd, from_usd, import_usd, to_usd
 from .occt import export_brep, from_brep, import_brep, to_brep
 from .drawing import DrawingView, drawing_views, export_svg, to_svg
-from .render import diff_images, render
+from .pictures import diff_images, render
 from .viewer import show
 from .surfaces import (FitReport, StitchReport, blend, fill, network, nurbs_surface, ruled, stitch, surface,
                        surface_fillet)
@@ -64,6 +69,15 @@ from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, deve
                          flat_pattern, fold, unfold)
 
 __version__ = "0.5.0"
+
+# The modules' old names, for ``from smlibpy.deform import Lattice`` and the like. deformations, molding
+# and pictures were deform, draft and render up to 0.5.0: a module may not take the name of a public
+# function, and those three are functions.
+from . import deformations as _deformations, molding as _molding, pictures as _pictures  # noqa: E402
+
+_sys.modules[__name__ + ".deform"] = _deformations
+_sys.modules[__name__ + ".draft"] = _molding
+_sys.modules[__name__ + ".render"] = _pictures
 
 __all__ = [
     # geometry
@@ -86,11 +100,14 @@ __all__ = [
     "CounterSinkHole",
     # patterns
     "Locations", "GridLocations", "PolarLocations", "HexLocations",
-    # operations
-    "extrude", "revolve", "loft", "sweep", "swing", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section", "merge",
-    "thicken", "tessellate",
+    # operations (each also a method: tests/test_api_forms.py)
+    "extrude", "revolve", "loft", "sweep", "swing", "fillet", "chamfer", "fillet_preview", "shell", "offset", "draft",
+    "mirror", "scale", "split", "section", "merge", "thicken", "fuse", "cut", "intersect", "xor", "imprint",
+    "move_faces", "offset_faces", "remove_faces", "remove_fillets", "push", "warp", "flatten", "extend", "trim",
+    "match_edge", "merge_faces", "project", "outline", "silhouette", "intersection_curves", "parting_line", "slices",
+    "tessellate",
     # deformations
-    "twist", "taper", "bend", "unroll", "Lattice",
+    "twist", "taper", "bend", "unroll", "deform", "Lattice",
     # surfaces
     "surface", "FitReport", "nurbs_surface", "ruled", "stitch", "StitchReport", "surface_fillet", "blend", "fill",
     "network",

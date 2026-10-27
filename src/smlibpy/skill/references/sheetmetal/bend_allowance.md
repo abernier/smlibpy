@@ -24,8 +24,9 @@ K 0.33 / 0.4 / 0.44 / 0.5 with R 2: BA 4.1783 / 4.3982 / 4.5239 / 4.7124.
 ## Gotchas
 - The bend line for `fold` is the middle of the zone: for an outside leg L from the free end,
   put it at `L - (radius + thickness) + bend_allowance(...) / 2` (90 degrees).
-- These match what `fold` and `flat_pattern` do exactly: the extruded L with legs 30 and 25
-  unfolds to `developed_length(30, 25, ...)`, a bent blank of that length measures 60 x 40.
+- These match what `fold` and `flat_pattern` do exactly: an extruded L with legs 30 and 25
+  unfolds to `developed_length(30, 25, ...)`, and a blank of `developed_length(60, 40, ...)`
+  folded at the line above measures 60 x 40 (the example).
 
 ## Example
 ```python

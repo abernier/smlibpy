@@ -5,14 +5,15 @@ makes a surface (`Shell`).
 
 ## Signature
 `sweep(profile, path, *, orient=True, translational=False, sharp_corners=None, up=None, twist=0.0, scale=None, anchor="center", rails=None)`
-`sketch.sweep(path, *, sharp_corners=None, up=None, twist=0.0, scale=None, anchor="center")` (no `orient`/`translational`/`rails`)
+`sketch.sweep(path, *, orient=True, translational=False, sharp_corners=None, up=None, twist=0.0, scale=None, anchor="center")` (no `rails`: a sketch is a closed profile)
 
 - `profile`: a sketch (holes allowed), a planar face or a closed wire. Draw it anywhere,
   usually at the origin in XY.
 - `path`: an `Edge` or a connected `Wire` (`Polyline`, `FilletPolyline`, `Wire([...])`). Edges
   that meet tangentially are swept in one go. A closed path that does not lie in a plane
   (`Spline(..., closed=True)`) is swept in one go and closed where its ends meet; a planar
-  closed single-edge path (a full `CenterArc`) is split into two halves.
+  closed single-edge path (the edge of an `Ellipse`, a closed planar spline) is split into two
+  halves. A full circle is swept as a revolve (one torus face, see Gotchas).
 - `orient=True`: turn the profile to stand perpendicular to the path at its start. Leave it on.
 - `translational=True`: keep the profile's orientation fixed (it does not turn with the path).
   The profile then cuts the path at a slant; on an arc the volume is area × rise, not area ×
@@ -35,8 +36,8 @@ makes a surface (`Shell`).
   not overshoot them); a function of the fraction gives it. Positive everywhere; along a closed
   path the same at both ends. A planar path of several edges is then swept piece by piece
   (`sharp_corners=True` raises). The law holds along the length also where the path's parameter
-  runs unevenly (a spline through unevenly spaced points: radius within 2e-6; before the 0.5.0
-  close-out 1.2e-3 off, read at 65 points).
+  runs unevenly (a spline through unevenly spaced points: radius within 2e-6, read at 65
+  points).
 - `anchor`: the point of the profile that goes on the path (and that `scale` scales about):
   `"center"` (default: the center of its box), `"origin"` (the origin of the sketch's plane: (0, 0)
   of a `Polygon` or `Profile` drawn on XY; a centered shape such as `Circle` or `Rectangle` moves
@@ -51,9 +52,7 @@ makes a surface (`Shell`).
   on oblique and helical paths, and on planar paths with mitered corners (with splines among the
   edges too). `anchor=` puts another point there: `anchor="origin"` for a `Polygon` drawn from
   (0, 0), `anchor=(x, y)` for any point of the profile's plane (an L-section by its corner, a lip
-  by its edge). Before the 0.5.0 close-out an arc that does not span whole quadrants put the
-  profile a little beside its box (an 80-degree sector of radius 10: 0.021 along a spline, 0.075
-  along a 3D polyline).
+  by its edge).
 - The profile is turned by the smallest rotation from its normal to the path tangent. For a
   path along Z it is unchanged. For a path along X, sketch x becomes Z; along Y, sketch y
   becomes Z. Check with `bbox()`.
@@ -61,7 +60,7 @@ makes a surface (`Shell`).
   edges (a `FilletPolyline` in 3D) are one sweep, and at a corner it turns by the smallest
   rotation from one tangent to the next (`Rectangle(4, 2)` along
   `FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), (40, 40, 40), radius=8)` ends 2 wide in x
-  and 4 high, as it is carried along; it used to turn by 90 degrees at a joint). Where the
+  and 4 high, as it is carried along). Where the
   kernel cannot sweep an open path's joined edges in one go (some circles and ellipses along 3D
   `FilletPolyline`s), each edge is swept on its own, turned to its own start, and the pieces are
   fused: a profile that is not round then turns where the edges meet, and a `RuntimeWarning`
@@ -74,7 +73,7 @@ makes a surface (`Shell`).
   on a planar path it keeps its attitude to the plane), except along helices: there it keeps its
   attitude to the helix's axis, as a thread tooth or a flat spring wire does. A `Rectangle(2, 1)`
   along `Helix(pitch=5, height=30, radius=10)` measures 2 x 1.004 at every section (the band cut
-  at its slope); before 0.5.0 it rolled by some 30 degrees a turn (1.34 to 2.23 by 1.25 to 2.22).
+  at its slope).
 - `up=Z` keeps a rail upright along a 3D spline; the path must never run along `up`
   (`ValueError: sweep: the path runs along up= at (...)`): a path that starts along Z needs
   another `up`.
@@ -85,9 +84,8 @@ makes a surface (`Shell`).
   it (the path nearly straightens there, ...)`). Pick `up=` a direction there.
 - Round a closed path with corners that does not lie in a plane, the profile carried by the
   smallest turns comes back turned about the path; that turn is spread evenly along the length,
-  so the profile meets itself where the loop closes (before the 0.5.0 close-out it turned by all
-  of it at the closing corner: 8.5 degrees round `Polyline((0, 0, 0), (40, 0, 0), (40, 30, 25),
-  (10, 40, -10), close=True)`).
+  so the profile meets itself where the loop closes (round `Polyline((0, 0, 0), (40, 0, 0),
+  (40, 30, 25), (10, 40, -10), close=True)`, for one).
 - `twist` works on any path, on top of the default frame (on a helix: of its axis): a twisted bar
   `sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)` (volume 2000), a twisted
   ribbon from an open line profile (a helicoid). Along a closed path the profile must come round
@@ -100,30 +98,32 @@ makes a surface (`Shell`).
 ## Two rails
 `sweep(profile, path, rails=rail)` with an open profile (an edge or a wire) that runs from the
 path to the rail: the profile is moved, turned and scaled (the same in every direction) so that its
-ends stay on both, and the surface (a `Shell`, one face) passes through both rails exactly (within
-1e-7). Its frame turns with the line from the path to the rail and with the rails' mean direction;
-the rails are matched by the fraction of their lengths, from where the profile meets them to their
-ends. Not with `orient`, `translational`, `sharp_corners`, `up`, `twist`, `scale` or `anchor`
-(`ValueError`); a closed profile along two rails is not supported (`ValueError`). For surfaces
-through several profiles along rails use `loft(sections, rails=...)`.
+ends stay on both, and the surface (a `Shell`, one face) passes through both rails (1.6e-7 off
+the farther one in the example below). Its frame turns with the line from the path to the rail
+and with the rails' mean direction; the rails are matched by the fraction of their lengths, from
+where the profile meets them to their ends. Not with `orient`, `translational`,
+`sharp_corners`, `up`, `twist`, `scale` or `anchor` (`ValueError`); a closed profile along two
+rails is not supported (`ValueError`). For surfaces through several profiles along rails use
+`loft(sections, rails=...)`.
 
 ## Gotchas
 - Long helices: `Helix` takes any number of turns, and sweeps along them go (default frame: 400
   turns tested; with the kernel's own frame, `orient=False`, a long helix is swept in 2, 4 or 8
-  pieces: it failed beyond some 60 turns, and its surface is approximate, 1e-4 of the volume). A
+  pieces: it failed beyond some 60 turns, and its surface is approximate, 4e-4 of the volume at 70
+  and 100 turns). A
   chain of helices (`Wire([Helix(1, 30, 5), Helix(1, 30, 5, center=(0, 0, 30))])`) sweeps with
   any profile too.
 - A loop closed with a kink (`Spline(*pts, pts[0])`, not `closed=True`) is swept in two halves
   fused where its ends cross (a notch outside, the overlap inside: area × length less a few
-  tenths of a percent). Where that fuse fails, it is swept in pieces as before 0.5.0, and a round
+  tenths of a percent). Where that fuse fails, it is swept in pieces, and a round
   profile with its seam turned (the same body); for a few loops all fail (`KernelError`). Faces
   without area that such a fuse leaves are taken out, or the sweep raises `ModelingError` ("faces
   that enclose no area"). A smoothly closed spline (`closed=True`) has no kink.
-- Mitered corners work on planar paths in any plane (a path in the YZ plane, or in an oblique
-  one, gave no closed solid before 0.5.0).
+- Mitered corners work on planar paths in any plane (the frame below in the YZ plane, or turned
+  into an oblique one: 1920.0 each).
 - A path that is a single `Line` is swept as an extrusion, a single arc or circle (with `orient`)
-  as a revolve: planes, cylinders, cones and tori (`Circle(2)` along a line: a cylinder, radius 2;
-  before 0.5.0 a B-spline face). A profile that reaches across the arc's axis raises
+  as a revolve: planes, cylinders, cones and tori (`Circle(2)` along a line: a cylinder, radius
+  2). A profile that reaches across the arc's axis raises
   `ModelingError: sweep: the profile reaches across the axis of the arc (radius 10), so it would
   sweep through itself`.
 - Self-intersection is checked only along a single arc: a profile bigger than the bend radius of
@@ -135,8 +135,8 @@ through several profiles along rails use `loft(sections, rails=...)`.
 - A `Wire` whose edges do not connect raises `ValueError: the sweep path is not connected: a
   gap of 1 between Edge(...) and Edge(...)`.
 - `orient=False` with a path that is not along the profile normal raises
-  `KernelError: sweep failed (SM_ERR): the profile may be too large for the path's curvature`
-  (the message is misleading).
+  `ModelingError: sweep: the kernel returned a body that is without volume; the profile may be
+  too large for the path's curvature` (`Circle(1)` along X; the message is misleading).
 - Open profile (surface sweep) needs a single-edge path: `ValueError: surface sweeps need a
   single-edge path`.
 

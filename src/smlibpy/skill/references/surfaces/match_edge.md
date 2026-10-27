@@ -6,6 +6,7 @@ bends to follow, smoothly, near the edge only. To close a gap between two sheets
 
 ## Signature
 `sheet.match_edge(edge, target, *, extent=0.25)`
+`match_edge(sheet, edge, target, *, extent=0.25)`: the same, as a function
 
 - `edge`: an edge of the sheet that is one whole side of its face.
 - `target`: the curve: an `Edge`, or a `Wire` whose edges join end to end (joined into one curve).
@@ -16,18 +17,19 @@ bends to follow, smoothly, near the edge only. To close a gap between two sheets
 
 ## Returns
 A new `Shell` (a Sketch's comes back as a Shell): the edge on the curve (within 1e-12 in the
-measured cases), the face over the rest of its range unchanged (1e-12), its opposite side in
-place. The changed faces become B-splines (planes too). 2 to 3 ms.
+measured cases), the face over the rest of its range unchanged (3e-12), its opposite side in
+place. The changed faces become B-splines (planes too). About 2 ms.
 
 ## Where the ends move
 Where the curve's ends are not the edge's ends, the edge's vertices move to them, and the two
 edges next to it bend near those ends (the face's sides, within `extent`). The faces on the other
 side of those edges follow them the same way (matched to their new curves), and so on, until no
 edge moves. Those neighbours meet the matched face at the edge, not tangent there: matching keeps
-no tangent across the side edges (a crease of 10 to 20 degrees near the moved corner in the
-measured sheets; even with the ends kept, the face's slope along its side edges changes). A sheet
-with such a crease may not `thicken`. To keep a sheet smooth, merge its faces first
-(`merge_faces`), then match.
+no tangent across the side edges. In the sheets measured (two halves of a sheet, a corner moved by
+0.5 to 2.2) the crease is 20 to 34 degrees at the corner, fading out within `extent` of the side;
+with the ends kept it is there too (32 degrees: the face's slope along its side edges changes). A
+sheet with such a crease may not `thicken` (two of three tried did not). To keep a sheet smooth,
+merge its faces first (`merge_faces`), then match.
 
 ## What can be matched
 Every face that changes must be bounded by the four sides of its surface: as `surface`, `loft`,
@@ -47,8 +49,10 @@ segment exactly.
   below 1; got 1`.
 - `ValueError: match_edge: ... is not an edge of this sheet`, `TypeError: match_edge: the curve is
   an Edge or a Wire, got int`, `ValueError: match_edge: the curve is a closed wire`.
-- `ValueError: match_edge: the change runs around the sheet and back into a face it has changed
-  already`: a sheet closed around (a ring of faces) whose corner moves.
+- `KernelError: match_edge failed: the faces must be bounded by the four sides of their surfaces
+  ...`: a face at a pole (a sphere's cap), and a sheet that closes around (a tube of two faces)
+  where the edge's corners move. Match an edge of a sheet that does not close around, or keep the
+  corners where they are.
 
 ## Example
 ```python

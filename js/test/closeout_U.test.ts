@@ -306,7 +306,7 @@ test('blend of closed edges running opposite ways and off axis', () => {
   const lo = loft([Ellipse(9, 5).moved(new Location([2, 1, 30])), Ellipse(12, 7).moved(new Location([2, 1, 50]))])
   const sheet = lo.faces().filter((f) => f.geomType === 'bspline').one().toShell()
   const low = sheet.edges().filter((e) => e.faces().length === 1).sort((e, f) => e.center().z - f.center().z)[0]
-  for (const c of ['G1', 'G2', 'G3']) {
+  for (const c of ['G1', 'G2', 'G3'] as const) {
     const s = blend(top, low, { continuity: c })
     assert.deepEqual(s.check(), [])
     assert.ok(crease(s) < 1e-4)
@@ -394,7 +394,7 @@ test('warp and flatten drop the knots they do not need', () => {
   near(flat.volume, 47577.5, 1e-6)
   for (const [x, y] of [[0, 0], [-6, 0], [6, 4]]) near(f.raycast([x, y, 50], [0, 0, -1])[0].point.z, 8, 1e-9)
   near(f.raycast([25, 15, 50], [0, 0, -1])[0].point.z, 10, 1e-12)
-  for (const [cont, n] of [['G1', 22 * 22], ['crease', 23 * 23], ['G2', 21 * 21]] as [string, number][]) {
+  for (const [cont, n] of [['G1', 22 * 22], ['crease', 23 * 23], ['G2', 21 * 21]] as ['G1' | 'crease' | 'G2', number][]) {
     const w = box.warp(top, Rectangle(20, 16).on(top), 4, { continuity: cont })
     assert.equal(poles(w.faces().sortBy(Axis.Z).last), n, cont)
     assert.ok(w.isValid())

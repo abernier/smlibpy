@@ -13,7 +13,7 @@ import { Box, Cylinder, Sphere, Torus } from '../src/parts.ts'
 import { RoundedRectangle } from '../src/sketches.ts'
 import { exportStep } from '../src/exporters.ts'
 import { importStep } from '../src/step_import.ts'
-import { ANGLE_TOLERANCE, DraftAnalysis, _setTangency } from '../src/draft.ts'
+import { ANGLE_TOLERANCE, DraftAnalysis, _setTangency } from '../src/molding.ts'
 import { approx } from './_approx.ts'
 
 // biome-ignore lint: test helpers

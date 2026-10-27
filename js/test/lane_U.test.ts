@@ -105,7 +105,7 @@ test('blend joins the nearest ends of edges that run opposite ways', () => {
 
 test('blend continuity and tension', () => {
   const [, , ea, eb] = steps()
-  const areas = Object.fromEntries(['G1', 'G2', 'G3'].map((c) => [c, blend(ea, eb, { continuity: c }).area]))
+  const areas = Object.fromEntries((['G1', 'G2', 'G3'] as const).map((c) => [c, blend(ea, eb, { continuity: c }).area]))
   approx(areas.G1, 456.253, 0, 1e-3)
   assert.ok(areas.G1 < areas.G2 && areas.G2 < areas.G3)
   approx(blend(ea, eb, { continuity: 2 }).area, areas.G2)
@@ -124,7 +124,7 @@ test('blend G2 takes the curvature of a curved sheet', () => {
   const ea = cyl.edges().filter((e) => Math.abs(e.center().x - 20) < 1e-6 && Math.abs(e.center().y) < 1e-6).one()
   const eb = flat.edges().filter((e) => Math.abs(e.start.x - 30) < 1e-6 && Math.abs(e.end.x - 30) < 1e-6).one()
   approx(Math.max(...curvatures(cyl.faces()[0], ea.pointAt(0.5))), 0.05)
-  for (const c of ['G2', 'G3']) {
+  for (const c of ['G2', 'G3'] as const) {
     for (const tension of [1, [0.5, 1.5] as const]) {
       const f = blend(ea, eb, { continuity: c, tension }).faces()[0]
       approx(Math.max(...curvatures(f, ea.pointAt(0.5))), 0.05, 0, 1e-6)
@@ -141,7 +141,7 @@ test('blend of arcs and curved sheets', () => {
   const big = Cylinder(20, 20).split(Plane.XZ).translate(0, 0, 40).faces().filter((f) => f.geomType === 'cylinder').one().toShell()
   const ea = small.edges().filter((e) => e.geomType === 'circle' && e.center().z > 5).one()
   const eb = big.edges().filter((e) => e.geomType === 'circle' && e.center().z < 40).one()
-  for (const c of ['G1', 'G2']) {
+  for (const c of ['G1', 'G2'] as const) {
     const s = blend(ea, eb, { continuity: c })
     assert.ok(gapAlong(s, ea) < 1e-9 && gapAlong(s, eb) < 1e-9)
     assert.ok(angleAlong(s, small, ea) < 1e-4 && angleAlong(s, big, eb) < 1e-4)
@@ -165,7 +165,7 @@ test('blend errors', () => {
   raises(() => blend(Box(10, 10, 10).edges()[0], eb), RangeError, /lies between two faces/)
   raises(() => blend(Line([0, 0], [1, 0]), eb), TypeError, /is a curve, not an edge of a sheet/)
   raises(() => blend(a as never, eb), TypeError, /takes edges of sheets/)
-  raises(() => blend(ea, eb, { continuity: 'G4' }), RangeError, /continuity must be G1, G2 or G3/)
+  raises(() => blend(ea, eb, { continuity: 'G4' as never }), RangeError, /continuity must be G1, G2 or G3/)
   raises(() => blend(ea, eb, { tension: 0 }), RangeError, /tension must be positive/)
   raises(() => blend(ea, eb, { tension: [1, 1, 1] as never }), RangeError, /one number or a pair/)
   raises(() => blend(ea, eb, { flip: true } as never), TypeError, /unexpected option/)
@@ -394,7 +394,7 @@ test('extended cylinders and spheres continue as themselves', () => {
   assert.equal(grown.faces()[0].geomType, 'cylinder')
   approx(grown.area, 2 * Math.PI * 5 * 14, 1e-9)
   approx(grown.bbox().max.z, 7)
-  const seam = cyl.edges(true).filter((e) => e.geomType === 'line')
+  const seam = cyl.edges({ seams: true }).filter((e) => e.geomType === 'line')
   assert.throws(() => cyl.extend(2, { sides: seam }), /closes around/)
   const cap = Sphere(5).intersect(Box(4, 4, 4).translate(0, 0, 4)).faces().filter((f) => f.geomType === 'sphere')[0]
   const g2 = cap.extend(1)
@@ -405,7 +405,7 @@ test('extended cylinders and spheres continue as themselves', () => {
 test('extended B-spline sheets by the distance; untrimmed', () => {
   const rows = [0, 5, 10, 15, 20].map((x) => [0, 5, 10, 15, 20].map((y) => [x, y, 0.05 * (x - 10) ** 2] as [number, number, number]))
   const sheet = surface(rows)
-  for (const continuity of ['natural', 'G1', 'G2']) {
+  for (const continuity of ['natural', 'G1', 'G2'] as const) {
     const b = sheet.extend(3, { continuity }).bbox()
     approx(b.min.y, -3, 0, 1e-6)
     approx(b.max.y, 23, 0, 1e-6)
@@ -416,7 +416,7 @@ test('extended B-spline sheets by the distance; untrimmed', () => {
   approx(whole.bbox().max.z, 20)
   assert.throws(() => (stitch(sheet, sheet.translate(20, 0, 0)) as Shell).extend(1), /2 faces/)
   assert.throws(() => sheet.extend(0), /positive/)
-  assert.throws(() => sheet.extend(1, { continuity: 'G3' }), /continuity/)
+  assert.throws(() => sheet.extend(1, { continuity: 'G3' as never }), /continuity/)
 })
 
 // ------------------------------------------------------------------------------------- U4: fill, network
@@ -704,7 +704,7 @@ test('push errors', () => {
   const top = topOf(box)
   assert.throws(() => box.push(top, [0, 0, 10], { by: 1, to: [0, 0, 12] }), /not both/)
   assert.throws(() => box.push(top, [0, 0, 10]), /give the move/)
-  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, continuity: 'G3' }), /continuity/)
+  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, continuity: 'G3' as never }), /continuity/)
   assert.throws(() => box.push(top, [0, 0, 10], { by: 1, radius: 0 }), /radius/)
   assert.throws(() => box.push(topOf(Box(5, 5, 5).translate(100, 0, 0)), [100, 0, 2.5], { by: 1 }), /not a face of this part/)
   assert.throws(() => box.push(box.edges()[0] as unknown as Face, [0, 0, 10], { by: 1 }), TypeError)
@@ -721,7 +721,7 @@ test('warp raises a region by the height', () => {
   const box = Box(60, 40, 20)
   const top = topOf(box)
   const vols: Record<string, number> = {}
-  for (const cont of ['G2', 'G1', 'crease']) {
+  for (const cont of ['G2', 'G1', 'crease'] as const) {
     const w = box.warp(top, Rectangle(20, 16).on(top), 4, { continuity: cont })
     assert.ok(w.isValid())
     approx(w.bbox().max.z, 14, 0, 1e-9)
@@ -797,7 +797,7 @@ test('warp and flatten errors', () => {
   assert.ok(holed.warp(holedTop, Rectangle(14, 12).translate(-5, 0).on(holedTop), 3).isValid())
   assert.throws(() => box.warp(top, Rectangle(10, 10).on(Plane.XY.offset(15)), 4), /does not lie on the face/)
   assert.throws(() => box.warp(top, Line([0, 0, 10], [5, 0, 10]), 4), /not closed/)
-  assert.throws(() => box.warp(top, Rectangle(10, 10).on(top), 4, { continuity: 'G3' }), /continuity/)
+  assert.throws(() => box.warp(top, Rectangle(10, 10).on(top), 4, { continuity: 'G3' as never }), /continuity/)
   assert.throws(() => box.flatten(top, Rectangle(10, 10).on(top), Plane.XY.offset(10)), /nothing to flatten/)
   assert.throws(() => box.warp(top, 5 as never, 4), TypeError)
 })
@@ -976,7 +976,7 @@ test('surfaceFillet chamfers with one and two distances', () => {
   approx(one.area, 1200 + 40 * 5 * Math.SQRT2, 1e-9)
   assert.ok(one.thicken(1).isValid())
   assert.throws(() => surfaceFillet(floor, wall, 5, { radius2: 3 }), /radius2 is for chamfers/)
-  assert.throws(() => surfaceFillet(floor, wall, 5, { shape: 'cove' }), /shape/)
+  assert.throws(() => surfaceFillet(floor, wall, 5, { shape: 'cove' as never }), /shape/)
   assert.throws(() => surfaceFillet(floor, wall, 5, { radius2: 0, shape: 'chamfer' }), /radius2 must be positive/)
 })
 

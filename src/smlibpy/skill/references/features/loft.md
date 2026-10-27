@@ -28,7 +28,8 @@ A solid through a series of cross sections (closed sections), or a surface throu
   without end faces (three sections or more; no tangents).
 - `rails`: a curve (an edge or a wire) or a list of them for **open** sections (a surface): each
   runs from the first section to the last and crosses every section once, and the loft passes
-  through them exactly, as through the sections (a Gordon surface; within 1e-7). Rails may run on
+  through them, as through the sections (a Gordon surface; the panel below is 1.7e-7 off its
+  rails and 2.5e-7 off its sections). Rails may run on
   past the first and last section (they are cut there) and in either direction. Where no rail
   runs along the sections' starts or ends, the border there runs smoothly through them. Sections
   and rails must be smooth curves (each is joined into one; a corner raises `ModelingError`: "must
@@ -57,12 +58,14 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
 ## Gotchas
 - Sections with holes make a hollow solid: each hole is joined to the nearest hole of the next
   section and runs through the whole loft. `loft([Circle(10) - Circle(5), (Circle(8) -
-  Circle(3)).translate(0, 0, 20)])` is a hollow frustum (4 faces, 4084.071). A different
+  Circle(3)).translate(0, 0, 20)])` is a hollow frustum (4 faces, 4084.070 = 1300 pi). A different
   number of holes raises `ValueError`.
 - A section with two separate regions raises `ValueError: a loft section must be a single region`.
 - Smooth lofts overshoot between sections: a 15/25/10 vase reaches radius 25.047 at the bulge.
   Use `ruled=True` when a section must stay the widest.
-- Sections out of order (z 0, 20, 10) loop back and overshoot (z max 20.37) without an error.
+- Sections out of order (z 0, 20, 10) loop back and overshoot without an error (`Circle(10)`,
+  `Circle(15)` at z 20, `Circle(10)` at z 10: z max 20.19), or come out inside out
+  (`ModelingError: loft: the kernel returned a body that is inside out ...`).
 - Open curves must run the same way: two lines in opposite directions make a bow-tie surface
   (area 55.9 instead of 111.8).
 - Two sections in the same plane: `KernelError: loft failed (SM_ERR_INVALID_INPUT): sections
@@ -80,7 +83,7 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
 - `ValueError: loft: start_tangent is a face the loft continues, so the section must lie on it (where the face ends); it lies 1 off the face`
 - `ValueError: loft: rails= takes open sections (edges or wires: a surface through them and the rails); closed sections along rails are not supported`
 - `ValueError: loft: rail 1 and section 2: the curves do not cross (within ...)`
-- `ModelingError: loft: the sections and rails must be smooth curves; a smooth curve stays ... off one of them (a corner: ...)`
+- `ModelingError: loft: the sections and rails must be smooth curves; a smooth curve stays ... off one of them (a corner, or a bend too sharp to follow: ...)`
 - `ModelingError` when the kernel returns an inside-out or volume-less body.
 
 ## Example
@@ -134,7 +137,8 @@ print(round(ring.volume, 1))                            # 789.5 (torus 789.6)
 ```
 
 Shelling a loft: opening the bottom (planar polygon) face works; opening the circular top
-of the duct above fails (`shell failed`). Subtract an inner loft instead.
+of the duct above fails (`KernelError: shell failed (SM_ERR) ...` or `ModelingError: shell: the
+kernel could not build a valid result ...`). Subtract an inner loft instead.
 
 ## Related
 `sweep` (constant profile along a path; `sweep(..., rails=)` along two rails), `extrude(taper=...)`, `ruled`,

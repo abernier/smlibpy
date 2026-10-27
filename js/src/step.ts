@@ -640,7 +640,7 @@ class _BodyWriter {
  * "inch"), `name` the product's name (the file's name by default), `author` and `organization`
  * for the header. */
 export interface StepOptions {
-  unit?: string
+  unit?: 'mm' | 'cm' | 'm' | 'um' | 'inch' | 'in'
   name?: string | null
   author?: string
   organization?: string

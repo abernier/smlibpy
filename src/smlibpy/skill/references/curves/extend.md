@@ -4,7 +4,9 @@ Make an edge longer at one end or both, for cut tools and sweep paths that must 
 (a groove that runs out cleanly) and for curves that must reach another curve.
 
 ## Signature
-`edge.extend(distance, *, end="end", continuity="G1") -> Edge`
+`edge.extend(distance, *, end="end", continuity="G1") -> Edge`, or the function
+`extend(edge, distance, *, end="end", continuity="G1")` (which also extends sheets and faces:
+`surfaces/extend`).
 
 - `distance`: the length added at each end asked for, > 0 (shorten with `trim`).
 - `end`: `"end"`, `"start"` or `"both"`.
@@ -15,7 +17,7 @@ Make an edge longer at one end or both, for cut tools and sweep paths that must 
 A new free edge. Lines stay lines, arcs stay arcs of the same circle (`geom_type == "circle"`,
 same radius and center), elliptical arcs stay arcs of the same ellipse. Other curves become a
 B-spline that is the original curve up to its end and the extension after it. The added length
-is `distance` exactly (to about 1e-10) for every kind and continuity.
+is `distance` exactly (to about 1e-9) for every kind and continuity.
 
 ## Gotchas
 - `"G2"` with a large distance curls: the extension keeps turning with the end curvature

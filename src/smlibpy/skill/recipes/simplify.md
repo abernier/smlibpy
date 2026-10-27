@@ -28,7 +28,9 @@ fillet. After a STEP round trip, the holes go straight from the import, but not 
 fillets were taken out.
 
 ## What the kernel cannot do
-- Some fillets on imported parts stay (3 of 5 on the example bracket after a STEP round trip).
+- Some fillets on imported parts stay: after a STEP round trip of the example bracket,
+  `remove_fillets(partial=True)` takes out 1 of its 5 fillets, and with `max_radius=5` 3 of
+  the 4 small rounds stay.
 - B-spline faces are extended as smooth continuations (within about 1e-8 here); their patches
   stay faces of their own.
 - The kernel can crash or loop on some parts. That happens in another process (a forked copy
@@ -36,16 +38,28 @@ fillets were taken out.
   (`smlibpy.defeature.GUARD_SECONDS`, 20 s per step; see `parts/guards`).
 
 ## Example
+The example bracket (the repository's `examples/bracket.py`), written to STEP and read back:
+
 ```python
-part = import_step(path)
-print(len(part.faces()), round(part.volume, 3), len(part.faces().fillets()))   # 19 31287.062 5
+t = 8
+bracket = Polygon((0, 0), (60, 0), (60, t), (t, t), (t, 50), (0, 50)).on(Plane.front).extrude(-40)
+bracket = bracket.fillet(bracket.edges().concave(), 6)
+vertical = bracket.edges().parallel_to(Z)
+bracket = bracket.fillet(vertical.min_by(X) + vertical.max_by(X), 4)
+base, upright = bracket.faces().facing(Z).bottom(), bracket.faces().facing(-X).one()
+bracket -= (GridLocations(24, 20, 1, 2) * Pos(8) * Hole(3.2, t)).on(base)
+bracket -= (GridLocations(20, 1, 2, 1) * Pos(0, 8) * CounterSinkHole(3.2, 6, t)).on(upright)
+export_step(bracket, "bracket.step")
+
+part = import_step("bracket.step")
+print(len(part.faces()), round(part.volume, 3), len(part.faces().fillets()))   # 19 31287.064 5
 
 simple = part.remove_fillets(max_radius=5, partial=True)     # small rounds; keep what cannot go
-print(len(simple.faces()), len(simple.faces().fillets(max_radius=5)))           # 17 2
+print(len(simple.faces()), len(simple.faces().fillets(max_radius=5)))           # 18 3
 
 holes = part.faces().filter(lambda f: f.geom_type in ("cylinder", "cone") and f not in part.faces().fillets())
 plain = part.remove_faces(holes, partial=True)                # holes straight from the import
-print(len(plain.faces()), round(plain.volume, 3))            # 13 32550.724
+print(len(plain.faces()), round(plain.volume, 3))            # 13 32550.726
 print(plain.is_valid(), len(plain.solids()))                 # True 1
 ```
 

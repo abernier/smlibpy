@@ -1,4 +1,4 @@
-// tests/test_deform.py: twist, taper, bend and lattices (the deform module).
+// tests/test_deform.py: twist, taper, bend and lattices (the deformations module).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
@@ -12,7 +12,7 @@ import { Rectangle } from '../src/sketches.ts'
 import { surface } from '../src/surfaces.ts'
 import { exportStep } from '../src/exporters.ts'
 import { importStep } from '../src/step_import.ts'
-import { Lattice, MAX_DEGREE, type _Plan, _planBend, _planTaper, _planTwist, bend, twist } from '../src/deform.ts'
+import { Lattice, MAX_DEGREE, type _Plan, _planBend, _planTaper, _planTwist, bend, twist } from '../src/deformations.ts'
 import { approx } from './_approx.ts'
 
 // biome-ignore lint: kernel results

@@ -5,7 +5,8 @@ wires, and the edges of sketches and faces. For web pages, documents and printin
 
 ## Signature
 `export_svg(shapes, path, *, margin=None, stroke=None)`
-`export(shapes, "x.svg")` does the same. `smlibpy.drawing.to_svg(shapes, ...)` gives the text.
+`export(shapes, "x.svg")` does the same. `to_svg(shapes, *, margin=None, stroke=None)` gives the
+text instead of writing a file.
 
 - `shapes`: `DrawingView`s, `Edge`, `Wire`, `Face`, `Sketch`, or a list of them, seen from +Z
   (their x and y are used). A `Part` raises `TypeError` (draw its `drawing_views`).

@@ -15,9 +15,9 @@ Move many shapes at once, and use a ShapeList as an ordinary list.
 Each transform returns a new ShapeList of moved copies; the input is unchanged.
 
 ## Gotchas
-- `Pos(...) * sl`, `Rot(...) * sl` and `Plane * sl` return a plain `list` (no selectors). The
-  shapes are moved correctly; wrap the result in `ShapeList(...)` or use `sl.moved(Pos(...))`.
-- `sl.copy()` returns a plain `list` too. Shapes are immutable, so a copy is rarely needed:
+- `Pos(...) * sl`, `Rot(...) * sl` and `Plane * sl` return a ShapeList of moved copies, as
+  `sl.moved(...)` does. A plain Python list stays a plain list: `Pos(...) * [a, b]`.
+- `sl.copy()` returns a plain `list`. Shapes are immutable, so a copy is rarely needed:
   `ShapeList(sl)` when you want one.
 - `sl + [x]` is a ShapeList, `[x] + sl` a plain list.
 - There is no `scale` or `mirror` on a ShapeList: `ShapeList(s.mirror() for s in sl)`.
@@ -39,7 +39,7 @@ plate -= moved                                         # a list on the right of 
 print(len(plate.faces().cylinders()))                  # 2
 marks = ShapeList([Circle(2), Circle(2).translate(10, 0, 0)]).on(plate.faces().top())
 print([round(m.center().z, 3) for m in marks])         # [5.0, 5.0]
-print(type(Pos(1, 0, 0) * pins).__name__, type(pins.copy()).__name__)   # list list
+print(type(Pos(1, 0, 0) * pins).__name__, type(pins.copy()).__name__)   # ShapeList list
 ```
 
 ## Related
