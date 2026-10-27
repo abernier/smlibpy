@@ -192,19 +192,19 @@ class Vector:
         c = max(-1.0, min(1.0, self.dot(o) / d))
         return math.degrees(math.acos(c))
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def is_close(self, other: VectorLike, tolerance: float = TOLERANCE) -> bool:
         """True if the two points are at most ``tolerance`` apart (mm)."""
         return (self - Vector(other)).length <= tolerance
 
-    @renamed("0.5.1", angle_tol="angle_tolerance")
+    @renamed("0.6.0", angle_tol="angle_tolerance")
     def is_parallel(self, other: VectorLike, angle_tolerance: float = 1e-4) -> bool:
         """True if both vectors point along the same line (either sense), within ``angle_tolerance``
         degrees."""
         a = self.angle_to(other)
         return a <= angle_tolerance or a >= 180.0 - angle_tolerance
 
-    @renamed("0.5.1", angle_tol="angle_tolerance")
+    @renamed("0.6.0", angle_tol="angle_tolerance")
     def is_perpendicular(self, other: VectorLike, angle_tolerance: float = 1e-4) -> bool:
         """True if the vectors are at right angles, within ``angle_tolerance`` degrees."""
         return abs(self.angle_to(other) - 90.0) <= angle_tolerance
@@ -271,7 +271,7 @@ class Axis:
         """The axis through the same point, pointing the other way."""
         return Axis(self._origin, -self._direction)
 
-    @renamed("0.5.1", loc="location")
+    @renamed("0.6.0", loc="location")
     def moved(self, location: Location) -> Axis:
         """The axis moved by a location: its origin moved, its direction turned."""
         return Axis(location * self._origin, location.rotate_vector(self._direction))
@@ -280,7 +280,7 @@ class Axis:
         """The same direction through another point."""
         return Axis(origin, self._direction)
 
-    @renamed("0.5.1", angle_tol="angle_tolerance")
+    @renamed("0.6.0", angle_tol="angle_tolerance")
     def is_parallel(self, other: Axis | VectorLike, angle_tolerance: float = 1e-4) -> bool:
         """True if the axis runs along another axis or a direction (either sense), within
         ``angle_tolerance`` degrees."""
@@ -626,7 +626,7 @@ class Plane:
         """Rotate about the plane's own X, then Y, then Z axis (degrees)."""
         return Plane(self.location * Rot(x, y, z))
 
-    @renamed("0.5.1", loc="location")
+    @renamed("0.6.0", loc="location")
     def moved(self, location: Location) -> Plane:
         """The plane moved by a location: its origin moved, its axes turned."""
         return Plane(location * self._origin, location.rotate_vector(self._x), location.rotate_vector(self._z))
@@ -646,7 +646,7 @@ class Plane:
         p = _vec(point)
         return self._origin + self._x * p.x + self._y * p.y + self._z * p.z
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def contains(self, point: VectorLike, tolerance: float = TOLERANCE) -> bool:
         """True if the point lies in the plane, at most ``tolerance`` (mm) off it."""
         return abs(self.to_local(point).z) <= tolerance
@@ -659,7 +659,7 @@ class Plane:
         """The point of the plane nearest to a point (straight along the normal)."""
         return _vec(point).project_to(self)
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def is_coplanar(self, other: Plane, tolerance: float = TOLERANCE) -> bool:
         """True if the other plane is the same plane (either facing), its origin at most ``tolerance``
         (mm) off this one."""
@@ -887,7 +887,7 @@ class BoundBox:
             (max(self.max.x, other.max.x), max(self.max.y, other.max.y), max(self.max.z, other.max.z)),
         )
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def contains(self, point: VectorLike, tolerance: float = TOLERANCE) -> bool:
         """True if the point lies in the box or on its sides, or at most ``tolerance`` (mm) outside."""
         p = _vec(point)

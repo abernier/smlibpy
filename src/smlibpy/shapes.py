@@ -19,7 +19,7 @@ from typing import (TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, N
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, _traced, ext, k, kernel_call
-from ._renamed import renamed
+from ._renamed import keyword_only, renamed
 from .geometry import (TOLERANCE, Axis, BoundBox, ClosestPoints, Continuity, Curvature, Hit, Location, Nurbs,
                        NurbsSurface, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec)
 
@@ -329,7 +329,7 @@ class ShapeList(list[T]):
         p = _vec(point)
         return ShapeList(sorted(self, key=lambda s: s.center().distance_to(p), reverse=reverse))
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def group_by(self, key: SortKey = Z, tolerance: float = 1e-4) -> list[ShapeList[T]]:
         """Group shapes with equal key (within ``tolerance``), groups in ascending key order."""
         f = _key_fn(key)
@@ -343,13 +343,13 @@ class ShapeList(list[T]):
             groups[-1].append(s)
         return groups
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def max_by(self, key: SortKey = Z, tolerance: float = 1e-4) -> ShapeList[T]:
         """The shapes with the largest key (all of them, if several tie within ``tolerance``)."""
         groups = self.group_by(key, tolerance)
         return groups[-1] if groups else ShapeList()
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def min_by(self, key: SortKey = Z, tolerance: float = 1e-4) -> ShapeList[T]:
         """The shapes with the smallest key (all of them, if several tie within ``tolerance``)."""
         groups = self.group_by(key, tolerance)
@@ -536,7 +536,7 @@ class ShapeList(list[T]):
         """Shapes whose bounding box lies inside ``box``."""
         return ShapeList(s for s in self if box.contains(s.bbox().min) and box.contains(s.bbox().max))
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def at(self, point: VectorLike, tolerance: float = 1e-4) -> ShapeList[T]:
         """Shapes passing through ``point`` (vertices at, edges/faces touching it), at most
         ``tolerance`` (mm) from it."""
@@ -1827,7 +1827,7 @@ class Edge(Shape):
             raise ModelingError(f"match: the ends came no closer than {dev:.3g} to their targets")
         return e
 
-    @renamed("0.5.1", angle_tol="angle_tolerance", curvature_tol="curvature_tolerance")
+    @renamed("0.6.0", angle_tol="angle_tolerance", curvature_tol="curvature_tolerance")
     def continuity(self, samples: int = 16, *, angle_tolerance: float = 0.5,
                    curvature_tolerance: float = 0.01) -> Continuity:
         """How the two faces of the edge meet, checked at ``samples`` points along it
@@ -2452,7 +2452,7 @@ class Wire(Shape):
         p = _vec(point)
         return min((e.closest_point(p) for e in self._edges), key=lambda q: (q - p).length)
 
-    @renamed("0.5.1", angle_tol="angle_tolerance", curvature_tol="curvature_tolerance")
+    @renamed("0.6.0", angle_tol="angle_tolerance", curvature_tol="curvature_tolerance")
     def continuity(self, *, angle_tolerance: float = 0.5, curvature_tolerance: float = 0.01) -> Continuity:
         """How the edges of the wire meet at its joints (and where a closed wire closes)
         (:class:`Continuity`): ``"G2"`` where their curvature vectors agree as well, ``"G1"``
@@ -2997,6 +2997,7 @@ class Face(Shape):
         """The face's boundaries: the outer one first, then those of its holes."""
         return ShapeList(self._loops())
 
+    @keyword_only("0.6.0", "seams")
     def edges(self, *, seams: bool = False) -> ShapeList[Edge]:
         """The face's edges (seam edges only with ``seams=True``)."""
         out = ShapeList()
@@ -3257,6 +3258,7 @@ class _Body(Shape):
         """The body's faces."""
         return ShapeList(Face(self, f) for f in self._brep.faces())
 
+    @keyword_only("0.6.0", "seams")
     def edges(self, *, seams: bool = False) -> ShapeList[Edge]:
         """All edges. Seam edges (where a closed surface such as a cylinder meets itself)
         are left out unless ``seams`` is true."""
@@ -5066,7 +5068,7 @@ class Part(_Body):
         return out
 
     # -- points ---------------------------------------------------------------
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def classify(self, point: VectorLike, tolerance: float | None = None) -> tuple[str, Face | Edge | Vertex | None]:
         """Where a point lies: ``("inside", None)`` in the material, ``("outside", None)``
         (also in a cavity), or ``("on", shape)`` on the surface within ``tolerance`` (default: the
@@ -5086,13 +5088,13 @@ class Part(_Body):
             return "on", Vertex._of(self, self._brep.vertices()[index])
         return where, None
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def contains(self, point: VectorLike, tolerance: float | None = None) -> bool:
         """True if the point lies in the material of this part or on its surface (within
         ``tolerance``, see :meth:`classify`); False outside and in a cavity."""
         return self._classify([point], tolerance)[0][0] != "outside"
 
-    @renamed("0.5.1", tol="tolerance")
+    @renamed("0.6.0", tol="tolerance")
     def cell_at(self, point: VectorLike, tolerance: float | None = None) -> Part | None:
         """The cell of a merged part (see :meth:`merge`) that holds the point, as in
         :meth:`cells`; None outside, in a cavity and on a face (also one between two cells).
@@ -9362,7 +9364,7 @@ class Sketch(Shell):
         return SectionProperties(area, Plane(centroid, local.x_dir, local.z_dir), ixx, iyy, ixy, extent)
 
     # -- 2D operations --------------------------------------------------------
-    @renamed("0.5.1", round=("corners", lambda r: "round" if r else "sharp"))
+    @renamed("0.6.0", round=("corners", lambda r: "round" if r else "sharp"))
     def offset(self, distance: float, *, corners: Literal["round", "sharp", "chamfer"] = "round") -> Sketch:
         """Grow (positive ``distance``) or shrink (negative) the region; holes move the other way.
 

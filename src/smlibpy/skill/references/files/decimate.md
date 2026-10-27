@@ -33,8 +33,8 @@ edges sharper than `feature_angle` (a cylinder's rims stay sharp at 30, and are 
 ## Gotchas
 - The kernel's own "maximum error" is an accumulated quadric value, not a distance (0.05 took a
   sphere of r = 10 to 390 triangles, 5.3 mm off); `tolerance=` is a distance.
-- The kernel breaks ties in an order that depends on memory, so counts differ by a few
-  triangles from run to run.
+- Counts differ by a few triangles between platforms, not between runs: `decimate(0.9)` of the
+  example leaves 13 674 triangles on macOS arm64 and 13 670 on Linux, Windows and macOS x86_64.
 - `ModelingError` where the kernel collapses the mesh far below the count asked: it does with
   the long thin triangles of a coarse mesh of a part (`Cone(10, 0, 20).mesh().decimate(0.95)`:
   0 triangles where about 6 were asked). Mesh such a part with a larger tolerance instead of
@@ -53,7 +53,7 @@ edges sharper than `feature_angle` (a cylinder's rims stay sharp at 30, and are 
 ```python
 ball = Sphere(10).mesh(0.001)                          # or import_stl("scan.stl")
 light = ball.decimate(0.9)
-print(len(ball), len(light), light.is_closed())        # 136872 13674 True (about)
+print(len(ball), len(light), light.is_closed())        # 136872 13674 True (about, 13670 on Linux, Windows and macOS x86_64)
 print(round(light.volume / ball.volume - 1, 4))        # -0.0004
 close = ball.decimate(tolerance=0.01)                  # within 0.01 of the fine mesh
 few = ball.decimate(triangles=2000)

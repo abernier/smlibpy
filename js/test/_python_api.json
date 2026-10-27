@@ -756,5 +756,26 @@
    "vertices",
    "wires"
   ]
+ },
+ "renamed": {
+  "Edge.continuity": {
+   "angleTol": "angleTolerance",
+   "curvatureTol": "curvatureTolerance"
+  },
+  "Sketch.offset": {
+   "round": "corners"
+  },
+  "Wire.continuity": {
+   "angleTol": "angleTolerance",
+   "curvatureTol": "curvatureTolerance"
+  }
+ },
+ "positional": {
+  "Face.edges": [
+   "seams"
+  ],
+  "_Body.edges": [
+   "seams"
+  ]
  }
 }

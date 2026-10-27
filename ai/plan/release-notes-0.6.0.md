@@ -1,19 +1,57 @@
-# smlibpy and smlibwasm 0.5.1
+# smlibpy and smlibwasm 0.6.0
 
 This release cleans up the API that 0.5.0 left uneven. Every operation of a body is now a method
 and a function of the same name. Parameters are named in full and their choices typed. Every
 public call has a docstring, and every guide of the MCP skill was checked against the code it
 describes. It also fixes `fill` on turned spheres.
 
-Nothing that worked in Python stops working: renamed parameters and modules keep their old names,
-with a `DeprecationWarning`. In smlibwasm the renamed options have only their new names. The
-TypeScript compiler points at each use of an old name. At run time the options check lists the
-options the call takes:
-`TypeError: Edge.continuity() got an unexpected option 'angleTol' (its options: angleTolerance, curvatureTolerance)`.
+Code written for 0.5.0 keeps running in both languages. Where it uses an old name or form, it gets
+a warning that says what to write instead: a `DeprecationWarning` in Python, a warning through
+`setWarningHandler` in smlibwasm. The old forms will be removed in a later release. A few things
+break; [Migrating from 0.5](#migrating-from-05) lists them.
 
 Everything applies to smlibpy (Python) and smlibwasm (JavaScript and TypeScript: camelCase names,
 an options object for keywords, methods for operators) alike, unless marked *Python* or
 *smlibwasm*.
+
+## Migrating from 0.5
+
+What breaks:
+
+- *Python*: `smlibpy.deform` and `smlibpy.draft` are now the functions `deform` and `draft`, not
+  the modules (which are `smlibpy.deformations` and `smlibpy.molding` now). Code that reaches a
+  module through the package fails with an `AttributeError`: `import smlibpy.deform as m` and then
+  `m.Lattice`, `smlibpy.draft.DraftAnalysis`, or `from smlibpy import deform` meant as the module.
+  Import the names (`from smlibpy import Lattice, DraftAnalysis`) or the module by its new name
+  (`import smlibpy.deformations`). `from smlibpy.deform import Lattice` still works.
+  `smlibpy.render` was the function already.
+- *Python*: `from smlibpy import *` also brings the 26 new functions (`draft`, `push`, `scale`,
+  `project`, `trim`, `extend`, `cut`, `fuse`, ...: listed under Changed). Each one replaces a name
+  of the same name that was imported before the `*` import.
+- Type checkers (mypy, pyright, tsc): choices are `Literal`s (string unions in TypeScript), so a
+  value typed `str` (`string`) where one is expected is reported; annotate it with the `Literal`.
+  The signatures and declarations show the new names only, so a type checker reports each old
+  name and each `edges(True)`, although they run.
+- Where warnings are errors (`pytest -W error`, `python -W error::DeprecationWarning`), the old
+  forms below fail.
+- Code that relied on a wrong result: `thicken` raises `ModelingError` for a body of no volume,
+  which it returned; an unknown color name of three or six letters is a `ValueError` at once;
+  `split`, `mirror`, `section` and `outline` raise `TypeError` for what they do not take
+  (see Fixed).
+
+What warns, and what to write instead (smlibwasm's spelling in parentheses):
+
+| 0.5 | 0.6 | Where |
+|---|---|---|
+| `tol=` | `tolerance=` | `Vector.is_close`, `Plane.contains`, `Plane.is_coplanar`, `BoundBox.contains`, `ShapeList.group_by`, `max_by`, `min_by`, `at`, `Part.classify`, `contains`, `cell_at` |
+| `angle_tol=` (`angleTol`) | `angle_tolerance=` (`angleTolerance`) | `Vector.is_parallel`, `Vector.is_perpendicular`, `Axis.is_parallel`, `Edge.continuity`, `Wire.continuity` |
+| `curvature_tol=` (`curvatureTol`) | `curvature_tolerance=` (`curvatureTolerance`) | `Edge.continuity`, `Wire.continuity` |
+| `loc=` | `location=` | `Axis.moved`, `Plane.moved` |
+| `round=False` (`{ round: false }`) | `corners="sharp"` (`{ corners: 'sharp' }`) | `Sketch.offset`, `offset` |
+| `edges(True)` (`edges(true)`) | `edges(seams=True)` (`edges({ seams: true })`) | faces and bodies |
+
+The old module paths (`from smlibpy.deform import Lattice`, `smlibpy.draft`, `smlibpy.render`)
+import without a warning.
 
 ## Changed
 
@@ -28,26 +66,18 @@ Now each operation is also a function of the same name and parameters, taking th
 `parting_line`, `slices`, `scale`, `deform`.
 
 `fillet_preview(edges, radius)` takes the edges, as `fillet` and `chamfer` do. A function raises
-`TypeError` for a shape that has no such method ("draft takes a part, not a Shell").
+`TypeError` for a shape that has no such method ("draft takes a part, not a Shell"). The methods
+stay: a chain such as `box.fillet(...).shell(...)` works as before.
 
 Sketches and sheets have their Booleans by name, as parts had: `a.fuse(b)`, `a.cut(b)`,
 `a.intersect(b)`, and `a.xor(b)` for sketches, beside `+ - & ^`. In smlibwasm these are the
 methods the operators always were.
 
-**Parameters named in full.** *Python*: the old keyword still works, with a
-`DeprecationWarning`.
-
-| Old | New | Where |
-|---|---|---|
-| `tol` | `tolerance` | `Vector.is_close`, `Plane.contains`, `Plane.is_coplanar`, `BoundBox.contains`, `ShapeList.group_by`, `max_by`, `min_by`, `at`, `Part.classify`, `contains`, `cell_at` |
-| `angle_tol` | `angle_tolerance` | `Vector.is_parallel`, `Vector.is_perpendicular`, `Axis.is_parallel`, `Edge.continuity`, `Wire.continuity` |
-| `curvature_tol` | `curvature_tolerance` | `Edge.continuity`, `Wire.continuity` |
-| `loc` | `location` | `Axis.moved`, `Plane.moved` |
-| `round=False` | `corners="sharp"` | `Sketch.offset` |
-
-*smlibwasm*: positional parameters only change their names in the declarations. The options
-`angleTol` and `curvatureTol` of `continuity` are `angleTolerance` and `curvatureTolerance`.
-`Sketch.offset` and `offset` no longer take `round`.
+**Parameters named in full** (the table above). The old keyword still works in this release, with
+a warning. *smlibwasm*: positional parameters change their names in the declarations only. The
+options `angleTol` and `curvatureTol` of `continuity` are `angleTolerance` and
+`curvatureTolerance`, and `round` of `Sketch.offset` and `offset` is `corners`; the old ones still
+work, with a warning, and the declarations have the new names only.
 
 **Choices typed.** Every option that takes one of a set of strings is typed as a `Literal` of
 them in Python and a string union in TypeScript. This covers `corners`, `continuity`, `keep`,
@@ -56,9 +86,10 @@ and type checkers show the choices, and `describe_method` lists them. A wrong va
 the `ValueError` (`RangeError`) that names the choices.
 
 **Keywords in the signature.** `Face.extrude`, `Shape.show` and Part's `twist`, `taper`,
-`bend`, `unroll` and `deform` name their keywords where they took `**kwargs`. `Sketch.sweep`
-takes `orient` and `translational`, as the `sweep` function does. `edges(seams=True)` of faces
-and bodies is keyword-only (smlibwasm: `edges({ seams: true })`).
+`bend`, `unroll` and `deform` name their keywords where they took `**kwargs`; they take the same
+keywords as before. `Sketch.sweep` takes `orient` and `translational`, as the `sweep` function
+does. `seams` of `edges()` on faces and bodies is keyword-only, `edges(seams=True)` (smlibwasm:
+`edges({ seams: true })`); `edges(True)` still works in this release, with a warning.
 
 **Modules renamed.** No module has the name of a function any more:
 
@@ -66,9 +97,11 @@ and bodies is keyword-only (smlibwasm: `edges({ seams: true })`).
 - `smlibpy.draft` is `smlibpy.molding`;
 - `smlibpy.render` is `smlibpy.pictures`.
 
-`smlibpy.draft` was the function or the module, depending on what had imported what. The old
-module paths still import (`from smlibpy.draft import DraftAnalysis`). smlibwasm's source files
-follow the new names.
+With `draft` and `deform` functions of the package now, a module of the same name would have made
+`smlibpy.draft` the function or the module, depending on what had been imported first. The old
+module paths still import (`from smlibpy.draft import DraftAnalysis`); `smlibpy.draft` and
+`smlibpy.deform` themselves are the functions (see Migrating). smlibwasm's source files follow the
+new names; its package exports no module files, so no import changes.
 
 **Docstrings everywhere.** The 92 public methods and properties that had none now have one
 (`Vector.dot`, `Edge.length`, `Face.outer_wire`, `Location.inverse`, ...): `describe_method`
@@ -86,13 +119,22 @@ were missing are added. Some behaviour was described wrongly:
 - `part.mirror(X)` was said to mirror in an axis; it raises `TypeError` (sketches do).
 - `selection/Face` named a method `extended()`, which does not exist.
 - A shell with walls thicker than its fillets was said to fail; it works.
+- An ASCII `.smb` round trip was said to be exact. The ASCII file keeps 16 decimals, and the reader
+  builds some curves that trim the faces anew (from binary files too), so measures of a body read
+  back can differ in their last digits: equal on macOS arm64, not on Linux, Windows or macOS
+  x86_64. The guide compares them with `math.isclose` and says why.
+- `decimate` was said to give a few triangles more or fewer from run to run. It gives the same
+  count every run, and a few triangles more or fewer between platforms (13 674 on macOS arm64,
+  13 670 on Linux, Windows and macOS x86_64 for the guide's sphere).
 
 The user docs (`docs/`) and the README were checked the same way: 17 pages changed (swapped
 names in an example of `split`, stale sizes and timings, the build steps of a clone).
 
 `tests/test_guides.py` runs every guide's examples. It now also checks the printed numbers: a
 comment after a `print(...)` that starts with a value is what that line prints, to the comment's
-precision. It also checks that every property has a guide that names it, not only functions,
+precision. A result that differs between platforms (a decimated mesh's count, a fitted
+surface's volume) is marked `(about, ...)` with what the other platforms print, and compared to
+0.1 %. It also checks that every property has a guide that names it, not only functions,
 methods and classes.
 
 ## Fixed
@@ -104,6 +146,15 @@ methods and classes.
   [0, 1]. A rim cut where a seam crosses it is now split into four nearly equal sides, so a hole
   gets the same cap however the sphere is turned: 4141.58 for every axis hole, where it was
   4141.52, 4141.58 or 4124.35.
+- **A guarded step no longer hangs in its forked copy.** The kernel steps that can crash or loop
+  (`shell`, `offset`, `thicken`, `cells`, `remove_fillets`, ...) run in a forked copy of the
+  process (Linux, macOS). The copy got a new kernel lock from smlibpy's Python fork hook. But
+  Python runs those hooks in the order they were registered, `threading`'s before smlibpy's. When
+  a garbage collection in an earlier hook freed a body, its finalizer waited for ever for the old
+  lock. After `GUARD_SECONDS` (20 s) the step failed with "the kernel did not finish". Whether it
+  happened depended on when Python collected: the first 0.6.0 release build hit it in `cells` on
+  Linux with Python 3.10. The copy now gets its new lock inside `fork()`, before any of its Python
+  code runs.
 - **Tests no longer open a browser.** The fillet guide's `show()` opened Edge on the Windows
   runners, and its WebGL page, drawn without a GPU, kept the cores busy: 0.5.0's release builds
   ran their second test run eleven times slower. *Tests only.*
@@ -141,6 +192,8 @@ methods and classes.
     refuse them.
   - Types: the `fillet` function takes a radius per edge (a `dict`), as `Part.fillet` does.
     `Sketch.fillet` and `Sketch.chamfer` say that they take one corner alone, as they do.
+  - *smlibwasm*: `Sketch.offset`'s documentation promised that `round: false` works; now it
+    does (with a warning).
   - Docstrings corrected:
     - `fit_curve`: a tolerance below the points' noise does not always make the curve pass
       through them.
@@ -154,6 +207,11 @@ methods and classes.
       degrees).
 
 ## Known issues
+
+Carried over from 0.5.0: on macOS x86_64 (Intel Macs, and x86_64 builds under Rosetta), a body
+is now and then freed twice during garbage collection, which crashes the process. That was 3 of
+10 runs of the test suite with x86_64 builds, on GitHub's Intel runner and under Rosetta. macOS
+arm64, Linux and Windows are not affected.
 
 These were found during this release's review and are not fixed in it:
 
@@ -181,7 +239,8 @@ These were found during this release's review and are not fixed in it:
 
 - `AGENTS.md` (and `CLAUDE.md`, which points to it) states the project's rules: the API's forms,
   every feature as a guide of the MCP skill and a port in smlibwasm, kernel patches, the release
-  steps, the writing style.
+  steps, the writing style. A release is a patch only when code written for the last one still
+  runs; the public API is diffed against the last release's tag to know.
 - `tests/test_api_forms.py` lists every public method of Part, Shell and Sketch and every
   function by what it is. A new one fails there until it is listed. It also checks:
   - that an operation's two forms take the same parameters and give the same results;
@@ -192,3 +251,8 @@ These were found during this release's review and are not fixed in it:
 - `js/test/api_forms.test.ts` checks that smlibwasm has every name of smlibpy
   (`js/test/_python_api.json`, which `tools/gen_js_options.py` writes) and that its two forms
   agree.
+- Old forms: `@renamed` and `@keyword_only` (`src/smlibpy/_renamed.py`) keep a renamed keyword
+  and a flag made keyword-only working for a release, and `js/src/_renamed.ts` does the same in
+  smlibwasm. `tools/gen_js_options.py` lists Python's old forms in `js/test/_python_api.json`, and
+  `js/test/options.test.ts` calls each one in smlibwasm: a rename that leaves smlibwasm out fails
+  there.

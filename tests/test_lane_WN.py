@@ -521,14 +521,18 @@ def test_cells_of_a_merge_that_crashed_the_stitcher_come_back(mode):
     assert sum(c.volume for c in cells) == approx(m.volume, rel=1e-6)
 
 
+@pytest.mark.skipif(not HAS_FORK, reason="no os.fork (a helper process would not have the stand-in below)")
 def test_steps_stopped_after_the_time_limit_say_so(monkeypatch, tmp_path):
     # Fillets and chamfers of parts read from files run in another process (N1), stopped after
     # GUARD_SECONDS. They raised "KernelError: fillet failed: the radius may be too large for the
     # selected edges", the time limit only in .detail, and tried again with the finer tolerance.
+    # The forked copy's fillet waits 10 s: the plate's own finished within the limit in 3 of 100
+    # runs on macOS arm64, and in 0.6.0's release build on macOS with Python 3.14.
     plate = Box(60, 60, 10) - [Cylinder(2, 20).translate(x, y, 0) for x in (-20, 0, 20) for y in (-20, 0, 20)]
     export_step(plate, tmp_path / "plate.step")
     part = import_step(tmp_path / "plate.step")
     monkeypatch.setattr(defeature, "GUARD_SECONDS", 0.01)
+    monkeypatch.setattr(ext, "round_edges", lambda *args: time.sleep(10))
     started = time.perf_counter()
     with pytest.raises(_KernelFault, match=r"^fillet: the kernel did not finish within 0.01 s; smlibpy.defeature.GUARD"):
         part.fillet(part.edges().filter_by(lambda e: e.center().z > 4.9), 0.5)
@@ -1263,6 +1267,45 @@ def test_a_fork_waits_for_another_threads_kernel_call():
         mp.setattr(defeature, "GUARD_SECONDS", 30.0)
         assert isolated("probe", _bodies, 3)["n"] == 3
     th.join()
+
+
+@pytest.mark.skipif(not HAS_FORK, reason="no os.fork")
+def test_a_forked_copy_frees_bodies_before_smlibpys_fork_hook_runs():
+    # Python runs a copy's at-fork hooks in the order they were registered: threading's, and any
+    # registered before smlibpy was imported, before smlibpy's. A garbage collection in one of those
+    # freed a body, whose finalizer waited for ever for the kernel lock the copy started with (held
+    # across the fork by the forking thread, which the copy does not have): the guarded step "cells"
+    # of tools/parity.py never finished in its copy on Linux with Python 3.10, where threading's hook
+    # happened to collect. The copy gets its new lock inside fork() now, before its Python code runs.
+    import subprocess
+    import textwrap
+
+    code = textwrap.dedent("""
+        import gc, os, sys, time
+        os.register_at_fork(after_in_child=gc.collect)  # (before smlibpy registers its hooks)
+        from smlibpy import Box
+        from smlibpy._kernel import BrepHandle
+        gc.disable()
+        cycle = [BrepHandle(Box(1, 1, 1)._copy_brep())]
+        cycle.append(cycle)  # (garbage that only a collection frees: the hook's, in the copy)
+        del cycle
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0 if Box(2, 2, 2).volume == 8 else 2)
+        deadline = time.monotonic() + 20
+        while True:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            if time.monotonic() > deadline:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+                sys.exit("the forked copy waited for ever for the kernel lock")
+            time.sleep(0.01)
+        sys.exit(0 if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 else f"the copy ended with {status}")
+    """)
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
 
 
 # The SmPyLib bindings bound again with the GIL let go (src/cpp/nogil.cpp), and a hash of the source

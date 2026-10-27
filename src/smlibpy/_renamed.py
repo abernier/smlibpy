@@ -1,11 +1,15 @@
-"""Keyword parameters that were renamed: the old name still works, with a DeprecationWarning.
+"""Keyword parameters that were renamed, or made keyword-only: the old call still works for a
+release, with a DeprecationWarning.
 
-The signature (and so the docs, the MCP and smlibwasm's options table) shows the new names only.
+The signature (and so the docs, the MCP and smlibwasm's options table) shows the new form only.
+smlibwasm takes the old options the same way (js/src/_renamed.ts); tools/gen_js_options.py lists
+them for its tests (``__renamed__`` and ``__keyword_only__`` of the wrapper).
 """
 
 from __future__ import annotations
 
 import functools
+import inspect
 import warnings
 from typing import Any, Callable, TypeVar
 
@@ -13,7 +17,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def renamed(since: str, **names: str | tuple[str, Callable[[Any], Any]]) -> Callable[[F], F]:
-    """Accept the old keyword names of a function: ``@renamed("0.5.1", tol="tolerance")``. An old
+    """Accept the old keyword names of a function: ``@renamed("0.6.0", tol="tolerance")``. An old
     name whose values changed too maps to ``(new name, converter)``; an old value of None is dropped."""
 
     def wrap(fn: F) -> F:
@@ -34,6 +38,33 @@ def renamed(since: str, **names: str | tuple[str, Callable[[Any], Any]]) -> Call
                         kwargs[name] = convert(value) if convert else value
             return fn(*args, **kwargs)
 
+        call.__renamed__ = {old: new if isinstance(new, str) else new[0] for old, new in names.items()}  # type: ignore[attr-defined]
+        return call  # type: ignore[return-value]
+
+    return wrap
+
+
+def keyword_only(since: str, *names: str) -> Callable[[F], F]:
+    """Accept, for a release, the positional values of parameters that became keyword-only:
+    ``@keyword_only("0.6.0", "seams")`` takes ``edges(True)`` for ``edges(seams=True)``."""
+
+    def wrap(fn: F) -> F:
+        positional = sum(p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                         for p in inspect.signature(fn).parameters.values())
+
+        @functools.wraps(fn)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if positional < len(args) <= positional + len(names):
+                for name, value in zip(names, args[positional:]):
+                    if name in kwargs:
+                        raise TypeError(f"{fn.__qualname__}: {name} given twice, by position and as {name}=")
+                    warnings.warn(f"{fn.__qualname__}: pass {name}= by name ({name} is keyword-only since smlibpy "
+                                  f"{since}); a positional {name} will be refused", DeprecationWarning, stacklevel=2)
+                    kwargs[name] = value
+                args = args[:positional]
+            return fn(*args, **kwargs)
+
+        call.__keyword_only__ = names  # type: ignore[attr-defined]
         return call  # type: ignore[return-value]
 
     return wrap
