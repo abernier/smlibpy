@@ -52,7 +52,7 @@ const SECTORS: [number, number][] = [[0, Math.PI / 2], [Math.PI / 2, Math.PI / 2
 
 /** The area of a part's planar faces at height y: its caps there. */
 function capArea(part: Part, y: number): number {
-  return part.faces().planar().filter((f) => Math.abs(f.center().y - y) < 1e-9).reduce((sum, f) => sum + f.area, 0)
+  return part.faces().planar().filter((f) => Math.abs(f.getCenter().y - y) < 1e-9).reduce((sum, f) => sum + f.area, 0)
 }
 
 test("three's (x, y, z) is the kernel's: points and boxes cross as they are", () => {
@@ -170,7 +170,7 @@ test('sketches lie in the XY plane facing +z, and extrude along +z, as ShapeGeom
   closeBox(solid.bbox(), boxOf(new THREE.ExtrudeGeometry(shape, { depth: 7, bevelEnabled: false, curveSegments: 64 })), 1e-9)
   const front = solid.faces().front().one()
   closeVector(front.normalAt(), { x: 0, y: 0, z: 1 })
-  close(front.center().z, 7, 1e-9)
+  close(front.getCenter().z, 7, 1e-9)
   close(front.area, sketch.area, 1e-9)
   // a sketch's own (x, y) is three's (x, y)
   const triangle = new Polygon([new THREE.Vector2(0, 0), new THREE.Vector2(10, 0), new THREE.Vector2(0, 10)])
@@ -237,11 +237,11 @@ test("the selectors go along three's directions: top +y, front +z, right +x", ()
   closeVector(faces.left().one().normalAt(), { x: -1, y: 0, z: 0 })
   // edges and vertices too, by where they are
   assert.equal(part.edges().top().length, 4)
-  for (const e of part.edges().top()) close(e.center().y, 5, 1e-9)
+  for (const e of part.edges().top()) close(e.getCenter().y, 5, 1e-9)
   assert.equal(part.vertices().front().length, 4)
   for (const v of part.vertices().front()) close(v.point.z, 10, 1e-9)
   assert.equal(part.edges().right().length, 4)
-  for (const e of part.edges().right()) close(e.center().x, 15, 1e-9)
+  for (const e of part.edges().right()) close(e.getCenter().x, 15, 1e-9)
 })
 
 test("transforms are three's: a rotation about y turns a tool as it turns a three mesh", () => {

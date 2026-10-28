@@ -57,9 +57,9 @@ npm run example    # the example page (Vite)
 ```
 
 `@classcad/smlibwasm` is a dependency, at the same version (in this repository `file:../js`: build it
-first, `npm run wasm` and `npm run build` in `js/`), `three` a peer (developed on 0.186.1). Importing
-the package loads the kernel (a top-level await, 2.9 MB with brotli), and after that every call is
-synchronous.
+first, `npm run wasm` and `npm run build` in `js/`), `three` a peer, 0.186 or later (developed on
+0.186.1). Importing the package loads the kernel (a top-level await, 2.9 MB with brotli), and after
+that every call is synchronous.
 `@classcad/smlibpy-three/init` loads the kernel from elsewhere (`init({ locateFile })`), and
 `@classcad/smlibpy-three/worker` runs modeling functions in a worker (below). Vite's dev server must
 leave smlibwasm out of its prebundling (`optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`, see
@@ -168,7 +168,7 @@ The other way, `edge.curve` is a `THREE.Curve` along the exact edge:
 
 ### Placement
 
-- Coordinates are in the object's own frame, as a geometry's are: what a query gives (`center()`,
+- Coordinates are in the object's own frame, as a geometry's are: what a query gives (`getCenter()`,
   `bbox()`, `pointAt()`, `normalAt()`) and what a method takes (a point, a direction, a
   `THREE.Plane`, a `THREE.Curve`) is in the frame of the object it is called on.
 - Shapes given to an operation are taken where they are in the world (their `matrixWorld`), as
@@ -226,10 +226,12 @@ is found from the hit triangle's vertex (vertices are split per face), so it sta
 order a BVH puts the triangles in. The kernel's exact ray cast is `body.intersectRay(ray)`.
 
 A face, edge or vertex of a body draws itself: add it as a child of its body and it shows in place,
-in its own highlight material (`part.add(hit.brep)`; remove it again to clear the highlight). These
-children are not raycast, so they do not hit twice. Lines are drawn as three draws them, one pixel
-wide; fat lines or tubes for highlights are the app's choice (the example draws a tube along
-`edge.curve`).
+in its own highlight material (`part.add(hit.brep)`; remove it again to clear the highlight), after
+the body's edge lines (`renderOrder` 1), in WebGLRenderer and WebGPURenderer alike. These children
+are not raycast, so they do not hit twice. Lines are drawn as three draws them, one pixel wide; fat
+lines or tubes for highlights are the app's choice (the example draws a tube along `edge.curve`).
+Points too: WebGPU draws them one pixel wide, so on WebGPURenderer's WebGPU backend a vertex's
+highlight is a pixel (WebGLRenderer draws it 8 pixels wide).
 
 ### Disposal and memory
 
@@ -336,11 +338,14 @@ Left out, and why:
   function `scale(shape, factor)`. A face, edge or vertex of a body is where its body is: it is not
   placed or mirrored on its own (`face.toShell()` is a sheet of it), and has no faces, edges or
   vertices of its own kind (it is one).
-- Members under names three's objects have: smlibpy's `raycast` is `intersectRay` (three's
-  `raycast` keeps its protocol), `Edge.add`/`Wire.add` is `new Wire([a, b])`, a mesh's `length` is
-  `triangleCount`, `mesh` is `toMesh` (a curve's mesh: its polyline geometry), a whole body's
-  `named`/`colored` is its object's `name` and material (faces: `nameFaces`, `colorFaces`), and the
-  function `outline` is three's (a TSL node): call the method.
+- Members under names three's objects have, or that three's renderers read off every object they
+  draw: smlibpy's `raycast` is `intersectRay` (three's `raycast` keeps its protocol), `center()` is
+  `getCenter()` (three's name, as `Box3.getCenter`: three's WebGPURenderer reads an object's
+  `center` as a Sprite's, and failed on every body with a method of that name),
+  `Edge.add`/`Wire.add` is `new Wire([a, b])`, a mesh's `length` is `triangleCount`, `mesh` is
+  `toMesh` (a curve's mesh: its polyline geometry), a whole body's `named`/`colored` is its
+  object's `name` and material (faces: `nameFaces`, `colorFaces`), and the function `outline` is
+  three's (a TSL node): call the method.
 - The viewer (`show`, `htmlPage`): three is the viewer.
 - Mesh formats (STL, OBJ, glTF/GLB): three's own loaders and exporters do them; a body is a Mesh,
   and a `TriangleMesh` is made of any BufferGeometry.
