@@ -1,13 +1,13 @@
-// Writes the API section of docs/three.md (everything from its "## API" heading on), the API reference
-// in smlibpy's documentation: what `@classcad/smlibpy-three` and its other entries export, as the
-// TypeScript declarations in dist (npm run build first) with their doc comments, one heading per
-// class, function, constant and type, in sections by subject. `node scripts/api.mjs [dist] [page]`.
+// Writes docs/api/three.md, smlibpy-three's page of the API reference (Python, WASM, three.js): what
+// `@classcad/smlibpy-three` and its other entries export, as the TypeScript declarations in dist
+// (npm run build first) with their doc comments, one heading per class, function, constant and type,
+// in sections by subject. `node scripts/api.mjs [dist] [page]`.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
 const dist = process.argv[2] ?? fileURLToPath(new URL('../dist/', import.meta.url))
-const page = process.argv[3] ?? fileURLToPath(new URL('../../docs/three.md', import.meta.url))
+const page = process.argv[3] ?? fileURLToPath(new URL('../../docs/api/three.md', import.meta.url))
 
 // the modules of each section, in the order of the page (a module that index exports from must have one)
 const SECTIONS = [
@@ -101,8 +101,8 @@ let body = ''
 const section = (title, note, items) => {
   if (!items.size) return
   toc += `- [${title}](#${anchor(title)}): ${[...items.keys()].map((n) => `\`${n}\``).join(', ')}\n`
-  body += `\n### ${title}\n\n${note ? `${note}\n\n` : ''}`
-  for (const [name, item] of items) body += `#### ${name}\n\n\`\`\`ts\n${item.text.join('\n')}\n\`\`\`\n\n`
+  body += `\n## ${title}\n\n${note ? `${note}\n\n` : ''}`
+  for (const [name, item] of items) body += `### ${name}\n\n\`\`\`ts\n${item.text.join('\n')}\n\`\`\`\n\n`
 }
 for (const [title, modules, note] of SECTIONS) {
   const items = new Map()
@@ -118,16 +118,14 @@ for (const [title, module] of ENTRIES) {
   if (file) section(title, '', new Map([...entries(file, null)].sort(([, a], [, b]) => ORDER[a.kind] - ORDER[b.kind])))
 }
 
-const intro = `## API
+const intro = `# three.js API
 
 The exports of \`@classcad/smlibpy-three\` and of its entries \`/worker\` and \`/init\`, as TypeScript
-declarations with their doc comments (\`npm run api\` in \`smlibpy-three/\` writes them here). The
-[API reference](api.md) describes the operations themselves, under their Python names:
-\`parallel_to\` there is \`parallelTo\` here, and three's types stand in for smlibpy's values (above).
+declarations with their doc comments (\`npm run api\` in \`smlibpy-three/\` writes them). The
+[Python API](index.md) describes the operations themselves, under their Python names: \`parallel_to\`
+there is \`parallelTo\` here, and three's types stand in for smlibpy's values. [three.js](../three.md)
+is the guide: three's objects, coordinates and types, placement, picking, memory and workers.
 
 `
-const text = readFileSync(page, 'utf8')
-const at = text.indexOf('\n## API\n')
-if (at < 0) throw new Error(`${page} has no "## API" heading`)
-writeFileSync(page, text.slice(0, at + 1) + `${intro}${toc}${body}`.replace(/\n{3,}/g, '\n\n'))
+writeFileSync(page, `${intro}${toc}${body}`.replace(/\n{3,}/g, '\n\n'))
 console.log(`${page}: ${body.split('\n').length} lines, ${(toc.match(/`/g) ?? []).length / 2} entries`)

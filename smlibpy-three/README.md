@@ -9,7 +9,7 @@ lie in the XY plane and extrude along +z as `ShapeGeometry` and `ExtrudeGeometry
 radians. Underneath is smlibwasm (`@classcad/smlibwasm`, the SMLib kernel in WebAssembly); none of it
 shows.
 
-**[Documentation](https://smlibpy.classcad.ch/docs/three)** · **[API reference](https://smlibpy.classcad.ch/docs/three#api)** ·
+**[Documentation](https://smlibpy.classcad.ch/docs/three)** · **[API reference](https://smlibpy.classcad.ch/docs/api/three)** ·
 **[GitHub](https://github.com/awv-informatik/smlibpy/tree/main/smlibpy-three)**
 
 ```js
@@ -42,8 +42,9 @@ It is released with smlibpy and smlibwasm, at their version, and wraps all of sm
 (what it leaves to three, and why, is in the documentation, and `test/forms.test.ts` checks it name
 by name), with 197 tests (`npm test`) and an example page (`npm run example`). The
 [documentation](https://smlibpy.classcad.ch/docs/three) has the design (three's objects, coordinates
-and types, placement, picking, memory, workers) and the API reference; in this repository it is
-[docs/three.md](../docs/three.md), whose examples `test/docs.test.ts` runs.
+and types, placement, picking, memory, workers) and the API reference; in this repository they are
+[docs/three.md](../docs/three.md), whose examples `test/docs.test.ts` runs, and
+[docs/api/three.md](../docs/api/three.md).
 [WRAPPING.md](WRAPPING.md) says how a feature is wrapped.
 
 ## Using it
@@ -58,7 +59,7 @@ In this repository:
 npm install
 npm test           # node's test runner, on the TypeScript sources
 npm run build      # dist/ with declarations that name nothing of smlibwasm's
-npm run api        # the API section of docs/three.md, from the declarations (after a build)
+npm run api        # the API reference, docs/api/three.md, from the declarations (after a build)
 npm run example    # the example page (Vite)
 ```
 
@@ -129,7 +130,7 @@ The design's open questions, as they were decided:
 
 ## Coverage
 
-All of smlibwasm's public API as `next` has it, by area (the [API reference](../docs/three.md#api)
+All of smlibwasm's public API as `next` has it, by area (the [API reference](../docs/api/three.md)
 has every signature):
 
 | area | what |
@@ -168,6 +169,6 @@ What it leaves to three, and why, is in the documentation:
 | `src/mesh.ts`, `src/pictures.ts` | triangle meshes, pictures (and the stage render and drawings draw on) |
 | `src/files.ts`, `src/drawing.ts` | loaders and exporters, drawing views |
 | `src/memory.ts`, `src/worker.ts`, `src/init.ts` | scope and settings, the worker entry, the init entry |
-| `scripts/` | the declarations check, the API section of `docs/three.md` |
+| `scripts/` | the declarations check, the API reference `docs/api/three.md` |
 | `test/` | one file per area; `forms.test.ts` holds the API to smlibwasm's, name by name; `docs.test.ts` runs the examples of `docs/three.md` |
 | `example/` | a three.js page: a part, a raycast hover, click an edge to round it |

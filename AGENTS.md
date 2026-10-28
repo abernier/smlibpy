@@ -13,7 +13,7 @@ under `smlibpy-three/`) is smlibwasm's API for three.js. Agents use smlibpy thro
 | `src/cpp/` | smlibpy's C++: the bindings (`_core`) and the steps that need the kernel's internals. Shared with smlibwasm. |
 | `third_party/` | `usd-brep` (submodule: NVIDIA's usd-brep, with SMLib's sources), `patches/` (the kernel files smlibpy patches, and why). |
 | `js/` | smlibwasm: `src/*.ts` (one module per Python module, same names), `test/*.test.ts`, `PORTING.md` (the porting rules), `scripts/build-wasm.sh`. |
-| `smlibpy-three/` | smlibpy-three: smlibwasm's API for three.js, its shapes three.js objects in three's coordinates. `WRAPPING.md` (how a feature is wrapped), `test/forms.test.ts` (every export and member of smlibwasm wrapped or left out for a reason). Its guide and API reference are a page of the docs, `docs/three.md`, whose API section `npm run api` writes. |
+| `smlibpy-three/` | smlibpy-three: smlibwasm's API for three.js, its shapes three.js objects in three's coordinates. `WRAPPING.md` (how a feature is wrapped), `test/forms.test.ts` (every export and member of smlibwasm wrapped or left out for a reason). Its guide is a page of the docs, `docs/three.md`, and its API reference `docs/api/three.md`, which `npm run api` writes. |
 | `tests/` | pytest. `test_api_forms.py`, `test_guides.py`, `test_docs.py` hold the rules below. |
 | `docs/` | The user docs (MkDocs, `mkdocs.yml`); the website's docs are made from them. |
 | `plugins/smlibpy/` | The Claude Code plugin: the MCP server pinned to a release, and the plugin's skill. |

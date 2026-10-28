@@ -188,7 +188,7 @@ blob = make_face(Spline((0, 0), (10, 5), (0, 10), (-10, 5), closed=True))
 ```
 
 The curve constructors (`Line`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `TangentArc`,
-`Spline`, `Bezier`, ...) are described in the [API reference](api.md#curves). Among them are
+`Spline`, `Bezier`, ...) are described in the [API reference](api/index.md#curves). Among them are
 conic arcs and flat spirals, exact where NURBS can be (a conic is one rational quadratic), and
 edges made from NURBS data, the inverse of `edge.nurbs()`:
 

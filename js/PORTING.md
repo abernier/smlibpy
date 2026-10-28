@@ -267,5 +267,5 @@ the Python code works around a kernel defect, so does the TypeScript.
 - [x] Every smlibpy module, each with its tests ported from tests/*.py; skipped are the tests of
       what only Python has (OpenCASCADE through OCP, fontTools, ezdxf, the MCP server).
 - [x] Packaging (npm `@classcad/smlibwasm`, prepack, the release job), docs
-      (docs/javascript.md, its API section from scripts/api.mjs), CI (the js job of ci.yml).
+      (docs/javascript.md, and docs/api/wasm.md from scripts/api.mjs), CI (the js job of ci.yml).
 - [ ] A demo page beyond js/demo/index.html.

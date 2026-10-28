@@ -36,6 +36,7 @@ Text comes from TrueType and OpenType fonts as exact outlines, ready to engrave 
 - **[Measuring](analysis.md)** and **[files](files.md)**: mass properties, STEP, glTF.
 - **[JavaScript](javascript.md)** and **[three.js](three.md)**: the same API on WebAssembly, in the
   browser and in Node, and with three.js objects.
+- **API**: every call, in [Python](api/index.md), [WASM](api/wasm.md) and [three.js](api/three.md).
 - **[Examples](examples.md)**: brackets, flanges, gears, a bottle.
 - **[The kernel](kernel.md)**: how smlibpy uses SMLib, accuracy and limits.
 

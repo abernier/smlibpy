@@ -100,6 +100,10 @@ jobs:
       - name: Build the package
         working-directory: js
         run: npm run build
+      # (docs/api/wasm.md is written from the declarations just built: it must be what they say)
+      - name: Its API reference docs/api/wasm.md is current
+        working-directory: js
+        run: node scripts/api.mjs && git diff --exit-code -- ../docs/api/wasm.md
       # NVIDIA's validator itself on toUsd's files (js/test/closeout_W.test.ts, N4), which fails rather
       # than skips without it; the BrepArray rules are the submodule's
       - uses: actions/setup-python@v7.0.0
@@ -125,11 +129,10 @@ jobs:
       - name: smlibpy-three, build
         working-directory: smlibpy-three
         run: npm run build
-      # (the API section of docs/three.md is written from the declarations just built: it must be
-      # what they say, as smlibwasm's in docs/javascript.md is, which js/test/lane_WN.test.ts checks)
-      - name: smlibpy-three, the API section of docs/three.md is current
+      # (docs/api/three.md is written from the declarations just built: it must be what they say)
+      - name: smlibpy-three, its API reference docs/api/three.md is current
         working-directory: smlibpy-three
-        run: npm run api && git diff --exit-code -- ../docs/three.md
+        run: npm run api && git diff --exit-code -- ../docs/api/three.md
 
   docs:
     if: github.event_name != 'workflow_dispatch' || inputs.only != 'js'

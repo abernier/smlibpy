@@ -223,8 +223,8 @@ Names are camelCase, keyword arguments become an options object, and operators b
 (`a.cut(b)` for `a - b`). `@classcad/smlibwasm/worker` runs models in a Web Worker with timeouts. A
 browser loads about 2.9 MB with brotli: 2.2 MB for the kernel (`smlibwasm.wasm`, 9.4 MB
 uncompressed) and 0.6 MB for the library, its font and the dictionary of WOFF2 fonts. The
-[JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes, examples for the browser and the whole API in
-TypeScript; the source is in [`js/`](js).
+[JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes and examples for the browser, the
+[WASM API](https://smlibpy.classcad.ch/docs/api/wasm) the whole API in TypeScript; the source is in [`js/`](js).
 
 ## In three.js
 

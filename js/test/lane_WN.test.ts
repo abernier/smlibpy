@@ -1108,11 +1108,11 @@ test('an app type-checks against the declarations without Node\'s types or skipL
 
 test('the API reference shows what every body has as members of Part, Shell and Sketch (W12)', () => {
   const dir = declarations()
-  const page = join(dir, 'javascript.md')
-  writeFileSync(page, readFileSync(join(JS, '../docs/javascript.md'), 'utf8'))
+  // (docs/api/wasm.md, written from these declarations)
+  const page = join(dir, 'wasm.md')
   const api = spawnSync(process.execPath, [join(JS, 'scripts/api.mjs'), join(dir, 'dts'), page], { encoding: 'utf8' })
   assert.equal(api.status, 0, api.stdout + api.stderr)
-  const section = readFileSync(page, 'utf8').split('\n## API\n')[1]
+  const section = readFileSync(page, 'utf8')
   // (the section's code is TypeScript: the members of each class it shows)
   const code = [...section.matchAll(/```ts\n([^]*?)```/g)].map((m) => m[1]).join('\n')
   const shown = new Map<string, Set<string>>()

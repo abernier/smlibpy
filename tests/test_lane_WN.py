@@ -567,17 +567,17 @@ def test_free_functions_say_what_a_sketch_or_face_gives():
 
 
 def test_api_reference_shows_what_every_body_has():
-    """W12: Part, Sketch and Shell in docs/api.md list every public member of the bodies' base class
-    (_Body), which mkdocstrings leaves out of a class unless told."""
+    """W12: Part, Sketch and Shell in docs/api/index.md (the Python API) list every public member of the
+    bodies' base class (_Body), which mkdocstrings leaves out of a class unless told."""
     import pathlib
     import re
 
-    page = (pathlib.Path(__file__).parent.parent / "docs" / "api.md").read_text()
+    page = (pathlib.Path(__file__).parent.parent / "docs" / "api" / "index.md").read_text()
     public = sorted(name for name in vars(shapes._Body) if not name.startswith("_"))
     assert {"named", "colored", "raycast", "closest_point", "heal", "bbox"} <= set(public)
     for cls in ("Part", "Sketch", "Shell"):
         entry = re.search(rf"^::: smlibpy\.shapes\.{cls}\n    options:\n      inherited_members: \[([^\]]*)\]", page, re.M)
-        assert entry, f"{cls} has no inherited_members in docs/api.md"
+        assert entry, f"{cls} has no inherited_members in docs/api/index.md"
         assert sorted(entry.group(1).split(", ")) == public, cls
 
 
