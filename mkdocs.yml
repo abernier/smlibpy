@@ -17,15 +17,18 @@ nav:
   - Sheet metal: sheet-metal.md
   - Measuring: analysis.md
   - Files and viewer: files.md
-  - AI agents (MCP): mcp.md
-  - JavaScript (WASM): javascript.md
-  - three.js: three.md
   - Examples: examples.md
   - The kernel: kernel.md
+  # (the ways in: each one's guide and its reference; the pages keep their addresses)
   - API:
       - Python: api/index.md
-      - WASM: api/wasm.md
-      - three.js: api/three.md
+      - WASM:
+          - Guide: javascript.md
+          - Reference: api/wasm.md
+      - three.js:
+          - Guide: three.md
+          - Reference: api/three.md
+      - Agents (MCP): mcp.md
 
 theme:
   name: material
