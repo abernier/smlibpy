@@ -1,12 +1,13 @@
-// Writes API.md, the API reference: what `@classcad/smlibpy-three` and its other entries export, as
-// the TypeScript declarations in dist (npm run build first) with their doc comments, one heading per
-// class, function, constant and type, in sections by subject. `node scripts/api.mjs [dist] [page]`.
+// Writes docs/api/three.md, smlibpy-three's page of the API reference (Python, WASM, three.js): what
+// `@classcad/smlibpy-three` and its other entries export, as the TypeScript declarations in dist
+// (npm run build first) with their doc comments, one heading per class, function, constant and type,
+// in sections by subject. `node scripts/api.mjs [dist] [page]`.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
 const dist = process.argv[2] ?? fileURLToPath(new URL('../dist/', import.meta.url))
-const page = process.argv[3] ?? fileURLToPath(new URL('../API.md', import.meta.url))
+const page = process.argv[3] ?? fileURLToPath(new URL('../../docs/api/three.md', import.meta.url))
 
 // the modules of each section, in the order of the page (a module that index exports from must have one)
 const SECTIONS = [
@@ -117,13 +118,13 @@ for (const [title, module] of ENTRIES) {
   if (file) section(title, '', new Map([...entries(file, null)].sort(([, a], [, b]) => ORDER[a.kind] - ORDER[b.kind])))
 }
 
-const intro = `# smlibpy-three API
+const intro = `# three.js API
 
-The exports of \`@classcad/smlibpy-three\` (and its entries \`/worker\` and \`/init\`) as TypeScript
-declarations with their doc comments, written by \`npm run api\` from the package's declarations. The
-[README](README.md) has the design: three's types and coordinates (Y up), shapes taken where they
-are, results in the frame of what an operation was called on, angles in radians. smlibpy's
-[documentation](https://smlibpy.classcad.ch/docs/) describes the operations themselves.
+The exports of \`@classcad/smlibpy-three\` and of its entries \`/worker\` and \`/init\`, as TypeScript
+declarations with their doc comments (\`npm run api\` in \`smlibpy-three/\` writes them). The
+[Python API](index.md) describes the operations themselves, under their Python names: \`parallel_to\`
+there is \`parallelTo\` here, and three's types stand in for smlibpy's values. [three.js](../three.md)
+is the guide: three's objects, coordinates and types, placement, picking, memory and workers.
 
 `
 writeFileSync(page, `${intro}${toc}${body}`.replace(/\n{3,}/g, '\n\n'))

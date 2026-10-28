@@ -1,6 +1,8 @@
-# API reference
+# Python API
 
-Everything below is importable from `smlibpy` directly.
+Everything below is importable from `smlibpy` directly. The same API in JavaScript is smlibwasm's,
+[WASM](wasm.md), and with three.js objects smlibpy-three's, [three.js](three.md); both name it in
+camelCase.
 
 ## Shapes
 

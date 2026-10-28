@@ -11,3 +11,9 @@ marked *Python*, *smlibwasm* or *smlibpy-three*.
   websockets 13 or later; mkdocs-material 9.5 and mkdocstrings 0.26 or later). CI and the release
   build pin every package they install from PyPI in `uv.lock` instead, for every Python and
   platform, and Dependabot raises the lock once a week.
+- The documentation's API reference is a folder of three pages: [Python](https://smlibpy.classcad.ch/docs/api)
+  (where it was), [WASM](https://smlibpy.classcad.ch/docs/api/wasm) (smlibwasm's, out of the JavaScript
+  page) and [three.js](https://smlibpy.classcad.ch/docs/api/three).
+- *smlibpy-three*: its guide is a page of the documentation,
+  [three.js](https://smlibpy.classcad.ch/docs/three), beside JavaScript (WASM); the README is
+  shorter and links there, and `API.md` points to its API page.

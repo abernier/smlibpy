@@ -1,8 +1,9 @@
 // The API's forms, as AGENTS.md sets them for smlibpy and smlibwasm: every operation of a body is a
 // method and a function, the function taking the body first and giving what the method gives; and
 // smlibwasm's API is here entire: each of its exports and each member of its classes is the
-// package's, by the same name or a name listed here, or left out for a reason listed here (the
-// README's "Left out"). A new export or member of smlibwasm fails here until it is wrapped or listed.
+// package's, by the same name or a name listed here, or left out for a reason listed here (and in
+// docs/three.md's "What it leaves to three"). A new export or member of smlibwasm fails here until
+// it is wrapped or listed.
 // smlibwasm's old forms, which it takes for a release with a warning, were never the package's:
 // each is refused here, as an option it does not have. And no member of the package's objects has a
 // name that three's renderers read off the objects they draw.

@@ -1,17 +1,17 @@
-// Writes the API section of docs/javascript.md (everything from its "## API" heading on): the
+// Writes docs/api/wasm.md, smlibwasm's page of the API reference (Python, WASM, three.js): the
 // package's exports as TypeScript declarations, read from the compiled declarations in dist
 // (npm run build first), without comments and without internal members (names starting with _).
 // A class that extends an internal one (`Part extends _Body`) shows the members it inherits from
 // it as its own, and extends what that one extends (`Shape`); constructors that only the package
 // calls (they take its internal types) are left out. `node scripts/api.mjs <dist> <page>` reads
-// the declarations in <dist> and writes the section of the Markdown file <page>.
+// the declarations in <dist> and writes the Markdown file <page>.
 import { readFileSync, writeFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import ts from 'typescript'
 
 const dir = (path) => pathToFileURL(path.endsWith('/') ? path : `${path}/`)
 const dist = process.argv[2] ? dir(process.argv[2]) : new URL('../dist/', import.meta.url)
-const page = process.argv[3] ? pathToFileURL(process.argv[3]) : new URL('../../docs/javascript.md', import.meta.url)
+const page = process.argv[3] ? pathToFileURL(process.argv[3]) : new URL('../../docs/api/wasm.md', import.meta.url)
 
 // the modules of each section, in the order of the docs' pages
 const SECTIONS = [
@@ -148,9 +148,11 @@ function names(st) {
 }
 
 const printer = ts.createPrinter({ removeComments: true })
-let out = '## API\n\n' +
-  'The exports of `@classcad/smlibwasm` as TypeScript declarations. The [API reference](api.md) describes each of them\n' +
-  'under its Python name: `parallel_to` there is `parallelTo` here.\n'
+let out = '# WASM API\n\n' +
+  'The exports of `@classcad/smlibwasm` as TypeScript declarations (`js/scripts/api.mjs` writes them from the\n' +
+  'package\'s declarations). The [Python API](index.md) describes each of them under its Python name: `parallel_to`\n' +
+  'there is `parallelTo` here. [JavaScript (WASM)](../javascript.md) is the guide: installing, the browser, memory\n' +
+  'and workers.\n'
 for (const [title, modules] of SECTIONS) {
   const parts = []
   for (const module of modules) {
@@ -165,7 +167,7 @@ for (const [title, modules] of SECTIONS) {
           // tuples on one line: [number, number, number]
           .replace(/\[\n((?:[ ]+[^\n\[\]{}]+\n)+)[ ]*\]/g, (_, items) => `[${items.trim().split(/,?\n\s*/).join(', ')}]`))
   }
-  if (parts.length) out += `\n### ${title}\n\n\`\`\`ts\n${parts.join('\n')}\n\`\`\`\n`
+  if (parts.length) out += `\n## ${title}\n\n\`\`\`ts\n${parts.join('\n')}\n\`\`\`\n`
 }
 for (const [title, module] of ENTRIES) {
   const file = parse(module)
@@ -173,11 +175,8 @@ for (const [title, module] of ENTRIES) {
   const parts = file.statements
     .filter((st) => exporting(st) && names(st).length && names(st).every((n) => !n.startsWith('_')))
     .map((st) => printer.printNode(ts.EmitHint.Unspecified, declaration(st), file).replace(/^export declare /gm, 'export '))
-  out += `\n### ${title}\n\n\`\`\`ts\n${parts.join('\n')}\n\`\`\`\n`
+  out += `\n## ${title}\n\n\`\`\`ts\n${parts.join('\n')}\n\`\`\`\n`
 }
 
-const text = readFileSync(page, 'utf8')
-const at = text.indexOf('\n## API\n')
-if (at < 0) throw new Error('docs/javascript.md has no "## API" heading')
-writeFileSync(page, text.slice(0, at + 1) + out)
-console.log(`docs/javascript.md: ${out.split('\n').length} lines of API`)
+writeFileSync(page, out)
+console.log(`${fileURLToPath(page)}: ${out.split('\n').length} lines of API`)

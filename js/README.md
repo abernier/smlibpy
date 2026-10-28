@@ -5,7 +5,7 @@ API on the same kernel, SMLib, compiled to WebAssembly. It runs in the browser a
 has no dependencies.
 
 **[Documentation](https://smlibpy.classcad.ch/docs/javascript)** · **[Getting started](https://smlibpy.classcad.ch/docs/getting-started)** ·
-**[API reference](https://smlibpy.classcad.ch/docs/api)** · **[GitHub](https://github.com/awv-informatik/smlibpy/tree/main/js)**
+**[API reference](https://smlibpy.classcad.ch/docs/api/wasm)** · **[GitHub](https://github.com/awv-informatik/smlibpy/tree/main/js)**
 
 ```js
 import { Box, Cylinder, GridLocations, Z, toStep } from '@classcad/smlibwasm'
