@@ -25,12 +25,46 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.20", "websockets>=13"]
-# The tools of the tests and the docs at exact versions, so that a new release of one changes
-# nothing until it is raised here: pytest 9.2.0 came out during 0.6.1's upload and failed every
-# wheel's tests. CI and the release build test with the test extra (websockets: the live view, of
-# the mcp extra; 17 needs Python 3.11). ci.yml's docs job and checks.yml name these versions too.
-test = ["pytest==9.2.0", "websockets==17.3; python_version >= '3.11'", "websockets==16.1.1; python_version < '3.11'"]
-docs = ["mkdocs-material==9.8.0", "mkdocstrings[python]==1.0.8", "mkdocstrings-python==2.0.10"]
+test = ["pytest>=8", "websockets>=13"]  # (websockets: the live view, of the mcp extra)
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
+
+# The rest of what CI and the release build install from PyPI: what a build needs (the
+# requirements of [build-system]; the ninja and cmake that scikit-build-core asks for where the
+# runner has none; build, which makes the sdist) and ci.yml's cross-checks. uv.lock pins these, the
+# dependencies and the extras, for every Python and platform, and CI installs them at those
+# versions (.github/actions/constraints). Dependabot raises the lock in one pull request a week, so
+# that a new release of a package shows up there, alone (pytest 9.2.0 failed every pull request and
+# 0.6.1's upload the evening it came out). After changing a requirement here, run `uv lock`.
+[dependency-groups]
+build = ["scikit-build-core>=0.10", "pybind11>=3.0", "ninja>=1.5", "cmake>=3.15", "build"]
+# (where ci.yml installs them and they have wheels: no Python 3.15 yet; usd-core for Linux arm64
+# from Python 3.11 on; NVIDIA's validator, which holds usd-core below 26.09, on macOS and on Linux
+# x86_64 only, since 26.8 has no wheels for Linux arm64, where the cross-checks take a newer one)
+crosscheck = [
+  "cadquery-ocp-novtk; sys_platform != 'win32' and python_version < '3.15'",
+  "usd-core; python_version < '3.15' and platform_machine != 'aarch64'",
+  "usd-core; python_version >= '3.11' and python_version < '3.15' and platform_machine == 'aarch64'",
+  "usd-brep[validation]; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "usd-validation-nvidia[usd]; python_version < '3.15' and (sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine == 'x86_64'))",
+]
+
+[tool.uv]
+# The runners' platforms, each resolved on its own, and with wheels for every package in the lock
+# for them, so that a pin never turns an install that works into one that fails
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64'",
+  "sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+required-environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64'",
+  "sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
 
 [project.scripts]
 smlibpy-mcp = "smlibpy.mcp.server:main"
@@ -45,7 +79,7 @@ build-dir = "build/{wheel_tag}"
 cmake.build-type = "Release"
 wheel.packages = ["src/smlibpy"]
 sdist.include = ["src/smlibpy/mcp/app", "third_party/usd-brep/source/SMLib", "third_party/usd-brep/source/SM_API", "third_party/usd-brep/source/SmPyLib/src", "third_party/usd-brep/LICENSE", "third_party/usd-brep/THIRD_PARTY_NOTICES.md", "third_party/patches"]
-sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests", "third_party/usd-brep/tools", "third_party/usd-brep/Examples", "out", "build", ".venv*"]
+sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests", "third_party/usd-brep/tools", "third_party/usd-brep/Examples", "out", "build", ".venv*", "uv.lock"]
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
