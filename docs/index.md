@@ -34,9 +34,9 @@ Text comes from TrueType and OpenType fonts as exact outlines, ready to engrave 
 - **[Selecting](selecting.md)**: every way to pick faces and edges.
 - **[Surfaces](surfaces.md)**: freeform modeling and stitching.
 - **[Measuring](analysis.md)** and **[files](files.md)**: mass properties, STEP, glTF.
-- **[JavaScript](javascript.md)** and **[three.js](three.md)**: the same API on WebAssembly, in the
-  browser and in Node, and with three.js objects.
-- **API**: every call, in [Python](api/index.md), [WASM](api/wasm.md) and [three.js](api/three.md).
+- **API**: every call in [Python](api/index.md); the same API on WebAssembly, in the browser and in
+  Node ([guide](javascript.md), [reference](api/wasm.md)), and with three.js objects
+  ([guide](three.md), [reference](api/three.md)); and for [agents](mcp.md) (MCP).
 - **[Examples](examples.md)**: brackets, flanges, gears, a bottle.
 - **[The kernel](kernel.md)**: how smlibpy uses SMLib, accuracy and limits.
 
