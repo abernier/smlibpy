@@ -59,7 +59,7 @@ test("a box's TriangleMesh: a THREE.Mesh of its triangles in three's axes, close
   three.computeBoundingBox()
   closeBox(mesh.bbox(), three.boundingBox!, 1e-12) // (three's own box agrees)
   assert.ok(mesh.isClosed())
-  closeVector(mesh.center(), { x: 0, y: 0, z: 0 }, 1e-12)
+  closeVector(mesh.getCenter(), { x: 0, y: 0, z: 0 }, 1e-12)
   closeVector(mesh.centroid, { x: 0, y: 0, z: 0 }, 1e-9)
   // the geometry: the triangles in the kernel's order, a point split where the faces' normals
   // differ (24 points, as BoxGeometry has), the triangles' normals pointing out
@@ -467,7 +467,7 @@ test('nothing of smlibwasm comes out', () => {
     mesh,
     mesh.geometry,
     mesh.bbox(),
-    mesh.center(),
+    mesh.getCenter(),
     mesh.centroid,
     mesh.massProperties(),
     mesh.triangleNormals,

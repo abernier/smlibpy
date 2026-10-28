@@ -314,7 +314,8 @@ def test_box_from_a_relieved_cross_blank():
     assert pattern.outline.area == pytest.approx(blank.volume / T, rel=1e-9)
     assert [e.geom_type for e in pattern.outline.edges()] == ["line"] * 12   # the cross with notched corners
     lines = sorted((round(b.line.center().x, 9), round(b.line.center().y, 9)) for b in pattern.bends)
-    assert lines == pytest.approx([(20, 40), (50, 20), (50, 60), (80, 40)], abs=1e-9)
+    # (point by point: pytest 9.2 refuses approx of a list of tuples)
+    assert lines == [pytest.approx(p, abs=1e-9) for p in [(20, 40), (50, 20), (50, 60), (80, 40)]]
 
 
 def test_unfold_an_extruded_l_profile():

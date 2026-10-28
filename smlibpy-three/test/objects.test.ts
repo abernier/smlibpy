@@ -154,6 +154,12 @@ test('faces, edges and vertices are one object each, and draw in place as childr
   // its own material: a highlight drawn in front of the body's faces
   const m = face.material as THREE.MeshBasicMaterial
   assert.ok(m.polygonOffset && m.polygonOffsetFactor < 0)
+  // drawn after the body's edge lines, which lie at their depth (three's WebGPURenderer drew those
+  // over an edge's highlight before)
+  for (const x of [face, part.edges()[0], face.outerWire(), part.vertices()[0], part.edges({ seams: true })[0]]) {
+    assert.ok(x.renderOrder > part.edgeLines.renderOrder, x.type)
+  }
+  assert.equal(new Box(1, 1, 1).edges()[0].clone().renderOrder, 1)
   const edge = face.edges().first
   assert.equal(edge.owner, part)
   assert.ok(part.edges().includes(edge))
@@ -209,7 +215,7 @@ test('selectors work in three axes: top is +y, front is +z', () => {
   assert.equal(part.faces().maxBy().one(), part.faces().top().one())
   assert.equal(part.faces().minBy().one(), part.faces().bottom().one())
   close(part.faces().largest().area, 30 * 20)
-  close(part.faces().nearest(new THREE.Vector3(100, 0, 0)).center().x, 15)
+  close(part.faces().nearest(new THREE.Vector3(100, 0, 0)).getCenter().x, 15)
 })
 
 test('at() places clones by matrices, as InstancedMesh places instances', () => {

@@ -93,7 +93,7 @@ test('a flange on an edge picked by selectors; four make a tray', () => {
   // four flanges: smlibpy's tray, 108 x 68 x 20
   let tray: Part = plate
   for (const [axis, last] of [[Y, true], [Y, false], [X, true], [X, false]] as const) {
-    const edges = tray.edges().parallelTo(axis).filter((e) => Math.abs(e.center().z - 2) < 1e-6).sortBy(axis === X ? Y : X)
+    const edges = tray.edges().parallelTo(axis).filter((e) => Math.abs(e.getCenter().z - 2) < 1e-6).sortBy(axis === X ? Y : X)
     tray = flange(tray, last ? edges.last : edges.first, 20, { radius: 2 })
   }
   closeVector(tray.bbox().getSize(new THREE.Vector3()), { x: 108, y: 68, z: 20 }, 1e-6)
@@ -133,12 +133,12 @@ test('unfold and the flat pattern in the XY plane: its length along x, its width
   assert.equal(bendLine, pattern.bends[0].line)
   assert.equal(pattern.bends[0].direction, 'up')
   close(bendLine.length, 40, 1e-9)
-  closeVector(bendLine.center(), { x: 70, y: 20, z: 0 }, 1e-9)
+  closeVector(bendLine.getCenter(), { x: 70, y: 20, z: 0 }, 1e-9)
   closeVector({ x: 0, y: Math.abs(bendLine.tangentAt().y), z: 0 }, Y, 1e-12)
   assert.match(String(pattern), /FlatPattern\(100 x 40, thickness=2, 1 bends, kFactor=0.44\)/)
   // 'up' is toward +z: folded up again along its line (on its top face, which faces +z), the flat
   // pattern is the bracket again, its corner at the origin
-  const top = new THREE.Ray(bendLine.center().setZ(pattern.thickness), bendLine.tangentAt())
+  const top = new THREE.Ray(bendLine.getCenter().setZ(pattern.thickness), bendLine.tangentAt())
   const again = fold(pattern.part, top, pattern.bends[0].angle, { radius: pattern.bends[0].radius })
   closeBox(again.bbox(), box([0, 0, 0], [71.7381, 40, 31.7381]), 1e-4)
 })
