@@ -50,16 +50,11 @@ build-verbosity = 1
 test-requires = ["pytest>=8", "websockets>=13"]  # (websockets: the live view, of the mcp extra)
 test-command = "pytest {project}/tests -q"
 
-# The kernel does not depend on the Python version: a compiler cache lets every wheel after the
-# first reuse it, instead of compiling all of SMLib again for each Python.
-[tool.cibuildwheel.linux]
-before-all = "dnf install -y epel-release && dnf install -y ccache"
-environment = { CMAKE_C_COMPILER_LAUNCHER = "ccache", CMAKE_CXX_COMPILER_LAUNCHER = "ccache", CCACHE_DIR = "/tmp/ccache", CCACHE_MAXSIZE = "4G" }
-
+# No compiler cache: each job of the Release workflow builds the wheels of one Python, so it
+# compiles the kernel once (on macOS once for each architecture), and a cache finds nothing to reuse.
 [tool.cibuildwheel.macos]
 archs = ["arm64", "x86_64"]
-before-all = "brew install ccache"
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0", CMAKE_C_COMPILER_LAUNCHER = "ccache", CMAKE_CXX_COMPILER_LAUNCHER = "ccache", CCACHE_MAXSIZE = "4G" }
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
