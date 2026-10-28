@@ -58,7 +58,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "three": ">=0.170"
+    "three": ">=0.186"
   },
   "dependencies": {
     "@classcad/smlibwasm": "file:../js"

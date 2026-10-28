@@ -208,8 +208,8 @@ test('blend bridges border edges of two sheets, each where it is', () => {
   low.position.x = -20
   const high = new Rectangle(20, 20)
   high.position.set(20, 0, 10)
-  const lowEdge = low.edges().filter((e) => Math.abs(e.center().x - 10) < 1e-9).one() // (at world x -10)
-  const highEdge = high.edges().filter((e) => Math.abs(e.center().x + 10) < 1e-9).one() // (at world x 10)
+  const lowEdge = low.edges().filter((e) => Math.abs(e.getCenter().x - 10) < 1e-9).one() // (at world x -10)
+  const highEdge = high.edges().filter((e) => Math.abs(e.getCenter().x + 10) < 1e-9).one() // (at world x 10)
   const bridge = blend(lowEdge, highEdge)
   assert.ok(bridge instanceof Shell)
   close(bridge.area, 466.054, 1e-3) // (smlibpy's)
@@ -289,7 +289,7 @@ test('nothing of smlibwasm comes out of the surfaces', () => {
     nurbsSurface(rows.slice(0, 4).map((r) => r.slice(0, 4))),
     ruled(new Segment(v(0, 0, 0), v(20, 0, 0)), new Segment(v(0, 0, -20), v(20, 0, -20))),
     stitch(block.faces(), { report: true }),
-    blend(low.edges().filter((e) => Math.abs(e.center().x - 10) < 1e-9).one(), high.edges().filter((e) => Math.abs(e.center().x + 10) < 1e-9).one()),
+    blend(low.edges().filter((e) => Math.abs(e.getCenter().x - 10) < 1e-9).one(), high.edges().filter((e) => Math.abs(e.getCenter().x + 10) < 1e-9).one()),
     surfaceFillet(floor.faces()[0], wall.faces()[0], 5),
   ]
   for (const [i, r] of results.entries()) noKernel(r, `result ${i}`)
