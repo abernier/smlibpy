@@ -92,7 +92,7 @@ jobs:
           python-version: "3.12"
       - name: Tools
         run: |
-          pip install numpy pytest pybind11 ninja
+          pip install numpy "pytest==9.2.0" pybind11 ninja
           # (gdb: the crash signatures of the weekly fuzz run, which tells known crashes by them)
           sudo apt-get install -y llvm gdb
       - name: Build with AddressSanitizer
@@ -136,7 +136,7 @@ jobs:
           python-version: "3.12"
       - name: Build (the module in src/smlibpy, and prog_test_app)
         run: |
-          pip install numpy pytest pybind11 ninja
+          pip install numpy "pytest==9.2.0" pybind11 ninja
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSMLIBPY_PROG_TEST=ON \
             -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" -DPython_EXECUTABLE="$(which python)"
           cmake --build build

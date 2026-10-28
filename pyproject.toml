@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "smlibpy"
-version = "0.6.1"
+version = "0.6.2"
 description = "Python CAD modeling on SMLib, the open-source NURBS solid modeling kernel"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,8 +25,12 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.20", "websockets>=13"]
-test = ["pytest>=8"]
-docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
+# The tools of the tests and the docs at exact versions, so that a new release of one changes
+# nothing until it is raised here: pytest 9.2.0 came out during 0.6.1's upload and failed every
+# wheel's tests. CI and the release build test with the test extra (websockets: the live view, of
+# the mcp extra; 17 needs Python 3.11). ci.yml's docs job and checks.yml name these versions too.
+test = ["pytest==9.2.0", "websockets==17.3; python_version >= '3.11'", "websockets==16.1.1; python_version < '3.11'"]
+docs = ["mkdocs-material==9.8.0", "mkdocstrings[python]==1.0.8", "mkdocstrings-python==2.0.10"]
 
 [project.scripts]
 smlibpy-mcp = "smlibpy.mcp.server:main"
@@ -47,7 +51,7 @@ sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests"
 build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
 skip = "*-musllinux_* *_i686 *-win32"
 build-verbosity = 1
-test-requires = ["pytest>=8", "websockets>=13"]  # (websockets: the live view, of the mcp extra)
+test-extras = ["test"]
 test-command = "pytest {project}/tests -q"
 
 # No compiler cache: each job of the Release workflow builds the wheels of one Python, so it

@@ -11,7 +11,7 @@
 // (first: in a browser it starts defeature's probe worker while the kernel loads, see there)
 import './_guard.ts'
 
-export const version = '0.6.1'
+export const version = '0.6.2'
 
 // geometry
 export {
