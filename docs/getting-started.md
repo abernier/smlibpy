@@ -7,7 +7,7 @@ pip install smlibpy
 ```
 
 There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for
-Python 3.10 to 3.14. Elsewhere pip builds the kernel from source, which needs CMake 3.20 or
+Python 3.10 to 3.15. Elsewhere pip builds the kernel from source, which needs CMake 3.20 or
 newer and a C++17 compiler (Xcode command line tools on macOS, `build-essential` on Linux,
 Visual Studio on Windows) and takes about a minute.
 
