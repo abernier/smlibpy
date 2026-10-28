@@ -54,6 +54,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
+      - uses: ./.github/actions/constraints
       - name: The release tag matches the package version
         if: github.event_name == 'release'
         run: |
@@ -95,9 +96,19 @@ jobs:
         with:
           name: app
           path: src/smlibpy/mcp/app
+      - uses: ./.github/actions/constraints
+        with:
+          pip: "false"
       - uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_BUILD: ${{ matrix.python }}-*
+          # uv.lock's versions: what the build asks for while it builds, everything while the wheel
+          # is tested (.github/actions/constraints). Linux builds in a container, with the project
+          # in /project; on macOS this replaces pyproject.toml's environment, hence its target.
+          CIBW_ENVIRONMENT_LINUX: PIP_CONSTRAINT=/project/.github/build-constraints.txt
+          CIBW_TEST_ENVIRONMENT_LINUX: PIP_CONSTRAINT=/project/.github/constraints.txt
+          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0 PIP_CONSTRAINT=${{ github.workspace }}/.github/build-constraints.txt
+          CIBW_TEST_ENVIRONMENT_MACOS: PIP_CONSTRAINT=${{ github.workspace }}/.github/constraints.txt
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-wheels-${{ matrix.os }}-${{ matrix.python }}
@@ -140,9 +151,14 @@ jobs:
         run: |
           cmake -S . -B C:/smlibpy-kernel -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DSMLIBPY_KERNEL_ONLY=ON
           cmake --build C:/smlibpy-kernel
+      - uses: ./.github/actions/constraints
+        with:
+          pip: "false"
+      # (uv.lock's versions as in the wheels job; the quotes keep the backslashes of the path)
       - uses: pypa/cibuildwheel@v4.2.1
         env:
-          CIBW_ENVIRONMENT_WINDOWS: CMAKE_GENERATOR=Ninja CXX=cl SMLIBPY_KERNEL_DIR=C:/smlibpy-kernel
+          CIBW_ENVIRONMENT_WINDOWS: CMAKE_GENERATOR=Ninja CXX=cl SMLIBPY_KERNEL_DIR=C:/smlibpy-kernel PIP_CONSTRAINT='${{ github.workspace }}\.github\build-constraints.txt'
+          CIBW_TEST_ENVIRONMENT_WINDOWS: PIP_CONSTRAINT='${{ github.workspace }}\.github\constraints.txt'
           CIBW_BUILD: ${{ matrix.python }}-win_amd64
       - uses: actions/upload-artifact@v7.0.1
         with:

@@ -38,6 +38,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python }}
+      - uses: ./.github/actions/constraints
       - name: Build and install
         run: pip install -v ".[test,mcp]"
       - name: OpenCASCADE for the STEP cross-checks
@@ -102,6 +103,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
+      - uses: ./.github/actions/constraints
       - name: NVIDIA's USD validator (OpenUSD and the asset validator)
         run: pip install "usd-validation-nvidia[usd]"
       - name: Test
@@ -130,6 +132,6 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      # (the versions of the docs extra in pyproject.toml)
-      - run: pip install "mkdocs-material==9.8.0" "mkdocstrings[python]==1.0.8" "mkdocstrings-python==2.0.10"
+      - uses: ./.github/actions/constraints
+      - run: pip install mkdocs-material "mkdocstrings[python]"
       - run: mkdocs build --strict

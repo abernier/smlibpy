@@ -38,6 +38,12 @@ under `smlibpy-three/`) is smlibwasm's API for three.js. Agents use smlibpy thro
   AddressSanitizer and the kernel's own tests, nightly and on pull requests that touch the kernel.
   After a change to a public name or signature run `python tools/gen_js_options.py` (the tests fail
   while its files are behind).
+- **Versions.** CI and the release build install what they take from PyPI at the versions of
+  `uv.lock`: the dependencies, the extras and the dependency groups `build` and `crosscheck`, for
+  every Python and platform (`.github/actions/constraints`). After changing a requirement or the
+  version in `pyproject.toml`, run `uv lock` (uv 0.12.10, the version CI checks the lock with); CI
+  fails while the lock is behind. Dependabot raises the lock in one pull request a week, into `next`: merge it
+  when its CI is green, and when not, it is the one place where a new release broke something.
 - **Commits and PRs.** A subject that says what changed and why, in plain words
   (`Area: what changed, and why`). No attribution lines: no "Generated with Claude Code", no
   Co-Authored-By.
@@ -155,9 +161,10 @@ fallbacks. A feature lands in both, in the same change. `js/PORTING.md` has the 
 
 ## Releasing
 
-1. `next` is green. `release/<version>` from it, the version raised in `pyproject.toml`,
-   `src/smlibpy/__init__.py`, `js/package.json`, `js/src/index.ts`, `smlibpy-three/package.json`,
-   `smlibpy-three/src/index.ts` and the two `package-lock.json`; the release notes written.
+1. `next` is green. `release/<version>` from it, the version raised in `pyproject.toml` (and in
+   `uv.lock`, by `uv lock`), `src/smlibpy/__init__.py`, `js/package.json`, `js/src/index.ts`,
+   `smlibpy-three/package.json`, `smlibpy-three/src/index.ts` and the two `package-lock.json`; the
+   release notes written.
    A patch (0.5.1) only when code written for the last release still runs, old forms with a
    warning; otherwise a minor version (0.6.0), and the notes say what to change. Diff the public
    API against the last release's tag to know, rather than recalling the changes.

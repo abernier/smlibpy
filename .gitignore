@@ -26,3 +26,7 @@ app/node_modules/
 # tools/fuzz/fuzz.py output
 fuzz-out/
 fuzz-asan-out/
+
+# uv.lock's versions as pip constraints, written by .github/actions/constraints
+.github/constraints.txt
+.github/build-constraints.txt

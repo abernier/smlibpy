@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # uv.lock: the versions CI and the release build install (.github/actions/constraints). One pull
+  # request a week raises all of them, so that a release of a package that breaks something shows
+  # up there, alone. The lock only: the ranges in pyproject.toml are what users get, and stay.
+  # (Dependabot reads this file from the default branch, main: it runs from the release that
+  # brings the file there.)
+  - package-ecosystem: uv
+    directory: /
+    target-branch: next
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    groups:
+      locked:
+        patterns: ["*"]
+    commit-message:
+      prefix: "Dependencies:"
