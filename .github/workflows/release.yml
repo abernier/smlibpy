@@ -60,8 +60,12 @@ jobs:
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           test "${GITHUB_REF_NAME}" = "v${version}" || { echo "tag ${GITHUB_REF_NAME} but version ${version}"; exit 1; }
+      # (with pip and the lock's build, as the other jobs install: this image's pipx hands `pipx run`
+      # to uv once uv is on the PATH, and uv finds no command named build in build)
       - name: Build the sdist
-        run: pipx run build --sdist
+        run: |
+          pip install build
+          python -m build --sdist
       - name: The sdist builds on its own
         run: |
           python -m venv "$RUNNER_TEMP/from-sdist"
