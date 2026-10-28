@@ -126,7 +126,7 @@ test('an edge picked here is rounded there; a face and a vertex cross as their b
   const info = await cad.call('faceInfo', [part, top])
   assert.equal(info.same, true)
   assert.equal(info.index, top.index)
-  closeVector(info.center, top.center(), 1e-9)
+  closeVector(info.center, top.getCenter(), 1e-9)
   assert.ok(info.center instanceof THREE.Vector3)
   const vertex = part.vertices()[3]
   const sub = await cad.call('subInfo', [part, vertex, edge])

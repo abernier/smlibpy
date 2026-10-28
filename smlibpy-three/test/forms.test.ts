@@ -4,10 +4,13 @@
 // package's, by the same name or a name listed here, or left out for a reason listed here (the
 // README's "Left out"). A new export or member of smlibwasm fails here until it is wrapped or listed.
 // smlibwasm's old forms, which it takes for a release with a warning, were never the package's:
-// each is refused here, as an option it does not have.
+// each is refused here, as an option it does not have. And no member of the package's objects has a
+// name that three's renderers read off the objects they draw.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
 import * as three from '../src/index.ts'
@@ -41,9 +44,10 @@ const RENAMED: Record<string, string> = {
   Mesh: 'TriangleMesh',
 }
 
-/** Members under another name (three's objects have the name: `raycast` is intersectRay and `add`
- * is `new Wire([a, b])` too, under names three's objects have, so not checked here). */
-const MEMBER_RENAMED: Record<string, string> = { mesh: 'toMesh', raycastMany: 'intersectRays', length: 'triangleCount' }
+/** Members under another name (three's objects have the name, or three's renderers read it off
+ * the objects they draw: `raycast` is intersectRay and `add` is `new Wire([a, b])` too, under names
+ * three's objects have, so not checked here). */
+const MEMBER_RENAMED: Record<string, string> = { mesh: 'toMesh', raycastMany: 'intersectRays', length: 'triangleCount', center: 'getCenter' }
 
 /** smlibwasm's exports the package leaves out, and why. */
 const LEFT_OUT: [RegExp, string][] = [
@@ -116,6 +120,41 @@ test("every member of smlibwasm's classes is the package's, renamed, or left out
     )
     assert.deepEqual(missing, [], `${name}'s ${missing.join(', ')}: wrap them, or say here why not`)
   }
+})
+
+/** Names three's renderers read off an object that is not one of the objects they draw. */
+const NOT_DRAWN: Record<string, string> = {
+  length: 'nodes/core/Node.js reads the length of an array, a property of a node',
+}
+
+test("no member of the package's objects is a name three's renderers read off the objects they draw", () => {
+  // (three's WebGPURenderer cloned a body's `center()` as a Sprite's center, and failed on every
+  // body: `object.<name>` in three's renderers, nodes and node materials, against the members each
+  // class adds to its three base class; what it overrides is three's own, with three's meaning)
+  const src = fileURLToPath(new URL('.', import.meta.resolve('three/src/Three.js')))
+  const reads = new Set<string>()
+  for (const dir of ['renderers', 'nodes', 'materials']) {
+    for (const file of readdirSync(join(src, dir), { recursive: true }) as string[]) {
+      if (!file.endsWith('.js')) continue
+      for (const [, name] of readFileSync(join(src, dir, file), 'utf8').matchAll(/\bobject\.(\w+)/g)) reads.add(name)
+    }
+  }
+  assert.ok(reads.has('center') && reads.has('count'), "three's renderers read a Sprite's center and an InstancedMesh's count")
+  const bases = [THREE.Mesh, THREE.LineSegments, THREE.Line, THREE.Points, THREE.Object3D]
+  let classes = 0
+  for (const [name, value] of Object.entries(three)) {
+    if (typeof value !== 'function' || !(value.prototype instanceof THREE.Object3D)) continue
+    const base = bases.find((b) => value.prototype instanceof b)!
+    const threes = new (base as new () => THREE.Object3D)() as unknown as Record<string, unknown>
+    const added = new Set<string>()
+    for (let p = value.prototype; p !== base.prototype; p = Object.getPrototypeOf(p)) {
+      for (const k of Object.getOwnPropertyNames(p)) if (!(k in threes)) added.add(k)
+    }
+    const clashes = [...added].filter((k) => reads.has(k) && !(k in NOT_DRAWN))
+    assert.deepEqual(clashes, [], `${name}'s ${clashes.join(', ')}: three's renderers read these off an object; rename them`)
+    classes++
+  }
+  assert.ok(classes >= 40, `${classes} classes`)
 })
 
 test("every operation of a body is a method and a function, as smlibwasm's are", () => {
@@ -201,7 +240,7 @@ test('each function gives what its method gives, in the body frame, with its tra
     ['offsetFaces', () => f.offsetFaces(part, part.faces().top(), 2), () => part.offsetFaces(part.faces().top(), 2)],
     ['removeFaces', () => f.removeFaces(drilled, drilled.faces().cylinders()), () => drilled.removeFaces(drilled.faces().cylinders())],
     ['removeFillets', () => f.removeFillets(rounded), () => rounded.removeFillets()],
-    ['push', () => f.push(part, top, top.center(), { by: 2, radius: 8 }), () => part.push(top, top.center(), { by: 2, radius: 8 })],
+    ['push', () => f.push(part, top, top.getCenter(), { by: 2, radius: 8 }), () => part.push(top, top.getCenter(), { by: 2, radius: 8 })],
     ['shell', () => f.shell(part, 1, part.faces().top()), () => part.shell(1, part.faces().top())],
     ['offset', () => f.offset(part, 1), () => part.offset(1)],
     ['mirror', () => f.mirror(part, new THREE.Plane(new THREE.Vector3(1, 0, 0), -30)), () => part.mirror(new THREE.Plane(new THREE.Vector3(1, 0, 0), -30))],

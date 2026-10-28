@@ -115,7 +115,7 @@ test('files are read and written as they are: a part comes back where the scene 
   scene.rotation.y = Math.PI / 6
   scene.add(part)
   const where = worldBox(part)
-  const center = part.center().applyMatrix4(part.matrixWorld)
+  const center = part.getCenter().applyMatrix4(part.matrixWorld)
   const step = new STEPExporter().parse(scene)
   const brep = new BREPExporter().parse(scene)
   const smb = new SMBExporter().parse(scene)
@@ -141,7 +141,7 @@ test('files are read and written as they are: a part comes back where the scene 
     unmoved(result, format)
     unmoved(body, format)
     closeBox(worldBox(result), where, 1e-9, format)
-    closeVector(body.center().applyMatrix4(body.matrixWorld), center, 1e-9, format)
+    closeVector(body.getCenter().applyMatrix4(body.matrixWorld), center, 1e-9, format)
     close(body.volume, part.volume, 1e-6, format)
   }
 })
@@ -476,7 +476,7 @@ test('USD: USDBrepLoader gives what USDBrepExporter wrote where the scene showed
   const group = new USDBrepLoader().parse(new USDBrepExporter().parse(scene, { mesh: false }))
   const body = group.children[0] as Part
   closeBox(worldBox(body), worldBox(part), 1e-9)
-  closeVector(body.center().applyMatrix4(body.matrixWorld), part.center().applyMatrix4(part.matrixWorld), 1e-9)
+  closeVector(body.getCenter().applyMatrix4(body.matrixWorld), part.getCenter().applyMatrix4(part.matrixWorld), 1e-9)
   close(body.volume, part.volume, 1e-6)
   // a stage written Y up: one of the kernel's (which writes its coordinates as they are, Z up), its
   // upAxis set to "Y" by hand, with a block 30 high along y, standing on y = 0

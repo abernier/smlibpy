@@ -260,7 +260,7 @@ export class TriangleMesh extends THREE.Mesh {
   }
 
   /** The middle of its box, in its frame (`centroid` is the center of mass). */
-  center(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+  getCenter(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
     const value = kernelMesh(this)
     return vector3(call(() => value.center()), target)
   }

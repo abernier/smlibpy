@@ -14,7 +14,7 @@
 //     const [hit] = raycaster.intersectObject(part) // three's Raycaster
 //     hit.brep // the BrepFace (a THREE.Mesh) the ray hit; hits on part.edgeLines give a BrepEdge
 
-export const version = '0.6.1'
+export const version = '0.6.2'
 
 export { FontError, KernelError, ModelingError } from './errors.ts'
 export type { Align2, Align3, AlignValue } from './types.ts'

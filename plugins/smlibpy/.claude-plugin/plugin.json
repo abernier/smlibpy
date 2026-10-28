@@ -1,7 +1,7 @@
 {
   "name": "smlibpy",
   "displayName": "smlibpy",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Build, check and export exact 3D CAD parts by running Python with smlibpy on SMLib, NVIDIA's open-source NURBS kernel: solids, fillets, shells, sweeps, surfaces, STEP and STL.",
   "author": { "name": "AWV Informatik AG", "email": "info@awv-informatik.ch", "url": "https://awv-informatik.ch" },
   "homepage": "https://smlibpy.classcad.ch",

@@ -1,6 +1,6 @@
 {
   "name": "@classcad/smlibpy-three",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "smlibpy's CAD modeling API for three.js: exact B-rep parts, sketches and curves that are three.js objects, on the SMLib kernel (smlibwasm)",
   "license": "MIT",
   "homepage": "https://github.com/awv-informatik/smlibpy/tree/main/smlibpy-three#readme",
@@ -58,7 +58,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "three": ">=0.170"
+    "three": ">=0.186"
   },
   "dependencies": {
     "@classcad/smlibwasm": "file:../js"

@@ -69,16 +69,18 @@ or names smlibwasm's API).
 2. **Values.** Operations return new objects and leave their inputs as they were.
 3. **Names.** smlibpy's names (camelCase as smlibwasm's), with three's types. A name that three's
    Object3D, Mesh, Line or Points already has (`add`, `scale`, `raycast`, `clone`, `copy`, `name`,
-   `dispose`, `translate…`, `rotate…`, `lookAt`, `position`, `visible`, ...) is never reused with
-   another meaning: rename it (`raycast` to `intersectRay`) or leave it to three (placement is the
-   object's transform, so smlibpy's `translate`, `rotate` and `moved` are not wrapped, and `scale`
-   is a function only). Parameters are whole words (`tolerance`, not `tol`), choices are typed as
-   their literals (`corners?: 'round' | 'sharp'`), and modules are named as smlibwasm's, never after
-   a function they hold (`deformations.ts`, `pictures.ts`). smlibwasm's old forms, which it takes
-   for a release with a warning that names it (an option it renamed, a flag it took by position),
-   are refused before the call, as an option the package does not have (`refuseRenamed`,
-   `refusePositional` in `kernel.ts`); `test/forms.test.ts` calls each one smlibwasm's
-   `js/test/_python_api.json` lists.
+   `dispose`, `translate…`, `rotate…`, `lookAt`, `position`, `visible`, ...), or that three's
+   renderers read off every object they draw (a Sprite's `center`, an InstancedMesh's `count`), is
+   never reused with another meaning: rename it (`raycast` to `intersectRay`, `center` to
+   `getCenter`) or leave it to three (placement is the object's transform, so smlibpy's `translate`,
+   `rotate` and `moved` are not wrapped, and `scale` is a function only), and `test/forms.test.ts`
+   reads three's renderers for those names. Parameters are whole words (`tolerance`, not `tol`),
+   choices are typed as their literals (`corners?: 'round' | 'sharp'`), and modules are named as
+   smlibwasm's, never after a function they hold (`deformations.ts`, `pictures.ts`). smlibwasm's old
+   forms, which it takes for a release with a warning that names it (an option it renamed, a flag it
+   took by position), are refused before the call, as an option the package does not have
+   (`refuseRenamed`, `refusePositional` in `kernel.ts`); `test/forms.test.ts` calls each one
+   smlibwasm's `js/test/_python_api.json` lists.
 4. **Methods and functions.** Every operation of a body (it makes a new body, or new geometry, from
    one) is a method and a function, as the repository's AGENTS.md has it for smlibpy and smlibwasm:
    the method does the work; the function in `operations.ts` (or its domain's module) has the same

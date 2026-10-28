@@ -62,8 +62,9 @@ export abstract class Body extends THREE.Mesh {
     wires(): ShapeList<Wire>;
     /** The surface area. */
     get area(): number;
-    /** The center of mass (of the area, for sheets). */
-    center(target?: THREE.Vector3): THREE.Vector3;
+    /** The center of mass (of the area, for sheets): smlibpy's `center()`, under three's name for it
+     * (`Box3.getCenter`), since three's renderers read any object's `center` as a Sprite's. */
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     /** The exact bounding box, in the body's frame (Box3.setFromObject gives the tessellation's,
      * in the world's). */
     bbox(target?: THREE.Box3): THREE.Box3;
@@ -499,7 +500,9 @@ export class BrepFace extends THREE.Mesh {
     get plane(): THREE.Plane;
     /** The axis of a cylinder, cone, sphere or torus face, in its body's frame. */
     get axis(): THREE.Ray;
-    center(target?: THREE.Vector3): THREE.Vector3;
+    /** The centroid of its area, in its body's frame (on a curved face it may lie off the face: see
+     * `interiorPoint`). */
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     /** The outward normal at `point` (default: the face's center), in its body's frame. */
     normalAt(point?: THREE.Vector3Like | null, target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
@@ -631,8 +634,8 @@ export class BrepEdge extends THREE.Line {
     pointAt(t?: number, target?: THREE.Vector3): THREE.Vector3;
     /** The unit tangent at fraction `t` of the length. */
     tangentAt(t?: number, target?: THREE.Vector3): THREE.Vector3;
-    /** The point halfway along it. */
-    center(target?: THREE.Vector3): THREE.Vector3;
+    /** The point halfway along it (`arcCenter` is a circle's center). */
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The shortest distance to a point (in its frame) or to another shape (where it is). */
     distanceTo(other: THREE.Vector3Like | Body | BrepFace | BrepEdge | Wire | BrepVertex): number;
@@ -780,8 +783,8 @@ export class Wire extends THREE.Line {
     tangentAt(t?: number, target?: THREE.Vector3): THREE.Vector3;
     get start(): THREE.Vector3;
     get end(): THREE.Vector3;
-    /** The point halfway along it. */
-    center(target?: THREE.Vector3): THREE.Vector3;
+    /** The average of its edges' midpoints, weighted by their lengths. */
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** Its vertices, in order. */
     vertices(): ShapeList<BrepVertex>;
@@ -854,7 +857,8 @@ export class BrepVertex extends THREE.Points {
     get tolerance(): number;
     /** "convex", "concave" or "smooth": how the edges meet at a sketch's corner. */
     get convexity(): string;
-    center(target?: THREE.Vector3): THREE.Vector3;
+    /** Its point, as `point` gives it. */
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The edges of its body that meet at it. */
     edges(): ShapeList<BrepEdge>;
@@ -969,7 +973,7 @@ export class ShapeList<T = Item> extends Array<T> {
     /** The wires of the items. */
     wires(): ShapeList<Wire>;
     /** The average of the items' centers (in the body's frame). */
-    center(target?: THREE.Vector3): THREE.Vector3;
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     /** The box around the items (in the body's frame). */
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The edges where faces meet convexly (outside corners). */
@@ -3721,7 +3725,7 @@ export class TriangleMesh extends THREE.Mesh {
     /** The box around its points, in its frame (a RangeError for an empty mesh). */
     bbox(target?: THREE.Box3): THREE.Box3;
     /** The middle of its box, in its frame (`centroid` is the center of mass). */
-    center(target?: THREE.Vector3): THREE.Vector3;
+    getCenter(target?: THREE.Vector3): THREE.Vector3;
     /** The center of mass of the volume a closed mesh encloses, in its frame (see `massProperties`). */
     get centroid(): THREE.Vector3;
     /** One unit normal per triangle (x, y, z each), in the kernel's order. */

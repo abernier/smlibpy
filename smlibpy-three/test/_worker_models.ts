@@ -30,7 +30,7 @@ export const extrude = (sketch: Sketch, amount: number): Part => sketch.extrude(
 
 /** What a face is over there: whether it came with its own body (the same object), its place and
  * its center (in its body's frame). */
-export const faceInfo = (part: Part, face: BrepFace) => ({ same: face.owner === part, index: face.index, center: face.center(), area: face.area })
+export const faceInfo = (part: Part, face: BrepFace) => ({ same: face.owner === part, index: face.index, center: face.getCenter(), area: face.area })
 
 /** A part's seam over there, with its part. */
 export const seam = (part: Part) => ({ part, seam: part.edges({ seams: true }).filter((e) => e.isSeam)[0] })
