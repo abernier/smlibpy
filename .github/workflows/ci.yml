@@ -41,12 +41,14 @@ jobs:
       - uses: ./.github/actions/constraints
       - name: Build and install
         run: pip install -v ".[test,mcp]"
+      # The cross-checks where the lock has them (the crosscheck group of pyproject.toml; neither has
+      # wheels for Python 3.15 yet). No continue-on-error: their tests skip without them, so a pin that
+      # cannot be installed fails the job here instead of turning those tests into quiet skips.
       - name: OpenCASCADE for the STEP cross-checks
-        if: runner.os != 'Windows'
-        continue-on-error: true
+        if: runner.os != 'Windows' && matrix.python != '3.15'
         run: pip install cadquery-ocp-novtk
       - name: OpenUSD for the USD cross-checks
-        continue-on-error: true
+        if: matrix.python != '3.15'
         run: pip install usd-core
       # NVIDIA's validator itself (tests/test_closeout_W.py, N4): usd-brep's wheel brings it where it has
       # wheels; on macOS OpenUSD and the asset validator from PyPI, with the submodule's BrepArray rules.
