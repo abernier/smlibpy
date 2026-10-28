@@ -125,6 +125,11 @@ jobs:
       - name: smlibpy-three, build
         working-directory: smlibpy-three
         run: npm run build
+      # (the API section of docs/three.md is written from the declarations just built: it must be
+      # what they say, as smlibwasm's in docs/javascript.md is, which js/test/lane_WN.test.ts checks)
+      - name: smlibpy-three, the API section of docs/three.md is current
+        working-directory: smlibpy-three
+        run: npm run api && git diff --exit-code -- ../docs/three.md
 
   docs:
     if: github.event_name != 'workflow_dispatch' || inputs.only != 'js'

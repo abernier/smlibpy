@@ -74,7 +74,9 @@ published, unminified; a bundler that minifies it makes it smaller.
 
 ## In the browser
 
-A part's mesh and edges go into a renderer such as three.js:
+In a three.js app, [smlibpy-three](three.md) does this for you: its parts, faces and edges are
+three.js objects already, in three's coordinates. By hand, a part's mesh and edges go into a
+renderer such as three.js:
 
 ```js
 import * as THREE from 'three'
