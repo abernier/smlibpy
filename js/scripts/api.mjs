@@ -26,7 +26,7 @@ const SECTIONS = [
   ['Sheet metal', ['sheetmetal']],
   ['Meshes', ['mesh']],
   ['Files', ['exporters', 'step_import', 'iges_import', 'dxf', 'drawing', 'usd', 'occt', '_bytes']],
-  ['Pictures and the viewer', ['pictures', 'viewer']],
+  ['Pictures and the viewer', ['pictures', 'exploded', 'viewer']],
   ['Errors and memory', ['_errors', 'kernel']],
 ]
 // the package's other entries (the exports of package.json), each with everything it exports
