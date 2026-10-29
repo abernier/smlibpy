@@ -1804,6 +1804,34 @@ export function render(...args: [
     options: RenderOptions
 ]): Picture;
 export function diffImages(a: Picture | ImageLike | Uint8Array | ArrayBuffer | string, b: Picture | ImageLike | Uint8Array | ArrayBuffer | string, tolerance?: number): ImageDiff;
+export class AssemblyAxis {
+    readonly first: number;
+    readonly second: number;
+    readonly contact: Vector;
+    readonly area: number;
+    readonly start: Vector;
+    readonly end: Vector;
+    constructor(first: number, second: number, contact: Vector, area: number, start: Vector, end: Vector);
+    toString(): string;
+}
+export type ExplodedOffsets = readonly VectorLike[] | ReadonlyMap<string | Part, VectorLike> | Readonly<Record<string, VectorLike>>;
+export interface AssemblyAxesOptions {
+    tolerance?: number;
+}
+export interface RenderExplodedOptions {
+    path?: string | null;
+    view?: RenderView;
+    size?: readonly [number, number];
+    order?: readonly string[] | null;
+    axes?: boolean;
+    balloons?: boolean;
+    background?: Any;
+    zoom?: number;
+    supersample?: number;
+    tolerance?: number;
+}
+export function assemblyAxes(parts: Iterable<Part> | Part, offsets: ExplodedOffsets, options?: AssemblyAxesOptions): AssemblyAxis[];
+export function renderExploded(parts: Iterable<Part> | Part, offsets: ExplodedOffsets, options?: RenderExplodedOptions): Picture;
 export interface PageOptions {
     title?: string;
     tolerance?: number | null;

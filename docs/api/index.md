@@ -129,6 +129,9 @@ camelCase.
 ::: smlibpy.pictures.diff_images
 ::: smlibpy.pictures.Picture
 ::: smlibpy.pictures.ImageDiff
+::: smlibpy.exploded.render_exploded
+::: smlibpy.exploded.assembly_axes
+::: smlibpy.exploded.AssemblyAxis
 ::: smlibpy.viewer.html_page
 
 ## Errors
