@@ -61,6 +61,7 @@ from .dxf import export_dxf, from_dxf, from_dxf_wires, import_dxf, import_dxf_wi
 from .usd import export_usd, from_usd, import_usd, to_usd
 from .occt import export_brep, from_brep, import_brep, to_brep
 from .drawing import DrawingView, drawing_views, export_svg, to_svg
+from .machining import MachiningSetup, machining_setup
 from .pictures import diff_images, render
 from .exploded import AssemblyAxis, assembly_axes, render_exploded
 from .viewer import show
@@ -123,7 +124,7 @@ __all__ = [
     "to_step", "from_step", "from_step_model", "to_stl", "from_stl", "to_obj", "to_glb", "to_gltf", "to_smb", "from_smb",
     "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges", "to_brep",
     "from_brep", "to_svg", "to_file", "from_file",
-    "drawing_views", "DrawingView", "export_svg",
+    "drawing_views", "DrawingView", "export_svg", "machining_setup", "MachiningSetup",
     "show", "render", "diff_images", "render_exploded", "assembly_axes", "AssemblyAxis",
     # errors
     "ModelingError", "KernelError", "FontError",

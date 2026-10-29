@@ -7,6 +7,14 @@ marked *Python*, *smlibwasm* or *smlibpy-three*.
 
 ## Added
 
+- *Python*: `machining_setup` lays a part on a 3-axis router, the tool coming from a face, an axis
+  or a vector, and sorts its faces into the layers a CNC shop reads from a DXF: `OUTLINE` (the
+  footprint, exact for parts cut from flat stock), `THROUGH` (the holes), `POCKET_D<depth>` (the
+  pockets open on the top face, by depth, islands kept, stepped pockets on several layers) and
+  `LABEL` (a text and a grain arrow). What the setup cannot cut comes back with the reason and the
+  direction another setup needs: a pocket of the other face, a mortise in an edge, a void, a face
+  no vertical cutter follows. `export_dxf(setup.layers, path, curves="arcs")` writes the file.
+  The smlibwasm port is still to come.
 - **Exploded views**: `render_exploded(parts, offsets)` (`renderExploded` in smlibwasm and
   smlibpy-three) draws an assembly with each part moved by its offset, the assembly axes dashed,
   numbered balloons and a parts list (number, name, count), in software like `render`, the text in
