@@ -37,7 +37,7 @@ Text comes from TrueType and OpenType fonts as exact outlines, ready to engrave 
 - **API**: every call in [Python](api/index.md); the same API on WebAssembly, in the browser and in
   Node ([guide](javascript.md), [reference](api/wasm.md)), and with three.js objects
   ([guide](three.md), [reference](api/three.md)); and for [agents](mcp.md) (MCP).
-- **[Examples](examples.md)**: brackets, flanges, gears, a bottle.
+- **[Examples](examples.md)**: brackets, flanges, gears, a bottle, a dovetailed box.
 - **[The kernel](kernel.md)**: how smlibpy uses SMLib, accuracy and limits.
 
 </div>
