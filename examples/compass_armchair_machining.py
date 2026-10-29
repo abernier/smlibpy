@@ -536,7 +536,7 @@ weigh {finished * DENSITY / 1000:.1f} kg; the sawn blanks are {rough / finished:
 | `dxf/<part>_edge<n>.dxf` | the part held on an edge: the mortise that opens there, as a pocket |
 | `drawings/<part>.svg` | front, top and left views of the part in its main setup, hidden lines dashed, true size |
 | `drawings/assembly.svg`, `assembly_iso.png` | the chair: three views, and a shaded view |
-| `drawings/exploded_iso.png`, `exploded_iso_back.png` | the chair taken apart, from the front and from the back: assembly axes, parts numbered in the order of glue-up |
+| `drawings/exploded_iso.png`, `exploded_iso_back.png` | the chair taken apart, front and back, parts in glue-up order |
 | `nests/nest_T<sawn>.dxf`, `.svg` | the blanks of one sawn thickness on planks, grain along the plank |
 
 ## Setups
