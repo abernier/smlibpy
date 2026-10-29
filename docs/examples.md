@@ -216,26 +216,31 @@ from smlibpy import *
 # catalogue: 51 cm over the arms, 55 deep, seat 43-45, arms 66. The chair faces -Y; x = 0 is its middle. The legs,
 # the armrest and the back post of a side are boards of one thickness, all in one plane.
 W, LEG_T = 480.0, 30.0  # outside width over the boards; their thickness across the chair
-FRONT_FOOT, REAR_FOOT = (-181.0, -139.0), (262.0, 318.0)  # the feet on the floor, front edge to back edge
+FRONT_FOOT, REAR_FOOT = (-181.0, -139.0), (139.0, 181.0)  # the feet on the floor, front edge to back edge
 NOTCH_Z = 400.0  # where the two boards of a side part, on the seam y = 0; above it they are one up to the armrest
-ARM_EDGES = (-70.0, 58.0)  # the two boards' outer edges where they meet the armrest
+ARM_EDGES = (-70.0, 70.0)  # the two boards' outer edges where they meet the armrest: the V is isosceles
 SPLINE, SPLINE_Z = (20.0, 16.0), 457.0  # a loose tenon on the seam, across and thick, from this height up
 SPLINE_IN_ARM = 40.0  # how far it goes on into the armrest
 ARM_TOP, ARM_FRONT = 645.0, -235.0  # the armrest, a blade on edge: its level top and its nose
 ARM_HEIGHT = ((-235.0, 60.0), (280.0, 95.0))  # (y, height) at the nose and at the back: the underside slopes
 SEAT_TOP, RAIL_H, RAIL_T, CANE = 437.0, 60.0, 25.0, 8.0  # the seat frame: top, rail height and thickness; cane
 SEAT_Y, FRONT_RAIL_T, REAR_RAIL_T = (-229.0, 240.0), 30.0, 40.0  # the side rails, nose to back; the cross rails
-TENON, LEG_TENON_Y = (20.0, 10.0, 40.0), (-55.0, 70.0)  # into the leg or the rail, thick, high; where the legs get it
+TENON, LEG_TENON_Y = (20.0, 10.0, 40.0), (-55.0, 55.0)  # into the leg or the rail, thick, high; where the legs get it
 BACK_TILT, POST = 15.0, (30.0, 34.0)  # the back leans 15 degrees; a post: across, deep
 POST_Y_AT_ARM = 260.0  # the posts' axis at the armrest's top
-R_BACK, RAIL_D = 700.0, 32.0  # the back is an arc: the radius of its middle line; its rails are this deep
+RAIL_D = 24.0  # the back's rails are this deep, less than the posts: the arc's bow hides within the posts' depth
 BACK_RAILS, BACK_TENON = ((65.0, 100.0), (330.0, 365.0)), (20.0, 10.0, 20.0)  # along the posts, from seat height
 BIG = 3000.0
 
 X_BOARD = W / 2 - LEG_T  # the inner face of a side's boards
 LEAN = math.radians(BACK_TILT)
 POST_Y = POST_Y_AT_ARM - (ARM_TOP - SEAT_TOP) * math.tan(LEAN)  # the posts' axis at seat height
-ARC_Y = -math.sqrt(R_BACK**2 - X_BOARD**2)  # the arc's center, so that its middle line passes through the posts' axes
+BOW = POST[1] - RAIL_D  # the arc's inner line bows this much (10 mm) over the half chord between the posts
+R_BACK = (X_BOARD**2 + BOW**2) / (2 * BOW) + RAIL_D / 2  # the radius of the arc's middle line
+# The arc's center: the rails' rear face is flush with the posts' rear face at the middle, their front face with
+# the posts' front face at the ends, so that nothing of the back shows beyond the posts in a side view.
+ARC_Y = POST[1] / 2 - (R_BACK + RAIL_D / 2)
+Y_END = ARC_Y + math.sqrt(R_BACK**2 - X_BOARD**2)  # the arc's middle line where it meets a post
 
 
 def underside(y: float) -> float:
@@ -256,6 +261,7 @@ FRONT_LEG = [
     (0, underside(0)),
     (ARM_EDGES[0], underside(ARM_EDGES[0])),
 ]
+# Its mirror image about the seam, but for the top: both boards' tops follow the armrest's sloping underside.
 REAR_LEG = [
     (REAR_FOOT[0], 0),
     (REAR_FOOT[1], 0),
@@ -321,7 +327,9 @@ def model() -> list[Part]:
         arm = (arm_prism & behind_the_posts()) - [post_full & inner, spline]
         post = post_full - (arm_prism & outer)
         post -= [
-            tilt(Box(*BACK_TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(X_BOARD, 0, (z0 + z1) / 2))
+            tilt(
+                Box(*BACK_TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(X_BOARD, Y_END, (z0 + z1) / 2)
+            )
             for z0, z1 in BACK_RAILS
         ]
         for p, name in (
@@ -349,20 +357,24 @@ def model() -> list[Part]:
         2 * x_rail, SEAT_Y[1] - REAR_RAIL_T - SEAT_Y[0] - FRONT_RAIL_T, CANE, align=(Align.CENTER, Align.MIN, Align.MAX)
     )
     parts.append(seat.translate(0, SEAT_Y[0] + FRONT_RAIL_T, SEAT_TOP).named("seat cane").colored(cane))
+    for member, name in back_frame():
+        parts.append(tilt(member).named(name).colored(cane if name == "back cane" else teak))
+    return parts
+
+
+def back_frame() -> list[tuple[Part, str]]:
+    """The back's rails and cane panel, in the back's own frame: arcs that stay within the posts' depth."""
+    members = []
     for z0, z1 in BACK_RAILS:
         rail = arc_band(R_BACK - RAIL_D / 2, R_BACK + RAIL_D / 2).extrude(z1 - z0).translate(0, 0, z0)
         for s in (1, -1):
             rail += Box(*BACK_TENON, align=(Align.MIN if s > 0 else Align.MAX, Align.CENTER, Align.CENTER)).translate(
-                s * X_BOARD, 0, (z0 + z1) / 2
+                s * X_BOARD, Y_END, (z0 + z1) / 2
             )
-        parts.append(tilt(rail).named("back rail").colored(teak))
-    panel = (
-        arc_band(R_BACK - CANE / 2, R_BACK + CANE / 2)
-        .extrude(BACK_RAILS[1][0] - BACK_RAILS[0][1])
-        .translate(0, 0, BACK_RAILS[0][1])
-    )
-    parts.append(tilt(panel).named("back cane").colored(cane))
-    return parts
+        members.append((rail, "back rail"))
+    panel = arc_band(R_BACK - CANE / 2, R_BACK + CANE / 2).extrude(BACK_RAILS[1][0] - BACK_RAILS[0][1])
+    members.append((panel.translate(0, 0, BACK_RAILS[0][1]), "back cane"))
+    return members
 
 
 def area(polygon: list[tuple[float, float]]) -> float:
@@ -466,6 +478,9 @@ def check(parts: list[Part]) -> None:
                 assert by_name[name][0].distance_to(by_name[other][0]) > 0.5, (name, other)
     for name in ("front leg", "rear leg"):
         assert all(abs(p.bbox().min.z) < 1e-6 for p in by_name[name]), name  # feet flat on the floor
+    for member, name in back_frame():  # in the back's own frame: nothing of it before or behind the posts
+        box = member.bbox()
+        assert box.min.y > -POST[1] / 2 - 1e-6 and box.max.y < POST[1] / 2 + 1e-6, (name, box.min.y, box.max.y)
     teak = sum(p.mass_properties(density=0.65e-3).mass for p in parts if "cane" not in p.name)
     print(f"{len(parts)} parts, {whole.bbox().size} mm over all, teak {teak / 1000:.2f} kg")
 ```
