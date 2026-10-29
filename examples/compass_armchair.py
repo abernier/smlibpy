@@ -17,7 +17,7 @@ SEAT_TOP, RAIL_H, RAIL_T, CANE = 437.0, 60.0, 25.0, 8.0  # the seat frame: top, 
 SEAT_Y, FRONT_RAIL_T, REAR_RAIL_T = (-229.0, 240.0), 30.0, 40.0  # the side rails, nose to back; the cross rails
 TENON, LEG_TENON_Y = (20.0, 10.0, 40.0), (-55.0, 70.0)  # into the leg or the rail, thick, high; where the legs get it
 BACK_TILT, POST, POST_X = 15.0, (30.0, 34.0), 177.5  # the back leans 15 degrees; a post: across, deep; inner face
-POST_Y_AT_ARM, BACK_TOP = 260.0, 790.0  # the posts' axis at the armrest's top; the top of the back
+POST_Y_AT_ARM = 260.0  # the posts' axis at the armrest's top
 R_BACK, RAIL_D = 700.0, 32.0  # the back is an arc: the radius of its middle line; its rails are this deep
 BACK_RAILS, BACK_TENON = ((65.0, 100.0), (330.0, 365.0)), (20.0, 10.0, 20.0)  # along the posts, from the seat
 BIG = 3000.0
@@ -62,7 +62,7 @@ def side_prism(profile: list[tuple[float, float]], x_min: float, thickness: floa
 
 
 def tilt(shape):
-    """From the back's own frame (upright, its foot at the origin) to the chair: leaned back, set on the seat frame."""
+    """From the back's own frame (upright, its origin at seat height) to the chair: leaned back 15 degrees."""
     return Pos(0, POST_Y, SEAT_TOP) * (Rot(x=-BACK_TILT) * shape)
 
 
@@ -103,12 +103,8 @@ def model() -> list[Part]:
         for y0, t in ((SEAT_Y[0], FRONT_RAIL_T), (SEAT_Y[1] - REAR_RAIL_T, REAR_RAIL_T)):  # the cross rails' mortises
             rail -= Box(*TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(x_rail, y0 + t / 2, z_tenon)
         arm = arm_prism & behind_the_posts()
-        post = Box(POST[0], POST[1], BACK_RAILS[1][1] + 60, align=(Align.MIN, Align.CENTER, Align.MIN)).translate(
-            POST_X, 0, -30
-        )
-        post = tilt(post) & Box(BIG, BIG, BACK_TOP - SEAT_TOP, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(
-            0, 0, SEAT_TOP
-        )
+        post = Box(POST[0], POST[1], BACK_RAILS[1][1] - BACK_RAILS[0][0], align=(Align.MIN, Align.CENTER, Align.MIN))
+        post = tilt(post.translate(POST_X, 0, BACK_RAILS[0][0]))  # the back floats: the arms alone hold it
         post -= arm_prism  # the notch the armrest runs through, flush with the post's back
         post -= [
             tilt(Box(*BACK_TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(POST_X, 0, (z0 + z1) / 2))
@@ -201,7 +197,7 @@ def check(parts: list[Part]) -> None:
         "spline": spline,
         "side rail": RAIL_T * (SEAT_Y[1] - SEAT_Y[0]) * RAIL_H,
         "armrest": area(arm_profile) * ARM_W,
-        "back post": POST[0] * POST[1] * (BACK_TOP - SEAT_TOP) / math.cos(LEAN),
+        "back post": POST[0] * POST[1] * (BACK_RAILS[1][1] - BACK_RAILS[0][0]),
         "front rail": 2 * x_rail * FRONT_RAIL_T * RAIL_H,
         "rear rail": 2 * x_rail * REAR_RAIL_T * RAIL_H,
         "seat cane": 2 * x_rail * (SEAT_Y[1] - REAR_RAIL_T - SEAT_Y[0] - FRONT_RAIL_T) * CANE,
@@ -237,7 +233,7 @@ def check(parts: list[Part]) -> None:
         ("armrest", "rear leg"),
         ("armrest", "spline"),
         ("armrest", "back post"),
-        ("back post", "rear rail"),
+        ("back post", "back rail"),
         ("seat cane", "front rail"),
         ("back cane", "back rail"),
         ("rear leg", "front leg"),
