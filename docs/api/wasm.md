@@ -1672,6 +1672,24 @@ export interface SvgOptions {
 }
 export function toSvg(shapes: SvgItemsLike, options?: SvgOptions): string;
 export function exportSvg(shapes: SvgItemsLike, path: string, options?: SvgOptions): void;
+export type MachiningReason = 'opens below' | 'opens at the side' | 'enclosed' | 'not a prism along the tool';
+export type MachiningLeft = [why: MachiningReason, direction: Vector | null, faces: ShapeList<Face>];
+export class MachiningSetup {
+    readonly part: Part;
+    readonly plane: Plane;
+    readonly thickness: number;
+    readonly layers: Sketch[];
+    readonly elsewhere: MachiningLeft[];
+    constructor(part: Part, plane: Plane, thickness: number, layers: Sketch[], elsewhere: MachiningLeft[]);
+    layer(name: string): Sketch | null;
+    toString(): string;
+}
+export interface MachiningSetupOptions {
+    xDir?: Axis | VectorLike | null;
+    label?: string | null;
+    labelSize?: number | null;
+}
+export function machiningSetup(part: Part | ShapeList<Part>, direction?: Face | ShapeList<Face> | Axis | VectorLike, options?: MachiningSetupOptions): MachiningSetup;
 export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;
