@@ -62,7 +62,7 @@ def side_prism(profile: list[tuple[float, float]], x_min: float, thickness: floa
 
 
 def tilt(shape):
-    """From the back's own frame (upright, its foot at the origin) to the chair: leaned back and set on the seat frame."""
+    """From the back's own frame (upright, its foot at the origin) to the chair: leaned back, set on the seat frame."""
     return Pos(0, POST_Y, SEAT_TOP) * (Rot(x=-BACK_TILT) * shape)
 
 
@@ -86,10 +86,6 @@ def model() -> list[Part]:
     arm_prism = side_prism(ARM_PROFILE, x_leg + LEG_T / 2 - ARM_W / 2, ARM_W)  # the armrest before its back is cut
     parts = []
     for side in (1, -1):
-
-        def place(p: Part) -> Part:
-            return p.mirror(Plane.YZ) if side < 0 else p
-
         front, rear = side_prism(FRONT_LEG, x_leg, LEG_T), side_prism(REAR_LEG, x_leg, LEG_T)
         spline = Box(*SPLINE, ARM_TOP - SPLINE_Z, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(
             x_leg + LEG_T / 2, 0, SPLINE_Z
@@ -126,7 +122,7 @@ def model() -> list[Part]:
             (arm, "armrest"),
             (post, "back post"),
         ):
-            parts.append(place(p).named(name).colored(teak))
+            parts.append((p.mirror(Plane.YZ) if side < 0 else p).named(name).colored(teak))
 
     def cross_rail(y0: float, t: float) -> Part:
         rail = Box(2 * x_rail, t, RAIL_H, align=(Align.CENTER, Align.MIN, Align.MAX)).translate(0, y0, SEAT_TOP)
