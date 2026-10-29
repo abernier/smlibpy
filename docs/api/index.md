@@ -121,6 +121,7 @@ camelCase.
 ## Drawings
 
 ::: smlibpy.drawing
+::: smlibpy.machining
 
 ## Viewer
 

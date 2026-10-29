@@ -61,7 +61,7 @@ METHODS_ONLY = {
 FUNCTIONS_ONLY = {
     "makers of shapes from several inputs": {"loft", "blend", "fill", "network", "surface", "nurbs_surface", "ruled",
                                              "stitch", "surface_fillet", "fit_curve", "make_compatible", "make_face",
-                                             "drawing_views", "tessellate"},
+                                             "drawing_views", "machining_setup", "tessellate"},
     "sheet metal numbers": {"bend_allowance", "bend_deduction", "developed_length"},
     "files": {"export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "export_dxf",
               "export_usd", "export_brep", "export_svg", "save", "load", "import_stl", "import_step", "import_iges",
