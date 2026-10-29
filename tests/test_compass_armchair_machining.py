@@ -78,3 +78,33 @@ def test_the_nests_hold_every_blank_once(files):
     planks = sum(n for _, n, _, _ in written["nests"])
     plank_area = sum(import_dxf(p, layers=["PLANK"]).area for p in (out / "nests").glob("*.dxf"))
     assert plank_area == approx(planks * math.prod(module.PLANK))
+
+
+def test_the_exploded_views_axes_are_the_chairs_joints(files):
+    # render_exploded finds the axes where the parts touch: with the chair's offsets they are its joints, each side's
+    # once (two back rails, so two to each post and to the cane), and no two parts that move together get one
+    module = files[0]
+    parts = module.model()
+    axes = assembly_axes(parts, [module.exploded_offset(p) for p in parts])
+    joints = {}
+    for a in axes:
+        pair = tuple(sorted((parts[a.first].name, parts[a.second].name)))
+        joints[pair] = joints.get(pair, 0) + 1
+    assert joints == {
+        ("front leg", "side rail"): 2,
+        ("rear leg", "side rail"): 2,  # the rails' stub tenons
+        ("front leg", "spline"): 2,
+        ("rear leg", "spline"): 2,
+        ("armrest", "spline"): 2,  # the splines in the seam
+        ("armrest", "front leg"): 2,
+        ("armrest", "rear leg"): 2,  # the legs' tops under the arms
+        ("front rail", "side rail"): 2,
+        ("rear rail", "side rail"): 2,  # the cross rails' tenons
+        ("armrest", "back post"): 2,  # the half lap
+        ("back post", "back rail"): 4,  # two back rails, both ends
+        ("back cane", "back post"): 2,
+        ("back cane", "back rail"): 2,
+        ("seat cane", "side rail"): 2,
+        ("front rail", "seat cane"): 1,
+        ("rear rail", "seat cane"): 1,
+    }

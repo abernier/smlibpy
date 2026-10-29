@@ -536,6 +536,7 @@ weigh {finished * DENSITY / 1000:.1f} kg; the sawn blanks are {rough / finished:
 | `dxf/<part>_edge<n>.dxf` | the part held on an edge: the mortise that opens there, as a pocket |
 | `drawings/<part>.svg` | front, top and left views of the part in its main setup, hidden lines dashed, true size |
 | `drawings/assembly.svg`, `assembly_iso.png` | the chair: three views, and a shaded view |
+| `drawings/exploded_iso.png`, `exploded_iso_back.png` | the chair taken apart, from the front and from the back: assembly axes, parts numbered in the order of glue-up |
 | `nests/nest_T<sawn>.dxf`, `.svg` | the blanks of one sawn thickness on planks, grain along the plank |
 
 ## Setups
@@ -559,6 +560,55 @@ where the top is not flat there.
     text += "| Sawn thickness | Planks | Area used | Blanks |\n|---|---|---|---|\n"
     text += "".join(f"| {fmt(s)} mm | {n} | {u:.0%} | {', '.join(keys)} |\n" for s, n, u, keys in nests)
     return text
+
+
+# The exploded views: how far each part moves out of the chair, in mm, along the way it goes in at glue-up, and the
+# glue-up order the balloons are numbered in. The assembly axes are not given: render_exploded finds them where the
+# parts touch.
+SEAT_UP, RAIL_OUT, LEG_OUT, SPLINE_UP, ARM_UP, POST_OUT, CANE_BACK = 110, 70, 170, 60, 170, 110, 110
+GLUE_UP = [
+    "front leg",
+    "rear leg",
+    "spline",
+    "side rail",
+    "front rail",
+    "rear rail",
+    "seat cane",
+    "armrest",
+    "back post",
+    "back rail",
+    "back cane",
+]
+EXPLODED_VIEWS = {"iso": {"azimuth": 35, "elevation": 22}, "iso_back": {"azimuth": 145, "elevation": 22}}
+
+
+def exploded_offset(part: Part) -> tuple[float, float, float]:
+    """How far a part moves out of the chair in the exploded views: the sides outwards along x (+x for the right
+    side), the seat cane up, the arms and the back up, the back cane up and back, square to the back."""
+    s = 1 if part.center().x > 0 else -1
+    back = (0.0, math.cos(math.radians(chair.BACK_TILT)), -math.sin(math.radians(chair.BACK_TILT)))
+    return {
+        "seat cane": (0, 0, SEAT_UP),
+        "side rail": (s * RAIL_OUT, 0, 0),
+        "front leg": (s * LEG_OUT, 0, 0),
+        "rear leg": (s * LEG_OUT, 0, 0),
+        "spline": (s * LEG_OUT, 0, SPLINE_UP),
+        "armrest": (s * LEG_OUT, 0, ARM_UP),
+        "back post": (s * POST_OUT, 0, ARM_UP),
+        "back rail": (0, 0, ARM_UP),
+        "back cane": (CANE_BACK * back[0], CANE_BACK * back[1], CANE_BACK * back[2] + ARM_UP),
+    }.get(part.name, (0, 0, 0))
+
+
+def exploded_views(parts: list[Part], out: Path) -> list[Path]:
+    """The chair taken apart, one PNG per view of EXPLODED_VIEWS: the parts moved by `exploded_offset`, the assembly
+    axes, balloons numbered in the order of glue-up and the parts list."""
+    offsets = [exploded_offset(p) for p in parts]
+    paths = []
+    for key, view in EXPLODED_VIEWS.items():
+        paths.append(out / f"exploded_{key}.png")
+        render_exploded(parts, offsets, path=paths[-1], view=view, order=GLUE_UP, size=(1800, 1200))
+    return paths
 
 
 def machining_files(out: str | Path, parts: list[Part] | None = None, *, pictures: bool = True) -> dict:
@@ -590,6 +640,7 @@ def machining_files(out: str | Path, parts: list[Part] | None = None, *, picture
         size = " x ".join(fmt(v) for v in box.size)
         drawing(parts, out / "drawings" / "assembly.svg", f"compass armchair  {size} mm  (first-angle, 1:1)")
         render(parts, path=out / "drawings" / "assembly_iso.png", size=(1600, 1200))
+        exploded_views(parts, out / "drawings")
     nests = write_nests(rows, out)
     tables, flagged = setup_tables(records)
     (out / "README.md").write_text(readme(parts, rows, nests, tables, flagged, finished, rough), encoding="utf-8")
