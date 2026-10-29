@@ -25,7 +25,7 @@ const SECTIONS = [
   ['Surfaces', ['surfaces']],
   ['Sheet metal', ['sheetmetal']],
   ['Meshes', ['mesh']],
-  ['Files', ['exporters', 'step_import', 'iges_import', 'dxf', 'drawing', 'usd', 'occt', '_bytes']],
+  ['Files', ['exporters', 'step_import', 'iges_import', 'dxf', 'drawing', 'machining', 'usd', 'occt', '_bytes']],
   ['Pictures and the viewer', ['pictures', 'exploded', 'viewer']],
   ['Errors and memory', ['_errors', 'kernel']],
 ]

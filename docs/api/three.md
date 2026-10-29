@@ -16,7 +16,7 @@ is the guide: three's objects, coordinates and types, placement, picking, memory
 - [Surfaces](#surfaces): `FitReport`, `StitchReport`, `surface`, `nurbsSurface`, `ruled`, `fill`, `network`, `surfaceFillet`, `blend`, `stitch`, `CurveLike`, `SurfaceOptions`, `NurbsSurfaceData`, `FillOptions`, `SurfaceFilletOptions`, `BlendOptions`, `StitchOptions`, `StitchPiece`
 - [Sheet metal](#sheet-metal): `Bend`, `FlatPattern`, `bendAllowance`, `bendDeduction`, `developedLength`, `fold`, `flange`, `bends`, `unfold`, `flatPattern`, `KFactor`, `BendAllowanceOptions`, `DevelopedLengthOptions`, `FoldOptions`, `FlangeOptions`, `UnfoldOptions`
 - [Triangle meshes](#triangle-meshes): `TriangleMesh`, `tessellate`, `TessellateOptions`, `DecimateOptions`, `RepairReport`, `MeshHit`
-- [Files](#files): `STEPLoader`, `STEPExporter`, `IGESLoader`, `DXFLoader`, `DXFExporter`, `SVGExporter`, `USDBrepLoader`, `USDBrepExporter`, `BREPLoader`, `BREPExporter`, `SMBLoader`, `SMBExporter`, `SMPLoader`, `SMPExporter`, `DrawingView`, `drawingViews`, `STEPLoaderOptions`, `STEPExporterOptions`, `IGESLoaderOptions`, `DXFUnit`, `DXFLoaderOptions`, `DXFExporterOptions`, `SVGExporterOptions`, `USDBrepLoaderOptions`, `USDBrepExporterOptions`, `BREPLoaderOptions`, `BREPExporterOptions`, `SMLibExporterOptions`, `ViewName`, `DrawingViewsOptions`
+- [Files](#files): `STEPLoader`, `STEPExporter`, `IGESLoader`, `DXFLoader`, `DXFExporter`, `SVGExporter`, `USDBrepLoader`, `USDBrepExporter`, `BREPLoader`, `BREPExporter`, `SMBLoader`, `SMBExporter`, `SMPLoader`, `SMPExporter`, `DrawingView`, `MachiningSetup`, `drawingViews`, `machiningSetup`, `STEPLoaderOptions`, `STEPExporterOptions`, `IGESLoaderOptions`, `DXFUnit`, `DXFLoaderOptions`, `DXFExporterOptions`, `SVGExporterOptions`, `USDBrepLoaderOptions`, `USDBrepExporterOptions`, `BREPLoaderOptions`, `BREPExporterOptions`, `SMLibExporterOptions`, `ViewName`, `DrawingViewsOptions`, `MachiningReason`, `MachiningLeft`, `MachiningSetupOptions`
 - [Pictures](#pictures): `Picture`, `ImageDiff`, `AssemblyAxis`, `render`, `diffImages`, `assemblyAxes`, `renderExploded`, `VIEWS`, `RenderViewName`, `RenderView`, `RenderPoint`, `RenderMarker`, `Frame`, `ImageLike`, `RenderOptions`, `ExplodedOffsets`, `RenderExplodedOptions`
 - [Memory and settings](#memory-and-settings): `scope`, `memoryUsage`, `setWarningHandler`, `setGuardSeconds`, `setGuardBooleans`, `GUARD_SECONDS`, `GUARD_BOOLEANS`, `MemoryUsage`
 - [Errors and types](#errors-and-types): `ModelingError`, `KernelError`, `FontError`, `AlignValue`, `Align3`, `Align2`
@@ -4212,6 +4212,41 @@ export class DrawingView {
 }
 ```
 
+### MachiningSetup
+
+```ts
+/**
+ * One setup of a part on a 3-axis machine (see `machiningSetup`).
+ *
+ * - `part`: the part in the setup's frame: resting on z = 0, the face the tool works from at
+ *   z = `thickness`, its footprint in the positive quadrant of the XY plane.
+ * - `matrix`: the setup's frame in three's world (smlibpy's `plane`, which a THREE.Plane cannot hold:
+ *   it has no x direction): applied to `part` or to a layer, it puts it where the given part is in
+ *   the scene.
+ * - `thickness`: the part's extent along the tool: the stock's finished thickness.
+ * - `layers`: sketches in the XY plane, one per layer, each named (its object's `name`, the layer
+ *   DXFExporter writes it on): `OUTLINE` (the footprint's outer contours, the through cut),
+ *   `THROUGH` (the holes through the part), `POCKET_D<depth>` (the pockets open on the top face, by
+ *   depth from it: `POCKET_D15`, `POCKET_D7_5`) and `LABEL` (the label and the grain arrow, when a
+ *   label is given).
+ * - `elsewhere`: what this setup cannot cut, as `[why, direction, faces]` triples (see
+ *   `MachiningLeft`): `'opens below'` (a pocket of the other face: turn the part over, direction
+ *   (0, 0, -1)), `'opens at the side'` (a mortise in an edge: the direction the normal of the face it
+ *   opens through), `'enclosed'` (a void; no direction) or `'not a prism along the tool'` (a face a
+ *   vertical cutter cannot follow: a slope, a cove, an undercut; no direction).
+ */
+export class MachiningSetup {
+    readonly part: Part;
+    readonly matrix: THREE.Matrix4;
+    readonly thickness: number;
+    readonly layers: Sketch[];
+    readonly elsewhere: MachiningLeft[];
+    constructor(part: Part, matrix: THREE.Matrix4, thickness: number, layers: Sketch[], elsewhere: MachiningLeft[]);
+    /** The sketch of one layer, or `null` when the setup has none of that name. */
+    layer(name: string): Sketch | null;
+}
+```
+
 ### drawingViews
 
 ```ts
@@ -4230,6 +4265,30 @@ export class DrawingView {
  * Write them with DXFExporter or SVGExporter, or add their lines to a scene.
  */
 export function drawingViews(parts: Body | THREE.Object3D | Iterable<Body | THREE.Object3D>, views?: ViewName | readonly ViewName[], options?: DrawingViewsOptions): DrawingView[];
+```
+
+### machiningSetup
+
+```ts
+/**
+ * Lay a part on a 3-axis machine and sort its features into the layers of a machining drawing.
+ *
+ * - `part`: a `Part` of one solid, where the scene shows it.
+ * - `direction`: where the tool comes from: a planar face of the part (the part rests on the
+ *   opposite side and that face is worked), a ray or a vector of three's world (from the part
+ *   towards the tool). Default: from above (three's +Y), the part as the scene stands it.
+ * - `xDir`, `label`, `labelSize`: see `MachiningSetupOptions`.
+ *
+ * Returns a `MachiningSetup`: the part laid flat, its frame, the thickness, the layers (write them
+ * with DXFExporter) and what the setup leaves for another one. The footprint is the union of the
+ * part's cross-sections between its horizontal faces and of the shadows of its sloping planar
+ * faces; a feature whose floor faces the tool and is open to it is a pocket, written at each of its
+ * floors, its depth measured from the top face.
+ *
+ * Throws a TypeError for anything but a Part, and a RangeError for a part of several solids, a
+ * curved face as the direction, an `xDir` along the tool or a `labelSize` that is not positive.
+ */
+export function machiningSetup(part: Part, direction?: BrepFace | THREE.Ray | THREE.Vector3Like, options?: MachiningSetupOptions): MachiningSetup;
 ```
 
 ### STEPLoaderOptions
@@ -4457,6 +4516,39 @@ export interface DrawingViewsOptions {
     tangentEdges?: boolean;
     /** The space between the views, in model units (default: a fifth of the parts' largest extent). */
     gap?: number | null;
+}
+```
+
+### MachiningReason
+
+```ts
+/** Why a setup leaves a feature to another one (see `MachiningSetup.elsewhere`). */
+export type MachiningReason = 'opens below' | 'opens at the side' | 'enclosed' | 'not a prism along the tool';
+```
+
+### MachiningLeft
+
+```ts
+/** What a setup leaves to another one: why, the direction a tool must come from instead (in the
+ * setup's frame, or `null`), and the faces (of the setup's `part`). */
+export type MachiningLeft = [why: MachiningReason, direction: THREE.Vector3 | null, faces: ShapeList<BrepFace>];
+```
+
+### MachiningSetupOptions
+
+```ts
+/** The options of `machiningSetup`. */
+export interface MachiningSetupOptions {
+    /** The direction of the scene (three's world) that becomes the drawing's x. Default: the
+     * footprint's longest straight edge, laid along x at the bottom of the drawing (a board's long
+     * side, with its grain); a footprint without one (a curved rail) lies along its principal axis. */
+    xDir?: THREE.Vector3Like | THREE.Ray | null;
+    /** A text for the `LABEL` layer, at the footprint's centroid, with a grain arrow along x below
+     * it; default none. */
+    label?: string | null;
+    /** The label's capital height in model units; default a sixth of the footprint's shorter extent,
+     * between 2 and 20. */
+    labelSize?: number | null;
 }
 ```
 

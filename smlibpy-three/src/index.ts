@@ -272,4 +272,5 @@ export {
   type USDBrepLoaderOptions,
 } from './files.ts'
 export { DrawingView, drawingViews, type DrawingViewsOptions, type ViewName } from './drawing.ts'
+export { MachiningSetup, machiningSetup, type MachiningLeft, type MachiningReason, type MachiningSetupOptions } from './machining.ts'
 export { GUARD_BOOLEANS, GUARD_SECONDS, memoryUsage, scope, setGuardBooleans, setGuardSeconds, setWarningHandler, type MemoryUsage } from './memory.ts'

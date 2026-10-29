@@ -170,6 +170,7 @@ export {
 export { fromIges, importIges, type IgesImportOptions } from './iges_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
 export { DrawingView, drawingViews, exportSvg, toSvg, type DrawingViewsOptions, type SvgItemsLike, type SvgOptions } from './drawing.ts'
+export { MachiningSetup, machiningSetup, type MachiningLeft, type MachiningReason, type MachiningSetupOptions } from './machining.ts'
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
 export { exportBrep, fromBrep, importBrep, toBrep, type BrepImportOptions } from './occt.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './pictures.ts'

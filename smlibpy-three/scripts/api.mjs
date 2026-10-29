@@ -21,7 +21,7 @@ const SECTIONS = [
   ['Surfaces', ['surfaces']],
   ['Sheet metal', ['sheetmetal']],
   ['Triangle meshes', ['mesh']],
-  ['Files', ['files', 'drawing'], 'Loaders (THREE.Loader: load, loadAsync, parse) and exporters (parse); files are read and written as they are.'],
+  ['Files', ['files', 'drawing', 'machining'], 'Loaders (THREE.Loader: load, loadAsync, parse) and exporters (parse); files are read and written as they are.'],
   ['Pictures', ['pictures']],
   ['Memory and settings', ['memory']],
   ['Errors and types', ['errors', 'types']],
