@@ -5,32 +5,35 @@ import math
 from smlibpy import *
 
 # Taken off a side photograph at 2.78 mm a pixel (the floor and the 81 cm of the catalogue as the scale), and the
-# catalogue: 51 cm over the arms, 55 deep, seat 43-45, arms 66. The chair faces -Y; x = 0 is its middle.
-W, LEG_T = 480.0, 30.0  # outside width over the legs; a leg board's thickness across the chair
+# catalogue: 51 cm over the arms, 55 deep, seat 43-45, arms 66. The chair faces -Y; x = 0 is its middle. The legs,
+# the armrest and the back post of a side are boards of one thickness, all in one plane.
+W, LEG_T = 480.0, 30.0  # outside width over the boards; their thickness across the chair
 FRONT_FOOT, REAR_FOOT = (-181.0, -139.0), (262.0, 318.0)  # the feet on the floor, front edge to back edge
 NOTCH_Z = 400.0  # where the two boards of a side part, on the seam y = 0; above it they are one up to the armrest
 ARM_EDGES = (-70.0, 58.0)  # the two boards' outer edges where they meet the armrest
-SPLINE, SPLINE_Z = (20.0, 16.0), 457.0  # a loose tenon across the seam: across, thick; from its foot up to the arm
-ARM_W, ARM_TOP, ARM_FRONT = 65.0, 645.0, -235.0  # the armrest plank: wide, its top and its nose
-ARM_T = ((-235.0, 32.0), (280.0, 58.0))  # a wedge: thin at the nose, thick at the back (y, thickness)
+SPLINE, SPLINE_Z = (20.0, 16.0), 457.0  # a loose tenon on the seam, across and thick, from this height up
+SPLINE_IN_ARM = 40.0  # how far it goes on into the armrest
+ARM_TOP, ARM_FRONT = 645.0, -235.0  # the armrest, a blade on edge: its level top and its nose
+ARM_HEIGHT = ((-235.0, 60.0), (280.0, 95.0))  # (y, height) at the nose and at the back: the underside slopes
 SEAT_TOP, RAIL_H, RAIL_T, CANE = 437.0, 60.0, 25.0, 8.0  # the seat frame: top, rail height and thickness; cane
 SEAT_Y, FRONT_RAIL_T, REAR_RAIL_T = (-229.0, 240.0), 30.0, 40.0  # the side rails, nose to back; the cross rails
 TENON, LEG_TENON_Y = (20.0, 10.0, 40.0), (-55.0, 70.0)  # into the leg or the rail, thick, high; where the legs get it
-BACK_TILT, POST, POST_X = 15.0, (30.0, 34.0), 177.5  # the back leans 15 degrees; a post: across, deep; inner face
+BACK_TILT, POST = 15.0, (30.0, 34.0)  # the back leans 15 degrees; a post: across, deep
 POST_Y_AT_ARM = 260.0  # the posts' axis at the armrest's top
 R_BACK, RAIL_D = 700.0, 32.0  # the back is an arc: the radius of its middle line; its rails are this deep
-BACK_RAILS, BACK_TENON = ((65.0, 100.0), (330.0, 365.0)), (20.0, 10.0, 20.0)  # along the posts, from the seat
+BACK_RAILS, BACK_TENON = ((65.0, 100.0), (330.0, 365.0)), (20.0, 10.0, 20.0)  # along the posts, from seat height
 BIG = 3000.0
 
+X_BOARD = W / 2 - LEG_T  # the inner face of a side's boards
 LEAN = math.radians(BACK_TILT)
-POST_Y = POST_Y_AT_ARM - (ARM_TOP - SEAT_TOP) * math.tan(LEAN)  # the posts' axis at the seat
-ARC_Y = -math.sqrt(R_BACK**2 - POST_X**2)  # the arc's center, so that its middle line passes through the posts' axes
+POST_Y = POST_Y_AT_ARM - (ARM_TOP - SEAT_TOP) * math.tan(LEAN)  # the posts' axis at seat height
+ARC_Y = -math.sqrt(R_BACK**2 - X_BOARD**2)  # the arc's center, so that its middle line passes through the posts' axes
 
 
 def underside(y: float) -> float:
     """The armrest's lower face: a straight slope from the nose to the back."""
-    (y0, t0), (y1, t1) = ARM_T
-    return ARM_TOP - t0 - (t1 - t0) * (y - y0) / (y1 - y0)
+    (y0, h0), (y1, h1) = ARM_HEIGHT
+    return ARM_TOP - h0 - (h1 - h0) * (y - y0) / (y1 - y0)
 
 
 def post_face(z: float, side: float) -> float:
@@ -75,39 +78,42 @@ def behind_the_posts() -> Part:
 def arc_band(r_in: float, r_out: float) -> Sketch:
     """The back's curve between two radii, from post to post: concave toward the sitter."""
     band = (Circle(r_out) - Circle(r_in)).translate(0, ARC_Y, 0)
-    return band & Rectangle(2 * POST_X, BIG, align=(Align.CENTER, Align.MIN)).translate(0, ARC_Y, 0)
+    return band & Rectangle(2 * X_BOARD, BIG, align=(Align.CENTER, Align.MIN)).translate(0, ARC_Y, 0)
 
 
 def model() -> list[Part]:
     teak, cane = "#9b6a3c", "#e6d2a0"
-    x_leg = W / 2 - LEG_T  # the legs' inner faces
-    x_rail = x_leg - RAIL_T  # the side rails' inner faces
+    x_rail = X_BOARD - RAIL_T  # the side rails' inner faces
+    x_mid = X_BOARD + LEG_T / 2  # the middle of a board's thickness, where the half laps part
     z_tenon = SEAT_TOP - RAIL_H / 2
-    arm_prism = side_prism(ARM_PROFILE, x_leg + LEG_T / 2 - ARM_W / 2, ARM_W)  # the armrest before its back is cut
+    arm_prism = side_prism(ARM_PROFILE, X_BOARD, LEG_T)  # the armrest before its back is cut
+    post_full = Box(POST[0], POST[1], BACK_RAILS[1][1] - BACK_RAILS[0][0], align=(Align.MIN, Align.CENTER, Align.MIN))
+    post_full = tilt(post_full.translate(X_BOARD, 0, BACK_RAILS[0][0]))  # the post before its lap, floating
+    inner = Box(BIG, BIG, BIG, align=(Align.MAX, Align.CENTER, Align.CENTER)).translate(x_mid, 0, 0)  # x up to x_mid
+    outer = Box(BIG, BIG, BIG, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(x_mid, 0, 0)
     parts = []
     for side in (1, -1):
-        front, rear = side_prism(FRONT_LEG, x_leg, LEG_T), side_prism(REAR_LEG, x_leg, LEG_T)
-        spline = Box(*SPLINE, ARM_TOP - SPLINE_Z, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(
-            x_leg + LEG_T / 2, 0, SPLINE_Z
-        )
-        spline -= arm_prism  # cut to the armrest's underside, like the boards it joins
+        front, rear = side_prism(FRONT_LEG, X_BOARD, LEG_T), side_prism(REAR_LEG, X_BOARD, LEG_T)
+        spline = Box(*SPLINE, underside(0) + SPLINE_IN_ARM - SPLINE_Z, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        spline = spline.translate(x_mid, 0, SPLINE_Z)  # through the seam and on into the armrest
         tenons = [
-            Box(*TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(x_leg, y, z_tenon) for y in LEG_TENON_Y
+            Box(*TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(X_BOARD, y, z_tenon)
+            for y in LEG_TENON_Y
         ]
         front -= [spline, tenons[0]]  # its half of the spline's slot, and the side rail's tenon
         rear -= [spline, tenons[1]]
         rail = Box(RAIL_T, SEAT_Y[1] - SEAT_Y[0], RAIL_H, align=(Align.MAX, Align.MIN, Align.MAX)).translate(
-            x_leg, SEAT_Y[0], SEAT_TOP
+            X_BOARD, SEAT_Y[0], SEAT_TOP
         )
         rail += tenons
         for y0, t in ((SEAT_Y[0], FRONT_RAIL_T), (SEAT_Y[1] - REAR_RAIL_T, REAR_RAIL_T)):  # the cross rails' mortises
             rail -= Box(*TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(x_rail, y0 + t / 2, z_tenon)
-        arm = arm_prism & behind_the_posts()
-        post = Box(POST[0], POST[1], BACK_RAILS[1][1] - BACK_RAILS[0][0], align=(Align.MIN, Align.CENTER, Align.MIN))
-        post = tilt(post.translate(POST_X, 0, BACK_RAILS[0][0]))  # the back floats: the arms alone hold it
-        post -= arm_prism  # the notch the armrest runs through, flush with the post's back
+        # The armrest, cut flush with the post's back, crosses the post in a half lap: it keeps the outer half, the
+        # post the inner one. The spline's top is mortised into it.
+        arm = (arm_prism & behind_the_posts()) - [post_full & inner, spline]
+        post = post_full - (arm_prism & outer)
         post -= [
-            tilt(Box(*BACK_TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(POST_X, 0, (z0 + z1) / 2))
+            tilt(Box(*BACK_TENON, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(X_BOARD, 0, (z0 + z1) / 2))
             for z0, z1 in BACK_RAILS
         ]
         for p, name in (
@@ -130,6 +136,7 @@ def model() -> list[Part]:
 
     parts.append(cross_rail(SEAT_Y[0], FRONT_RAIL_T).named("front rail").colored(teak))
     parts.append(cross_rail(SEAT_Y[1] - REAR_RAIL_T, REAR_RAIL_T).named("rear rail").colored(teak))
+    # The cane is a flat panel that touches its rails: the weave is not modelled.
     seat = Box(
         2 * x_rail, SEAT_Y[1] - REAR_RAIL_T - SEAT_Y[0] - FRONT_RAIL_T, CANE, align=(Align.CENTER, Align.MIN, Align.MAX)
     )
@@ -138,7 +145,7 @@ def model() -> list[Part]:
         rail = arc_band(R_BACK - RAIL_D / 2, R_BACK + RAIL_D / 2).extrude(z1 - z0).translate(0, 0, z0)
         for s in (1, -1):
             rail += Box(*BACK_TENON, align=(Align.MIN if s > 0 else Align.MAX, Align.CENTER, Align.CENTER)).translate(
-                s * POST_X, 0, (z0 + z1) / 2
+                s * X_BOARD, 0, (z0 + z1) / 2
             )
         parts.append(tilt(rail).named("back rail").colored(teak))
     panel = (
@@ -166,54 +173,57 @@ def arc_band_area(r_in: float, r_out: float, half_width: float) -> float:
 
 def meet_underside(side: float) -> tuple[float, float]:
     """Where a post's face (front -1, rear +1) crosses the armrest's underside, in the side view."""
-    (y0, t0), (y1, t1) = ARM_T
-    # the underside: z = ARM_TOP - t0 - slope (y - y0); the face: y = a + b z
-    slope, a = (t1 - t0) / (y1 - y0), post_face(0, side)
+    (y0, h0), (y1, h1) = ARM_HEIGHT
+    # the underside: z = ARM_TOP - h0 - slope (y - y0); the face: y = a + b z
+    slope, a = (h1 - h0) / (y1 - y0), post_face(0, side)
     b = math.tan(LEAN)
-    y = (a + b * (ARM_TOP - t0 + slope * y0)) / (1 + b * slope)
+    y = (a + b * (ARM_TOP - h0 + slope * y0)) / (1 + b * slope)
     return y, underside(y)
+
+
+BACK = ("back post", "back rail", "back cane")
 
 
 def check(parts: list[Part]) -> None:
     """Worked out by hand: side-view polygons by the shoelace formula, arcs by their integral, prisms by Cavalieri."""
-    x_leg = W / 2 - LEG_T
-    x_rail = x_leg - RAIL_T
+    x_rail = X_BOARD - RAIL_T
     tenon, back_tenon = math.prod(TENON), math.prod(BACK_TENON)
-    # the spline: a prism cut by the floor of its slot and by the arm's slope, so its axis through its centroid
-    spline = SPLINE[0] * SPLINE[1] * (underside(0) - SPLINE_Z)
-    # the armrest in the side view, cut at the post's back; the notch, where the post's two faces cross the arm
+    spline = SPLINE[0] * SPLINE[1] * (underside(0) + SPLINE_IN_ARM - SPLINE_Z)  # a box
+    # what the spline takes out of the armrest: a prism between the slope, through its centroid, and its level top
+    arm_mortise = SPLINE[0] * SPLINE[1] * SPLINE_IN_ARM
+    # each board's half of the spline's slot, cut on the slope at its own centroid
+    half_slot = [SPLINE[0] * SPLINE[1] / 2 * (underside(y) - SPLINE_Z) for y in (-SPLINE[1] / 4, SPLINE[1] / 4)]
+    # the armrest in the side view, cut at the post's back; and where the post's two faces cross it
     arm_profile = [ARM_PROFILE[0], ARM_PROFILE[1], (post_face(ARM_TOP, 1), ARM_TOP), meet_underside(1)]
-    notch_profile = [
+    crossing = [
         (post_face(ARM_TOP, -1), ARM_TOP),
         (post_face(ARM_TOP, 1), ARM_TOP),
         meet_underside(1),
         meet_underside(-1),
     ]
-    notch_width = POST_X + POST[0] - (x_leg + LEG_T / 2 - ARM_W / 2)  # the post's outer slice the arm runs through
+    lap = area(crossing) * LEG_T / 2  # the half each of them gives up
     rail_h, panel_h = BACK_RAILS[0][1] - BACK_RAILS[0][0], BACK_RAILS[1][0] - BACK_RAILS[0][1]
     plain = {  # every member without its joinery
         "front leg": area(FRONT_LEG) * LEG_T,
         "rear leg": area(REAR_LEG) * LEG_T,
         "spline": spline,
         "side rail": RAIL_T * (SEAT_Y[1] - SEAT_Y[0]) * RAIL_H,
-        "armrest": area(arm_profile) * ARM_W,
+        "armrest": area(arm_profile) * LEG_T,
         "back post": POST[0] * POST[1] * (BACK_RAILS[1][1] - BACK_RAILS[0][0]),
         "front rail": 2 * x_rail * FRONT_RAIL_T * RAIL_H,
         "rear rail": 2 * x_rail * REAR_RAIL_T * RAIL_H,
         "seat cane": 2 * x_rail * (SEAT_Y[1] - REAR_RAIL_T - SEAT_Y[0] - FRONT_RAIL_T) * CANE,
-        "back rail": arc_band_area(R_BACK - RAIL_D / 2, R_BACK + RAIL_D / 2, POST_X) * rail_h,
-        "back cane": arc_band_area(R_BACK - CANE / 2, R_BACK + CANE / 2, POST_X) * panel_h,
+        "back rail": arc_band_area(R_BACK - RAIL_D / 2, R_BACK + RAIL_D / 2, X_BOARD) * rail_h,
+        "back cane": arc_band_area(R_BACK - CANE / 2, R_BACK + CANE / 2, X_BOARD) * panel_h,
     }
-    # each board's half of the slot, cut on the slope at its own centroid
-    half_slot = [SPLINE[0] * SPLINE[1] / 2 * (underside(y) - SPLINE_Z) for y in (-SPLINE[1] / 4, SPLINE[1] / 4)]
     joinery = {
         "front leg": -half_slot[0] - tenon,
         "rear leg": -half_slot[1] - tenon,
-        "side rail": 2 * tenon - 2 * tenon,
+        "armrest": -lap - arm_mortise,
+        "back post": -lap - 2 * back_tenon,
         "front rail": 2 * tenon,
         "rear rail": 2 * tenon,
         "back rail": 2 * back_tenon,
-        "back post": -area(notch_profile) * notch_width - 2 * back_tenon,
     }
     for part in parts:
         want = plain[part.name] + joinery.get(part.name, 0)
@@ -221,10 +231,12 @@ def check(parts: list[Part]) -> None:
     whole = parts[0]
     for part in parts[1:]:
         whole += part
-    # what lies within another member and would be counted twice: the splines, the arms where they run through the posts
-    inside = 2 * spline + 2 * area(notch_profile) * notch_width
-    want = sum(plain[p.name] for p in parts) - inside  # tenons fill their mortises exactly: no gap, no overlap
+    # What lies within another member and would be counted twice: the splines, and the crossing of arm and post.
+    # Tenons fill their mortises exactly, so nothing else is counted twice, and nothing is missing.
+    inside = 2 * spline + 2 * area(crossing) * LEG_T
+    want = sum(plain[p.name] for p in parts) - inside
     assert abs(whole.volume - want) < 1e-6 * want, (whole.volume, want)
+    assert len(whole.solids()) == 1  # one piece: the back hangs on the armrests
     by_name: dict[str, list[Part]] = {}
     for part in parts:
         by_name.setdefault(part.name, []).append(part)
@@ -234,11 +246,16 @@ def check(parts: list[Part]) -> None:
         ("armrest", "spline"),
         ("armrest", "back post"),
         ("back post", "back rail"),
-        ("seat cane", "front rail"),
         ("back cane", "back rail"),
+        ("side rail", "front leg"),
+        ("seat cane", "front rail"),
         ("rear leg", "front leg"),
     ):
         assert by_name[a][0].distance_to(by_name[b][0]) < 1e-6, (a, b)  # they touch
+    for name in BACK:  # the back is held by the armrests alone: it touches nothing else
+        for other in by_name:
+            if other not in BACK and other != "armrest":
+                assert by_name[name][0].distance_to(by_name[other][0]) > 0.5, (name, other)
     for name in ("front leg", "rear leg"):
         assert all(abs(p.bbox().min.z) < 1e-6 for p in by_name[name]), name  # feet flat on the floor
     teak = sum(p.mass_properties(density=0.65e-3).mass for p in parts if "cane" not in p.name)
