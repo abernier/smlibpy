@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from smlibpy.viewer import html_page  # noqa: E402
 
-EXAMPLES = ["bracket", "flange", "enclosure", "pipe", "spring", "bottle", "gear"]
+EXAMPLES = ["bracket", "flange", "enclosure", "pipe", "spring", "bottle", "gear", "dovetail_box"]
 
 
 def render(name: str, width: int = 900, height: int = 600) -> str:
