@@ -49,8 +49,9 @@ class AssemblyAxis(NamedTuple):
     end: Vector
 
 
-def assembly_axes(parts: Iterable[Any], offsets: Mapping[Any, Any] | Sequence[Any], *,
-                  tolerance: float = 0.01) -> list[AssemblyAxis]:
+def assembly_axes(
+    parts: Iterable[Any], offsets: Mapping[Any, Any] | Sequence[Any], *, tolerance: float = 0.01
+) -> list[AssemblyAxis]:
     """The assembly axes of an exploded view: one for every two parts that touch in the
     assembled model and move by different offsets.
 
@@ -80,13 +81,23 @@ def assembly_axes(parts: Iterable[Any], offsets: Mapping[Any, Any] | Sequence[An
     return _axes(plist, offs, tol, "assembly_axes")
 
 
-def render_exploded(parts: Iterable[Any], offsets: Mapping[Any, Any] | Sequence[Any], *,
-                    path: str | os.PathLike[str] | None = None,
-                    view: Literal["iso", "front", "back", "left", "right", "top", "bottom"] | dict[str, Any]
-                    | tuple[float, float, float] = "iso",
-                    size: tuple[int, int] = (1200, 800), order: Sequence[str] | None = None, axes: bool = True,
-                    balloons: bool = True, background: Any = "white", zoom: float = 1.0, supersample: int = 2,
-                    tolerance: float = 0.01) -> Picture:
+def render_exploded(
+    parts: Iterable[Any],
+    offsets: Mapping[Any, Any] | Sequence[Any],
+    *,
+    path: str | os.PathLike[str] | None = None,
+    view: Literal["iso", "front", "back", "left", "right", "top", "bottom"]
+    | dict[str, Any]
+    | tuple[float, float, float] = "iso",
+    size: tuple[int, int] = (1200, 800),
+    order: Sequence[str] | None = None,
+    axes: bool = True,
+    balloons: bool = True,
+    background: Any = "white",
+    zoom: float = 1.0,
+    supersample: int = 2,
+    tolerance: float = 0.01,
+) -> Picture:
     """An exploded view of an assembly: each part moved by its offset and rendered as
     :func:`render` does, the assembly axes dashed, a numbered balloon on each part that shows and
     a parts list beside the picture.
@@ -153,8 +164,9 @@ def render_exploded(parts: Iterable[Any], offsets: Mapping[Any, Any] | Sequence[
     lay = _Layout(w, h, rows if balloons else [])
     frame = _fit(scene, cam, max(lay.view_w - 2 * lay.column, 1), h, zoom)
     frame["mid_x"] += (w - lay.view_w) / 2 / frame["scale"]  # the parts in the middle of the space left of the list
-    opts = _Options(k=k, bg=bg, edges=True, lines=False, xray=False, alpha=0.42, section=None, markers=[],
-                    annotate=False)
+    opts = _Options(
+        k=k, bg=bg, edges=True, lines=False, xray=False, alpha=0.42, section=None, markers=[], annotate=False
+    )
     img = _view(scene, cam, w, h, opts, frame)
 
     cv = _Canvas(w, h, k, cam, frame, bg)
@@ -208,18 +220,24 @@ def _inputs(parts: Any, offsets: Any, fn: str) -> tuple[list[Any], list[np.ndarr
             else:
                 hit = [i for i, p in enumerate(plist) if p is key]
                 if not hit:
-                    raise ValueError(f"{fn}: an offset is given for a {type(key).__name__} that is not one of the "
-                                     f"parts; key the mapping by the parts given, or by their names")
+                    raise ValueError(
+                        f"{fn}: an offset is given for a {type(key).__name__} that is not one of the "
+                        f"parts; key the mapping by the parts given, or by their names"
+                    )
             for i in hit:
                 offs[i] = _vec3(value)
         return plist, offs
     if isinstance(offsets, (str, bytes)) or not isinstance(offsets, Iterable):
-        raise TypeError(f"{fn}: offsets are a list of vectors, one per part, or a mapping from names or parts to "
-                        f"vectors, not a {type(offsets).__name__}")
+        raise TypeError(
+            f"{fn}: offsets are a list of vectors, one per part, or a mapping from names or parts to "
+            f"vectors, not a {type(offsets).__name__}"
+        )
     items = list(offsets)
     if len(items) != len(plist):
-        raise ValueError(f"{fn}: {len(items)} offsets for {len(plist)} parts; give one per part, in their order, "
-                         f"or a mapping by name")
+        raise ValueError(
+            f"{fn}: {len(items)} offsets for {len(plist)} parts; give one per part, in their order, "
+            f"or a mapping by name"
+        )
     return plist, [_vec3(v) for v in items]
 
 
@@ -242,8 +260,10 @@ def _rows(names: list[str], order: Sequence[str] | None) -> list[tuple[str, int]
     wanted = [str(n) for n in order]
     unknown = [n for n in wanted if n not in count]
     if unknown:
-        raise ValueError(f"render_exploded: order names {', '.join(map(repr, unknown))}, which no part has; the "
-                         f"names are {', '.join(map(repr, count))}")
+        raise ValueError(
+            f"render_exploded: order names {', '.join(map(repr, unknown))}, which no part has; the "
+            f"names are {', '.join(map(repr, count))}"
+        )
     twice = sorted({n for n in wanted if wanted.count(n) > 1})
     if twice:
         raise ValueError(f"render_exploded: order names {', '.join(map(repr, twice))} more than once")
@@ -273,8 +293,10 @@ def _axes(parts: list[Any], offs: list[np.ndarray], tol: float, fn: str) -> list
     alone = [i for i, t in enumerate(touched) if not t]
     if alone:
         said = ", ".join(f"{i} ({parts[i].name!r})" if parts[i].name else str(i) for i in alone)
-        raise ValueError(f"{fn}: part {said} touches no other part within {tol:g} mm; the parts are given assembled "
-                         f"and moved by the offsets: put it in its place, or raise the tolerance")
+        raise ValueError(
+            f"{fn}: part {said} touches no other part within {tol:g} mm; the parts are given assembled "
+            f"and moved by the offsets: put it in its place, or raise the tolerance"
+        )
     return out
 
 
@@ -386,8 +408,9 @@ def _distinct(segs: list[tuple[float, float, float, float]], tol: float) -> list
     return kept
 
 
-def _joined(a: tuple[float, float, float, float], b: tuple[float, float, float, float],
-            tol: float) -> tuple[float, float, float, float] | None:
+def _joined(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float], tol: float
+) -> tuple[float, float, float, float] | None:
     """The two segments as one when they lie on one line and overlap or meet, else None."""
     length = math.hypot(a[2] - a[0], a[3] - a[1])
     dx, dy = (a[2] - a[0]) / length, (a[3] - a[1]) / length
@@ -411,8 +434,14 @@ def _dashed(cv: Any, segs: list[tuple[float, float, float, float]], color: np.nd
         t = 0.0
         while t < length:
             e = min(t + dash, length)
-            pieces.append((k * (x0 + (x1 - x0) * t / length), k * (y0 + (y1 - y0) * t / length),
-                           k * (x0 + (x1 - x0) * e / length), k * (y0 + (y1 - y0) * e / length)))
+            pieces.append(
+                (
+                    k * (x0 + (x1 - x0) * t / length),
+                    k * (y0 + (y1 - y0) * t / length),
+                    k * (x0 + (x1 - x0) * e / length),
+                    k * (y0 + (y1 - y0) * e / length),
+                )
+            )
             t = e + gap
     _screen_lines(cv, pieces, color, 0.6 * lay.u * k)
 
@@ -438,8 +467,15 @@ def _owners(scene: Any, cam: Any, w: int, h: int, frame: dict[str, float]) -> np
         return np.full((h, w), -1)
     t = np.concatenate(tris)
     sx, sy, sz = cv.screen(t.reshape(-1, 3))
-    tri = _Triangles(sx.reshape(-1, 3), sy.reshape(-1, 3), sz.reshape(-1, 3), np.concatenate(norms),
-                     np.zeros((len(t), 3)), np.ones(len(t)), cam)
+    tri = _Triangles(
+        sx.reshape(-1, 3),
+        sy.reshape(-1, 3),
+        sz.reshape(-1, 3),
+        np.concatenate(norms),
+        np.zeros((len(t), 3)),
+        np.ones(len(t)),
+        cam,
+    )
     tbuf = _depth_fill(cv, tri)
     who = np.concatenate(owner)
     return np.where(tbuf >= 0, who[np.maximum(tbuf, 0)], -1).reshape(h, w)
@@ -477,8 +513,9 @@ def _crosses(s: Any, t: Any) -> bool:
     return d1 * d2 < 0 and d3 * d4 < 0
 
 
-def _place(items: list[tuple[tuple[float, float], int]], silhouette: tuple[float, float],
-           lay: _Layout) -> list[tuple[tuple[float, float], int, float, float]]:
+def _place(
+    items: list[tuple[tuple[float, float], int]], silhouette: tuple[float, float], lay: _Layout
+) -> list[tuple[tuple[float, float], int, float, float]]:
     """The balloons: (target, number, x, y), in a column left and one right of the parts, spread
     so that none overlaps another and leaders cross as little as can be had by swapping."""
     x0, x1 = silhouette
@@ -494,8 +531,10 @@ def _place(items: list[tuple[tuple[float, float], int]], silhouette: tuple[float
             sides[a].sort(key=lambda it: it[0][0])
             sides[b].append(sides[a].pop(-1 if a < 0 else 0))
     if len(sides[-1]) > room or len(sides[1]) > room:
-        raise ValueError(f"render_exploded: {len(items)} balloons do not fit beside the parts in a picture "
-                         f"{lay.h} pixels high; give a larger size")
+        raise ValueError(
+            f"render_exploded: {len(items)} balloons do not fit beside the parts in a picture "
+            f"{lay.h} pixels high; give a larger size"
+        )
     placed = []
     for side, col in sides.items():
         if not col:
@@ -512,7 +551,7 @@ def _place(items: list[tuple[tuple[float, float], int]], silhouette: tuple[float
 
         def cost(order: list[int], col: list[list[Any]] = col, slots: list[float] = slots, bx: float = bx) -> float:
             legs = [((bx, slots[k]), col[i][0]) for k, i in enumerate(order)]
-            n = sum(_crosses(a, b) for j, a in enumerate(legs) for b in legs[j + 1:])
+            n = sum(_crosses(a, b) for j, a in enumerate(legs) for b in legs[j + 1 :])
             return n * 1e6 + sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in legs)
 
         order = list(range(len(col)))
@@ -578,4 +617,3 @@ def _draw_list(cv: Any, rows: list[tuple[str, int]], lay: _Layout) -> None:
         quantity = f"×{count}"
         cv.text(right - _text_width(quantity, s), y - 3.5 * s, quantity, _QUANTITY_INK, s)
         y += lay.row_h
-

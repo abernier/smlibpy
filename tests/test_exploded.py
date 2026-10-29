@@ -83,8 +83,7 @@ def test_render_exploded_draws_the_axis_where_the_view_puts_it():
     band = pic.pixels[110:425].astype(int)  # between the two boxes: the background and the axis
     drawn = (np.abs(band - 255).sum(axis=2) > 30).any(axis=0)
     assert np.flatnonzero(drawn).tolist() == [465, 466]
-    plain = render_exploded([base, top], {"top": (0, 0, 50)}, view="front", size=(800, 600), balloons=False,
-                            axes=False)
+    plain = render_exploded([base, top], {"top": (0, 0, 50)}, view="front", size=(800, 600), balloons=False, axes=False)
     assert not (np.abs(plain.pixels[110:425].astype(int) - 255).sum(axis=2) > 30).any()
 
 
