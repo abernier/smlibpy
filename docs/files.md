@@ -466,7 +466,9 @@ The footprint is the union of the part's sections between its horizontal faces a
 its sloping planar faces, exact for anything cut from flat stock; `setup.part` is the part laid flat
 (on z = 0, the worked face at z = `setup.thickness`), for `drawing_views`; `setup.plane` is the
 setup's frame in the model. The footprint's box and the thickness are the finished sizes of a cut
-list.
+list. [`examples/compass_armchair_machining.py`](https://github.com/awv-informatik/smlibpy/tree/main/examples)
+makes a whole chair's files this way: a DXF for every setup of its sixteen boards, the cut list, STEP
+files, drawings and the blanks nested on planks.
 
 ## DXF
 
