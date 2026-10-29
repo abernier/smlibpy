@@ -62,6 +62,7 @@ from .usd import export_usd, from_usd, import_usd, to_usd
 from .occt import export_brep, from_brep, import_brep, to_brep
 from .drawing import DrawingView, drawing_views, export_svg, to_svg
 from .pictures import diff_images, render
+from .exploded import AssemblyAxis, assembly_axes, render_exploded
 from .viewer import show
 from .surfaces import (FitReport, StitchReport, blend, fill, network, nurbs_surface, ruled, stitch, surface,
                        surface_fillet)
@@ -123,7 +124,7 @@ __all__ = [
     "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges", "to_brep",
     "from_brep", "to_svg", "to_file", "from_file",
     "drawing_views", "DrawingView", "export_svg",
-    "show", "render", "diff_images",
+    "show", "render", "diff_images", "render_exploded", "assembly_axes", "AssemblyAxis",
     # errors
     "ModelingError", "KernelError", "FontError",
 ]

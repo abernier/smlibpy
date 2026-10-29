@@ -146,6 +146,8 @@ undercut. `parting_line` finds the parting line.
 - `drawing_views` lays out the views of a part with exact visible and hidden lines, for SVG and
   DXF (layers VISIBLE and HIDDEN).
 - `diff_images` compares two renders.
+- `render_exploded` draws an assembly taken apart: assembly axes found where the parts touch,
+  numbered balloons and a parts list.
 - `show()` opens a 3D viewer in the browser or a notebook.
 
 **[Agents](https://smlibpy.classcad.ch/docs/mcp)**
