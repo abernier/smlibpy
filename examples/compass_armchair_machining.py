@@ -1,6 +1,6 @@
 """The machining files of the compass armchair: cut list, STEP, a flat DXF per setup, drawings, nests and a README.
 
-    python examples/compass_armchair_machining.py [output folder]   (default: examples/compass_armchair_machining/)
+    python examples/compass_armchair_machining.py [output folder]   (default: compass_armchair_machining/)
 
 Everything is read off `compass_armchair.py`'s model and constants, nothing is retyped. `machining_setup` lays each
 part on a 3-axis router and sorts its features into DXF layers: OUTLINE, THROUGH, POCKET_D<depth>, LABEL. The cane
@@ -597,9 +597,7 @@ def machining_files(out: str | Path, parts: list[Part] | None = None, *, picture
 
 
 if __name__ == "__main__":
-    written = machining_files(
-        sys.argv[1] if len(sys.argv) > 1 else Path(__file__).with_name("compass_armchair_machining")
-    )
+    written = machining_files(sys.argv[1] if len(sys.argv) > 1 else "compass_armchair_machining")
     print(
         f"{sum(r['qty'] for r in written['rows'])} machined parts, {len(written['dxf'])} DXF setups, "
         f"{len(written['flagged'])} features flagged, nests: {[(s, n) for s, n, _, _ in written['nests']]}"
