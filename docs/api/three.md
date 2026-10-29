@@ -17,7 +17,7 @@ is the guide: three's objects, coordinates and types, placement, picking, memory
 - [Sheet metal](#sheet-metal): `Bend`, `FlatPattern`, `bendAllowance`, `bendDeduction`, `developedLength`, `fold`, `flange`, `bends`, `unfold`, `flatPattern`, `KFactor`, `BendAllowanceOptions`, `DevelopedLengthOptions`, `FoldOptions`, `FlangeOptions`, `UnfoldOptions`
 - [Triangle meshes](#triangle-meshes): `TriangleMesh`, `tessellate`, `TessellateOptions`, `DecimateOptions`, `RepairReport`, `MeshHit`
 - [Files](#files): `STEPLoader`, `STEPExporter`, `IGESLoader`, `DXFLoader`, `DXFExporter`, `SVGExporter`, `USDBrepLoader`, `USDBrepExporter`, `BREPLoader`, `BREPExporter`, `SMBLoader`, `SMBExporter`, `SMPLoader`, `SMPExporter`, `DrawingView`, `drawingViews`, `STEPLoaderOptions`, `STEPExporterOptions`, `IGESLoaderOptions`, `DXFUnit`, `DXFLoaderOptions`, `DXFExporterOptions`, `SVGExporterOptions`, `USDBrepLoaderOptions`, `USDBrepExporterOptions`, `BREPLoaderOptions`, `BREPExporterOptions`, `SMLibExporterOptions`, `ViewName`, `DrawingViewsOptions`
-- [Pictures](#pictures): `Picture`, `ImageDiff`, `render`, `diffImages`, `VIEWS`, `RenderViewName`, `RenderView`, `RenderPoint`, `RenderMarker`, `Frame`, `ImageLike`, `RenderOptions`
+- [Pictures](#pictures): `Picture`, `ImageDiff`, `AssemblyAxis`, `render`, `diffImages`, `assemblyAxes`, `renderExploded`, `VIEWS`, `RenderViewName`, `RenderView`, `RenderPoint`, `RenderMarker`, `Frame`, `ImageLike`, `RenderOptions`, `ExplodedOffsets`, `RenderExplodedOptions`
 - [Memory and settings](#memory-and-settings): `scope`, `memoryUsage`, `setWarningHandler`, `setGuardSeconds`, `setGuardBooleans`, `GUARD_SECONDS`, `GUARD_BOOLEANS`, `MemoryUsage`
 - [Errors and types](#errors-and-types): `ModelingError`, `KernelError`, `FontError`, `AlignValue`, `Align3`, `Align2`
 - [The worker: @classcad/smlibpy-three/worker](#the-worker-classcadsmlibpy-threeworker): `KernelWorker`, `expose`, `FunctionName`, `Crossed`, `Remote`, `WorkerLike`, `KernelWorkerOptions`, `CallOptions`
@@ -4501,6 +4501,26 @@ export class ImageDiff {
 }
 ```
 
+### AssemblyAxis
+
+```ts
+/**
+ * Where two parts of an assembly touch, and the axis an exploded view draws there (see
+ * `assemblyAxes`), in three's world: `first` and `second` (the parts' indices, `first < second`),
+ * `contact` (the centroid of the contact area in the assembled model), `area`, and `start` and
+ * `end` (`contact` moved by the first part's offset and by the second's).
+ */
+export class AssemblyAxis {
+    readonly first: number;
+    readonly second: number;
+    readonly contact: THREE.Vector3;
+    readonly area: number;
+    readonly start: THREE.Vector3;
+    readonly end: THREE.Vector3;
+    constructor(first: number, second: number, contact: THREE.Vector3, area: number, start: THREE.Vector3, end: THREE.Vector3);
+}
+```
+
 ### render
 
 ```ts
@@ -4530,6 +4550,34 @@ export function render(objects: THREE.Object3D | Iterable<THREE.Object3D>, optio
  * it, a changed model is fitted anew and every pixel moves.
  */
 export function diffImages(a: Picture | ImageLike | Uint8Array | ArrayBuffer, b: Picture | ImageLike | Uint8Array | ArrayBuffer, tolerance?: number): ImageDiff;
+```
+
+### assemblyAxes
+
+```ts
+/**
+ * The assembly axes of an exploded view: one for every two parts that touch in the assembled
+ * scene and move by different offsets, from the centroid of where they touch moved by the one's
+ * offset to the same point moved by the other's. Parts that move together get none.
+ *
+ * Throws a RangeError for fewer than two parts, an offset list of another length than the parts,
+ * a name no part has, or a part that touches no other one (the parts are given assembled).
+ */
+export function assemblyAxes(parts: Body | Iterable<Body>, offsets: ExplodedOffsets, options?: {
+    tolerance?: number;
+}): AssemblyAxis[];
+```
+
+### renderExploded
+
+```ts
+/**
+ * An exploded view of an assembly as a PNG: each part moved by its offset (in three's world) and
+ * rendered as `render` does, the assembly axes (`assemblyAxes`) dashed, a numbered balloon on
+ * each part that shows and a parts list (number, the objects' name, how many) beside the
+ * picture. Drawn in software, with no browser.
+ */
+export function renderExploded(parts: Body | Iterable<Body>, offsets: ExplodedOffsets, options?: RenderExplodedOptions): Picture;
 ```
 
 ### VIEWS
@@ -4688,6 +4736,39 @@ export interface RenderOptions {
         kind?: 'mean' | 'gaussian' | 'max' | 'min';
         range?: number | readonly [number, number] | null;
     } | false | null;
+}
+```
+
+### ExplodedOffsets
+
+```ts
+/** How far each part moves out in an exploded view, in three's world: a list of vectors in the
+ * order of the parts, or a mapping from part names (the objects' `name`) or from the parts
+ * themselves to vectors. Parts a mapping leaves out stay where they are. */
+export type ExplodedOffsets = readonly THREE.Vector3Like[] | ReadonlyMap<string | Body, THREE.Vector3Like> | Readonly<Record<string, THREE.Vector3Like>>;
+```
+
+### RenderExplodedOptions
+
+```ts
+/** The options of `renderExploded`. */
+export interface RenderExplodedOptions {
+    /** The camera, as for `render`. */
+    view?: RenderView;
+    /** Width and height of the whole picture in pixels, the parts list included. */
+    size?: readonly [number, number];
+    /** The names in the order they are numbered; every name of the parts once. */
+    order?: readonly string[] | null;
+    /** Draw the assembly axes. */
+    axes?: boolean;
+    /** Draw the balloons and the parts list. */
+    balloons?: boolean;
+    background?: THREE.ColorRepresentation;
+    /** Factor on the scale that fits the moved parts into the space left by the balloons. */
+    zoom?: number;
+    supersample?: number;
+    /** The gap under which two surfaces touch, in the model's units. */
+    tolerance?: number;
 }
 ```
 

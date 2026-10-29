@@ -149,6 +149,8 @@ undercut. `parting_line` finds the parting line.
   machining DXF: the outline, the holes through, the pockets by depth, a label with the grain; and
   says what another setup must cut (the other face, an edge, a void, a slope).
 - `diff_images` compares two renders.
+- `render_exploded` draws an assembly taken apart: assembly axes found where the parts touch,
+  numbered balloons and a parts list.
 - `show()` opens a 3D viewer in the browser or a notebook.
 
 **[Agents](https://smlibpy.classcad.ch/docs/mcp)**
