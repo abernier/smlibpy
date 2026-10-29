@@ -5,6 +5,7 @@ closed form of a band between two arcs.
 """
 
 import math
+import re
 
 import pytest
 from pytest import approx
@@ -168,3 +169,12 @@ def test_a_shaped_edge_is_reported_apart_from_the_pockets():
     assert [(why, len(faces)) for why, _, faces in setup.elsewhere] == [
         ("not a prism along the tool", 1)
     ]  # the chamfer
+
+
+def test_the_svg_of_a_curved_part_is_the_size_of_the_part():
+    r, a = 1000.0, 200.0
+    band = (Circle(r + 15) - Circle(r - 15)).translate(0, -r, 0)
+    band &= Rectangle(2 * a, 3 * r, align=(Align.CENTER, Align.MIN)).translate(0, -r, 0)
+    svg = to_svg(machining_setup(band.extrude(35)).layers)
+    width = float(re.search(r'width="([\d.]+)mm"', svg).group(1))
+    assert width == approx(2 * a * 1.1, rel=0.01)  # the chord with its 5 % margins, not the arcs' circle of 2000
