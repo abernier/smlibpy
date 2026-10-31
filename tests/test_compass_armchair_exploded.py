@@ -22,7 +22,7 @@ def module():
 
 def test_the_exploded_views_axes_are_the_chairs_joints(module):
     # render_exploded finds the axes where the parts touch: with the chair's offsets they are its joints, each side's
-    # once (two back rails, so two to each post and to the cane), and no two parts that move together get one
+    # once (two back rails, so two to each post), and no two parts that move together get one
     parts = module.model()
     axes = assembly_axes(parts, [module.exploded_offset(p) for p in parts])
     joints = {}
@@ -31,20 +31,22 @@ def test_the_exploded_views_axes_are_the_chairs_joints(module):
         joints[pair] = joints.get(pair, 0) + 1
     assert joints == {
         ("front leg", "side rail"): 2,
-        ("rear leg", "side rail"): 2,  # the rails' stub tenons
+        ("rear leg", "side rail"): 2,  # the side rails' stub tenons
         ("front leg", "spline"): 2,
         ("rear leg", "spline"): 2,
         ("armrest", "spline"): 2,  # the splines in the seam
         ("armrest", "front leg"): 2,
         ("armrest", "rear leg"): 2,  # the legs' tops under the arms
         ("front rail", "side rail"): 2,
-        ("rear rail", "side rail"): 2,  # the cross rails' tenons
-        ("armrest", "back post"): 2,  # the half lap
-        ("back post", "back rail"): 4,  # two back rails, both ends
+        ("rear rail", "side rail"): 2,  # the cross rails' dovetails
+        ("armrest", "back post"): 2,  # the post's outer face on the armrest's inner face
+        ("arm tenon", "armrest"): 2,
+        ("arm tenon", "back post"): 2,  # the loose tenon, half in each
+        ("back post", "back rail"): 4,  # two back rails' dovetails, both ends
         ("back cane", "back post"): 2,
         ("back cane", "back rail"): 2,
         ("seat cane", "side rail"): 2,
         ("front rail", "seat cane"): 1,
         ("rear rail", "seat cane"): 1,
     }
-    assert len(axes) == 32
+    assert len(axes) == 36

@@ -28,19 +28,20 @@ chair = _chair()
 
 # How far each part moves out of the chair, in mm, along the way it goes in at glue-up, and the glue-up order the
 # balloons are numbered in. The assembly axes are not given: render_exploded finds them where the parts touch.
-SEAT_UP, RAIL_OUT, LEG_OUT, SPLINE_UP, ARM_UP, POST_OUT, CANE_BACK = 110, 70, 170, 60, 170, 110, 110
+SEAT_UP, RAIL_OUT, LEG_OUT, SPLINE_UP, ARM_UP, TENON_OUT, BACK_RAIL_OUT, CANE_BACK = 110, 120, 170, 60, 170, 70, 90, 110
 GLUE_UP = [
-    "front leg",
-    "rear leg",
-    "spline",
     "side rail",
     "front rail",
     "rear rail",
-    "seat cane",
-    "armrest",
     "back post",
-    "back rail",
     "back cane",
+    "back rail",
+    "arm tenon",
+    "front leg",
+    "rear leg",
+    "spline",
+    "armrest",
+    "seat cane",
 ]
 EXPLODED_VIEWS = {"iso": {"azimuth": 35, "elevation": 22}, "iso_back": {"azimuth": 145, "elevation": 22}}
 
@@ -51,20 +52,29 @@ def model() -> list[Part]:
 
 
 def exploded_offset(part: Part) -> tuple[float, float, float]:
-    """How far a part moves out of the chair in the exploded views: the sides outwards along x (+x for the right
-    side), the seat cane up, the arms and the back up, the back cane up and back, square to the back."""
+    """How far a part moves out of the chair in the exploded views, the way it goes in (`assembly_order` of the
+    model): the front rail forwards and the rear rail backwards along y, out of the side rails' sockets; the back
+    rails along the posts, the upper one up and the lower one down; the back cane back, square to the back; each
+    side (legs, spline, armrest) outwards along x (+x for the right side), off the side rail's stub tenons and the
+    loose tenon, its spline and armrest also up; the loose tenons part of the way; the seat cane up. The side rails
+    stay; the back frame rises with the armrests, so that each armrest still meets its post along x."""
     s = 1 if part.center().x > 0 else -1
-    back = (0.0, math.cos(math.radians(chair.BACK_TILT)), -math.sin(math.radians(chair.BACK_TILT)))
+    lean = math.radians(chair.BACK_TILT)
+    along = (0.0, math.sin(lean), math.cos(lean))  # along the posts, upward
+    back = (0.0, math.cos(lean), -math.sin(lean))  # square to the back, backwards
+    up = 1 if part.name == "back rail" and part.center().z > chair.SEAT_TOP + 200 else -1  # which back rail
     return {
-        "seat cane": (0, 0, SEAT_UP),
-        "side rail": (s * RAIL_OUT, 0, 0),
+        "front rail": (0, -RAIL_OUT, 0),
+        "rear rail": (0, RAIL_OUT, 0),
+        "back post": (0, 0, ARM_UP),
+        "back rail": (0, up * BACK_RAIL_OUT * along[1], up * BACK_RAIL_OUT * along[2] + ARM_UP),
+        "back cane": (0, CANE_BACK * back[1], CANE_BACK * back[2] + ARM_UP),
+        "arm tenon": (s * TENON_OUT, 0, ARM_UP),
         "front leg": (s * LEG_OUT, 0, 0),
         "rear leg": (s * LEG_OUT, 0, 0),
         "spline": (s * LEG_OUT, 0, SPLINE_UP),
         "armrest": (s * LEG_OUT, 0, ARM_UP),
-        "back post": (s * POST_OUT, 0, ARM_UP),
-        "back rail": (0, 0, ARM_UP),
-        "back cane": (CANE_BACK * back[0], CANE_BACK * back[1], CANE_BACK * back[2] + ARM_UP),
+        "seat cane": (0, 0, SEAT_UP),
     }.get(part.name, (0, 0, 0))
 
 
