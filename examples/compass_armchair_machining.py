@@ -33,16 +33,18 @@ PLANK = (2400.0, 200.0)  # the planks the nests assume: length along the grain, 
 KERF = 4.0  # the saw cut between blanks in a nest
 ARC = f"R {chair.R_BACK:.0f} on the middle line, bow {chair.BOW:.0f}"
 NOTES = {  # what the pockets of each part are, in words (their sizes are in the README's tables)
-    "front leg": "mortise for the side rail's stub tenon on the inner face; half of the spline's slot on the seam "
+    "front leg": "mortise for the side rail's loose tenon on the inner face; half of the spline's slot on the seam "
     "edge, open at the top end",
-    "rear leg": "mortise for the side rail's stub tenon on the inner face; half of the spline's slot on the seam "
+    "rear leg": "mortise for the side rail's loose tenon on the inner face; half of the spline's slot on the seam "
     "edge, open at the top end",
     "spline": "loose tenon across the seam of the two leg boards, running on into the armrest",
-    "side rail": "two stub tenons on the outer face (into the legs); at each end, two dovetail sockets through its "
+    "side rail": "two mortises on the outer face for the loose tenons into the legs; at each end, two dovetail "
+    "sockets through its "
     "thickness for the cross rail's tails",
     "armrest": "mortise for the post's loose tenon on the inner face; mortise for the spline in the underside",
     "back post": "a dovetail socket at each end for a back rail's tail, through the post's width; mortise for the "
     "loose tenon on the outer face",
+    "rail tenon": "loose tenon across the side rail's outer face and the leg board's inner face",
     "arm tenon": "loose tenon across the post's outer face and the armrest's inner face, half in each",
     "front rail": "two dovetail tails at each end, through its thickness, into the side rails",
     "rear rail": "two dovetail tails at each end, through its thickness, into the side rails",
@@ -107,7 +109,12 @@ def keyed(parts: list[Part]) -> list[tuple[str, str, Part]]:
         elif all(abs(p.center().x) > 1.0 for p in group):
             for p in group:
                 side = "right" if p.center().x > 0 else "left"
-                out.append((f"{slug(name)}_{side}", side, p))
+                pair = [q for q in group if (q.center().x > 0) == (p.center().x > 0)]
+                if len(pair) == 1:
+                    out.append((f"{slug(name)}_{side}", side, p))
+                else:  # two of a side (the side rails' tenons): front and rear
+                    end = "front" if p.center().y < max(q.center().y for q in pair) else "rear"
+                    out.append((f"{slug(name)}_{side}_{end}", side, p))
         else:
             for i, p in enumerate(sorted(group, key=lambda p: p.center().z)):
                 rank = ["lower", "upper"][i] if len(group) == 2 else str(i + 1)
@@ -191,7 +198,9 @@ def setups_of(key: str, side: str, part: Part) -> dict:
     d_main = main_direction(part)
     label = f"{part.name.upper()}{(' ' + side[0].upper()) if side in ('left', 'right') else ''}"
     thickness = machining_setup(part, d_main).thickness
-    main = machining_setup(part, d_main, label=f"{label} T{fmt(thickness)}")
+    # a loose tenon's grain runs across its joint, along the model's x: the drawing's x, as for every other part
+    grain = {"x_dir": (1, 0, 0)} if part.name in ("rail tenon", "arm tenon") else {}
+    main = machining_setup(part, d_main, label=f"{label} T{fmt(thickness)}", **grain)
     setups = [("", main, d_main, "main face")]
     for why, direction, _ in main.elsewhere:
         if direction is None:  # no straight way in for a vertical cutter: the README lists it
@@ -224,7 +233,8 @@ def cut_list(records: list[dict]) -> list[dict]:
         length, width, thickness = box.size.x, box.size.y, r0["main"].thickness
         sides = sorted({r["side"] for r in group} - {""})
         if sides == ["left", "right"]:
-            qty_note = "1 left + 1 right, " + ("identical" if symmetric(r0["part"]) else "mirror images")
+            n = len(group) // 2
+            qty_note = f"{n} left + {n} right, " + ("identical" if symmetric(r0["part"]) else "mirror images")
         else:
             qty_note = "identical" if len(group) > 1 else ""
         rows.append(
@@ -416,7 +426,6 @@ def readme(parts, rows, nests, tables, flagged, finished, rough) -> str:
     used = [(up_to, sawn) for up_to, sawn in ROUGH if any(rough_thickness(t) == sawn for t in thicknesses)]
     by_name = {r["part"]: r for r in rows}
     back_rail = by_name["back rail"]
-    loose = rough_thickness(chair.RAIL_T)
     tenon = chair.arm_tenon_span()
     pl, pw = (fmt(v) for v in PLANK)
     text = (
@@ -445,15 +454,14 @@ python examples/compass_armchair_machining.py <output folder>
     setup (`*_edge1.dxf`) it is the part's shadow seen along the tool, for placing the part only.
   - `THROUGH` — holes through the part.
   - `POCKET_D<depth>` — a pocket open on the top face, to be cleared `<depth>` mm below the top face
-    (`POCKET_D7_5` is 7.5 deep). A contour with an inner loop keeps the inner loop as an island (the side
-    rails' stub tenons). A pocket whose contour touches the outline is open to the side: the facing around the
-    side rails' stub tenons, a dovetail socket at a post's end.
+    (`POCKET_D7_5` is 7.5 deep). A contour with an inner loop keeps the inner loop as an island. A pocket
+    whose contour touches the outline is open to the side: a dovetail socket at a post's end.
   - `LABEL` — the part's name and thickness as outlines, and an arrow along the grain. Do not cut it.
 - The grain runs along x in every file.
 - **Inside corners.** The model's mortises and slots have square corners; a router leaves inside
   corners rounded at the tool's radius. These files assume the corners are squared with a chisel after
-  routing. The alternative, rounding the tenons' edges to the tool radius, suits the spline, the loose tenons and
-  the stub tenons; either way, mortise and tenon were modelled to the same size, so leave the usual few tenths of a
+  routing. The alternative, rounding the tenons' edges to the tool radius, suits the spline and the loose
+  tenons; either way, mortise and tenon were modelled to the same size, so leave the usual few tenths of a
   millimetre for glue on the tenons.
 - Depths are from the **top face of the finished part**. If the shop machines from oversize stock, the
   outline is cut through at T and the pockets measured from the finished surface.
@@ -477,7 +485,7 @@ weigh {finished * DENSITY / 1000:.1f} kg; the sawn blanks are {rough / finished:
 ## Setups that need a word
 
 - **Legs (four boards).** Main setup: the board flat, inner face up — the outline and the mortise for the
-  side rail's stub tenon. Edge setup (`*_edge1.dxf`): the board standing on its seam edge (the edge that
+  side rail's loose tenon. Edge setup (`*_edge1.dxf`): the board standing on its seam edge (the edge that
   meets the other board of the pair), tool from the seam — half of the spline's slot, a pocket open at the
   board's top end. A slot on an edge is also a job for a slot cutter or a router jig; the DXF gives its
   position from the board's corners.
@@ -490,17 +498,15 @@ weigh {finished * DENSITY / 1000:.1f} kg; the sawn blanks are {rough / finished:
   the underside; the table says where the floor is above the table and where the sloping surface is at the
   mortise (entry): the mortise is {fmt(chair.SPLINE_IN_ARM)} deep from the surface at the spline. A hollow-chisel
   mortiser with the arm clamped top-down does the same job.
-- **Side rails.** As modelled, the stub tenons into the legs are integral: {fmt(chair.TENON[0])} mm proud of the
-  outer face, which puts the rail in {fmt(by_name["side rail"]["thickness"])} mm stock and makes its main setup
-  (`side_rail_*.dxf`, outer face up) a facing of the whole outer face around two islands. A shop will prefer
-  **loose tenons** (Domino or shop-made): mortise the rail's outer face at the islands' positions, as deep as they
-  are proud, and the rail drops to {fmt(chair.RAIL_T)} mm finished ({fmt(loose)} sawn); the legs' mortises do not
-  change. The **dovetail sockets** at its ends are listed under "Not for a vertical cutter": their walls lean 1 in
-  6 in the plane of the rail's end, so no setup on a face cuts them. They are prisms along the rail's length, open
-  at its end, as deep as the cross rail is thick ({fmt(chair.FRONT_RAIL_T)} at the front, {fmt(chair.REAR_RAIL_T)}
-  at the back): saw and chop them by hand, marked from the cross rail's tails, or rout them with the rail on end
-  and a dovetail jig. Two a corner, {fmt(chair.SEAT_TAIL_END)} wide at the outer face, {fmt(chair.SEAT_TAIL_BASE)} at
-  the inner face.
+- **Side rails.** A plain {fmt(chair.RAIL_T)} mm board ({fmt(rough_thickness(chair.RAIL_T))} sawn): main setup,
+  outer face up, the two mortises for the loose tenons into the legs, {fmt(chair.TENON_IN_RAIL)} deep, leaving
+  {fmt(chair.RAIL_T - chair.TENON_IN_RAIL)} mm of the rail behind them. The **dovetail sockets** at its ends
+  are flagged in that setup (their walls lean 1 in 6 in the plane of the rail's end) but are pockets of the end
+  setups (`side_rail_*_edge1.dxf`, `*_edge2.dxf`): the rail on end, the tool along its length, as deep as the
+  cross rail is thick ({fmt(chair.FRONT_RAIL_T)} at the front, {fmt(chair.REAR_RAIL_T)} at the back), two a
+  corner, {fmt(chair.SEAT_TAIL_END)} wide at the outer face and {fmt(chair.SEAT_TAIL_BASE)} at the inner face. A rail
+  {fmt(by_name["side rail"]["length"])} mm long on end wants a fixture; sawn and chopped by hand from the cross
+  rail's tails, they come out the same.
 - **Cross rails and back rails.** The tails are in the outline, cut through: the cross rails lie on a face, the
   back rails on their lower edge (the tool along the posts). The back rails are curved ({ARC}, hidden within the
   posts' depth): bandsaw the blank from a {fmt(back_rail["blank"][1])} mm wide board, then rout the arcs and the
@@ -510,9 +516,11 @@ weigh {finished * DENSITY / 1000:.1f} kg; the sawn blanks are {rough / finished:
   stands on end, the tool along its length, {fmt(chair.BACK_RAILS[0][1] - chair.BACK_RAILS[0][0])} deep from the
   end, {fmt(chair.BACK_TAIL_END)} wide at the outer face and {fmt(chair.BACK_TAIL_BASE)} at the inner face. A post
   {fmt(by_name["back post"]["length"])} mm long on end wants a fixture; a dovetail saw and chisel do the same.
-- **Loose tenons.** {fmt(chair.ARM_TENON)} mm thick, {fmt(tenon[1] - tenon[0])} high along the post,
-  {fmt(2 * chair.ARM_TENON_DEPTH)} long across the joint ({fmt(chair.ARM_TENON_DEPTH)} in each part): cut from a
-  strip (`arm_tenon_*.dxf`) and rounded to the mortises' corners, or the mortises' corners squared.
+- **Loose tenons.** The posts': {fmt(chair.ARM_TENON)} mm thick, {fmt(tenon[1] - tenon[0])} high along the
+  post, {fmt(2 * chair.ARM_TENON_DEPTH)} long across the joint ({fmt(chair.ARM_TENON_DEPTH)} in each part). The
+  side rails': {fmt(chair.TENON[1])} thick, {fmt(chair.TENON[2])} high, {fmt(chair.TENON_IN_RAIL + chair.TENON[0])}
+  long ({fmt(chair.TENON_IN_RAIL)} in the rail, {fmt(chair.TENON[0])} in the board). Cut from a strip
+  (`arm_tenon_*.dxf`, `rail_tenon_*.dxf`) and rounded to the mortises' corners, or the mortises' corners squared.
 - **Cane.** The model holds each cane panel as a plate flush with its rails, to give the openings (in the cut
   list). Real caning wants a groove or holes along the opening, which are **not** in these files: a groove near
   the inside edge of each frame member for prewoven webbing, or a row of holes for hand caning.
@@ -522,11 +530,12 @@ weigh {finished * DENSITY / 1000:.1f} kg; the sawn blanks are {rough / finished:
 1. Dry-fit everything; the DXF pockets are the model's exact sizes.
 2. Seat frame: the front rail's tails slide into the side rails' sockets from the front (along the chair's depth),
    the rear rail's from the back.
+   The rail tenons are glued into the side rails first.
 3. Back frame: the upper rail's tails slide down into the posts' tops along the posts,
    the lower rail's up into their bottoms; a loose tenon glued into each post's outer face.
 4. Each side, glued up first: the two leg boards on the seam with the spline across it, the armrest down onto
    their tops, the spline entering its mortise. Then each side pushed on across the chair, over the side rail's
-   stub tenons and the post's loose tenon at once, the post's outer face coming to rest on the armrest's inner
+   loose tenons and the post's loose tenon at once, the post's outer face coming to rest on the armrest's inner
    face. The model's `check()` tests this order: every member slides in along its way with nothing in it.
 5. Cane last; oil (teak oil or a hardwax oil) after sanding, or leave the teak raw to silver.
 
