@@ -221,8 +221,8 @@ function _path(e: Edge): [string, number[][]] {
   if (ent.kind === 'CIRCLE' || ent.kind === 'ARC') {
     const [cx, cy] = d.c
     const r: number = d.r
-    const box = [[cx - r, cy - r], [cx + r, cy + r]]
     if (ent.kind === 'CIRCLE') {
+      const box = [[cx - r, cy - r], [cx + r, cy + r]]
       // (two halves: an SVG arc cannot close on itself)
       const a = [cx + r, cy]
       const b = [cx - r, cy]
@@ -232,9 +232,17 @@ function _path(e: Edge): [string, number[][]] {
     const a1 = (d.a1 * Math.PI) / 180
     const a = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)]
     const b = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)]
-    const large = (((d.a1 - d.a0) % 360) + 360) % 360 > 180 ? 1 : 0
+    const mod360 = (x: number) => ((x % 360) + 360) % 360
+    const sweep = mod360(d.a1 - d.a0)
+    const large = sweep > 180 ? 1 : 0
+    // the arc's own extent, not its circle's: its ends and the quadrant points it passes (a
+    // shallow arc of a large radius would otherwise set the size of the whole drawing)
+    const reach = [a, b]
+    for (const q of [0, 90, 180, 270]) {
+      if (mod360(q - d.a0) <= sweep) reach.push([cx + r * Math.cos((q * Math.PI) / 180), cy + r * Math.sin((q * Math.PI) / 180)])
+    }
     // (counterclockwise in the model: the SVG's negative direction, its y running down)
-    return [`M${pt(a)} A${_num(r)} ${_num(r)} 0 ${large} 0 ${pt(b)}`, box]
+    return [`M${pt(a)} A${_num(r)} ${_num(r)} 0 ${large} 0 ${pt(b)}`, reach]
   }
   const p = _edgePoints(e, Math.max(_samplesFor(e), 32))
   return [`M${p.map((q) => pt(q)).join(' L')}`, p.map((q) => [q[0], q[1]])]

@@ -439,6 +439,37 @@ faces, split where they pass behind the part. Each line is drawn once (the back 
 seen from the front lie under its front edges and are left out), edges seen end-on and seams of
 round faces are not drawn, and `tangent_edges=True` adds the tangent lines of fillets.
 
+## Machining
+
+`machining_setup` lays a part on a 3-axis router, resting on one face with the tool coming from the
+other, and sorts its features into the layers a CNC shop reads from a DXF: `OUTLINE` (the footprint,
+the through cut), `THROUGH` (the holes through the part), one `POCKET_D<depth>` layer per pocket
+depth from the top face (`POCKET_D15`, `POCKET_D7_5`; islands kept, a stepped pocket on several
+layers) and `LABEL` (a text with a grain arrow along x). What the setup cannot cut comes back with
+the reason and the direction another setup needs: a pocket of the other face ("opens below"), a
+mortise in an edge ("opens at the side"), a void, a face no vertical cutter follows:
+
+```python
+board = Box(400, 80, 20, align=(Align.MIN, Align.MIN, Align.MIN))
+board -= Box(40, 10, 12, align=(Align.CENTER, Align.CENTER, Align.MAX)).translate(100, 40, 20)  # a mortise 12 deep
+board -= Cylinder(4, 50).translate(300, 40, 0)  # a hole through
+board -= Box(15, 10, 8, align=(Align.MIN, Align.CENTER, Align.CENTER)).translate(0, 40, 10)  # a mortise in the end
+setup = machining_setup(board, label="RAIL 3")
+print([s.name for s in setup.layers])  # ['OUTLINE', 'THROUGH', 'POCKET_D12', 'LABEL']
+export_dxf(setup.layers, "rail_3.dxf", curves="arcs")  # one DXF layer a name, lines and arcs only
+why, direction, faces = setup.elsewhere[0]  # ('opens at the side', (-1, 0, 0), the end mortise's faces)
+towards = setup.plane.x_dir * direction.x + setup.plane.y_dir * direction.y + setup.plane.z_dir * direction.z
+end = machining_setup(board, towards)  # the part on its far end: layers OUTLINE and POCKET_D15, 400 thick
+```
+
+The footprint is the union of the part's sections between its horizontal faces and the shadows of
+its sloping planar faces, exact for anything cut from flat stock; `setup.part` is the part laid flat
+(on z = 0, the worked face at z = `setup.thickness`), for `drawing_views`; `setup.plane` is the
+setup's frame in the model. The footprint's box and the thickness are the finished sizes of a cut
+list. [`examples/compass_armchair_machining.py`](https://github.com/awv-informatik/smlibpy/tree/main/examples)
+makes a whole chair's files this way: a DXF for every setup of its twenty-two parts, the cut list, STEP
+files, drawings and the blanks nested on planks.
+
 ## DXF
 
 DXF is the exchange format of 2D drawings: laser cutters, CNC software and 2D CAD programs read

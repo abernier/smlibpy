@@ -30,3 +30,6 @@ fuzz-asan-out/
 # uv.lock's versions as pip constraints, written by .github/actions/constraints
 .github/constraints.txt
 .github/build-constraints.txt
+
+# examples/compass_armchair_machining.py output, when run from the repository
+compass_armchair_machining/
