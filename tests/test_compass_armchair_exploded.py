@@ -31,7 +31,10 @@ def test_the_exploded_views_axes_are_the_chairs_joints(module):
         joints[pair] = joints.get(pair, 0) + 1
     assert joints == {
         ("front leg", "side rail"): 2,
-        ("rear leg", "side rail"): 2,  # the side rails' stub tenons
+        ("rear leg", "side rail"): 2,  # the side rails' faces on the boards
+        ("rail tenon", "side rail"): 4,
+        ("front leg", "rail tenon"): 2,
+        ("rail tenon", "rear leg"): 2,  # the side rails' loose tenons, into the rail and into the board
         ("front leg", "spline"): 2,
         ("rear leg", "spline"): 2,
         ("armrest", "spline"): 2,  # the splines in the seam
@@ -49,4 +52,4 @@ def test_the_exploded_views_axes_are_the_chairs_joints(module):
         ("front rail", "seat cane"): 1,
         ("rear rail", "seat cane"): 1,
     }
-    assert len(axes) == 36
+    assert len(axes) == 44

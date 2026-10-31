@@ -29,8 +29,10 @@ chair = _chair()
 # How far each part moves out of the chair, in mm, along the way it goes in at glue-up, and the glue-up order the
 # balloons are numbered in. The assembly axes are not given: render_exploded finds them where the parts touch.
 SEAT_UP, RAIL_OUT, LEG_OUT, SPLINE_UP, ARM_UP, TENON_OUT, BACK_RAIL_OUT, CANE_BACK = 110, 120, 170, 60, 170, 70, 90, 110
+RAIL_TENON_OUT = 70
 GLUE_UP = [
     "side rail",
+    "rail tenon",
     "front rail",
     "rear rail",
     "back post",
@@ -55,8 +57,8 @@ def exploded_offset(part: Part) -> tuple[float, float, float]:
     """How far a part moves out of the chair in the exploded views, the way it goes in (`assembly_order` of the
     model): the front rail forwards and the rear rail backwards along y, out of the side rails' sockets; the back
     rails along the posts, the upper one up and the lower one down; the back cane back, square to the back; each
-    side (legs, spline, armrest) outwards along x (+x for the right side), off the side rail's stub tenons and the
-    loose tenon, its spline and armrest also up; the loose tenons part of the way; the seat cane up. The side rails
+    side (legs, spline, armrest) outwards along x (+x for the right side), off the side rail's loose tenons and the
+    post's, its spline and armrest also up; the loose tenons part of the way; the seat cane up. The side rails
     stay; the back frame rises with the armrests, so that each armrest still meets its post along x."""
     s = 1 if part.center().x > 0 else -1
     lean = math.radians(chair.BACK_TILT)
@@ -70,6 +72,7 @@ def exploded_offset(part: Part) -> tuple[float, float, float]:
         "back rail": (0, up * BACK_RAIL_OUT * along[1], up * BACK_RAIL_OUT * along[2] + ARM_UP),
         "back cane": (0, CANE_BACK * back[1], CANE_BACK * back[2] + ARM_UP),
         "arm tenon": (s * TENON_OUT, 0, ARM_UP),
+        "rail tenon": (s * RAIL_TENON_OUT, 0, 0),
         "front leg": (s * LEG_OUT, 0, 0),
         "rear leg": (s * LEG_OUT, 0, 0),
         "spline": (s * LEG_OUT, 0, SPLINE_UP),

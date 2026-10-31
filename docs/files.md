@@ -608,8 +608,8 @@ the other. `assembly_axes` gives them as numbers. A part that touches nothing is
 is an `order` that misses a name. The picture is drawn by the library alone, in its own
 capitals, like the other pictures.
 [`examples/compass_armchair_exploded.py`](https://github.com/awv-informatik/smlibpy/tree/main/examples)
-takes a whole chair apart this way: twenty parts moved along the way each goes in at glue-up,
-numbered in that order, the 36 axes found from its joints.
+takes a whole chair apart this way: twenty-four parts moved along the way each goes in at glue-up,
+numbered in that order, the 44 axes found from its joints.
 
 ## Viewer
 
