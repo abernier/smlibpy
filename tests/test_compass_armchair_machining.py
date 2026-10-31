@@ -40,12 +40,16 @@ def pockets(path: Path) -> float:
 def test_every_machined_part_is_in_the_cut_list_once(files):
     module, out, written = files
     machined = [p for p in module.model() if "cane" not in p.name]
-    assert sum(r["qty"] for r in written["rows"]) == len(machined) == 16
+    assert sum(r["qty"] for r in written["rows"]) == len(machined) == 18
     with (out / "cutlist.csv").open() as fh:
         rows = list(csv.DictReader(fh))
     assert sorted(r["part"] for r in rows) == sorted({p.name for p in machined})
     assert sorted(written["dxf"]) == sorted(p.name for p in (out / "dxf").glob("*.dxf"))
-    assert written["flagged"] == []  # every feature is a pocket of some setup
+    # The dovetail sockets of the side rails and the posts lean in the plane of the part's end: no face setup cuts
+    # them, and the README says how they are made. Nothing else is flagged.
+    flagged = sorted((key, why) for key, _, why, _ in written["flagged"])
+    sockets = [f"{n}_{s}" for n in ("back_post", "side_rail") for s in ("left", "right")]
+    assert flagged == [(key, "not a prism along the tool") for key in sockets]
 
 
 def test_a_part_is_its_outline_less_its_pockets(files):
@@ -61,6 +65,12 @@ def test_a_part_is_its_outline_less_its_pockets(files):
                 (n,) = edge
                 (pocket,) = [x for x in layer_names(out / "dxf" / n) if x.startswith("POCKET_D")]
                 volume -= import_dxf(out / "dxf" / n, layers=[pocket]).area * module.chair.SPLINE_IN_ARM
+            elif rec["part"].name == "side rail":  # its dovetail sockets are flagged, in no setup: see check()
+                continue
+            elif rec["part"].name == "back post":  # its sockets, from its ends: the narrow band through its width
+                chair = module.chair  # is in the outline already, at both ends
+                volume -= sum(pockets(out / "dxf" / n) for n in edge)
+                volume += 2 * chair.BACK_TAIL_BASE * chair.POST[0] * (chair.BACK_RAILS[0][1] - chair.BACK_RAILS[0][0])
             elif edge:  # the legs: half the spline's slot, through the board's sloping top end
                 assert rec["part"].name in ("front leg", "rear leg")
                 (n,) = edge
