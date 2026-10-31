@@ -585,6 +585,32 @@ print(change.changed, change.bbox)       # pixels that differ, and where
 change.save("change.png")                # the change in red
 ```
 
+### Exploded views
+
+`render_exploded` draws an assembly taken apart: each part moved by an offset you give, the
+assembly axes dashed, a numbered balloon on each part that shows and a parts list beside the
+picture (number, name, how many parts have it):
+
+```python
+block = Box(60, 60, 40).cut(Pos(0, 0, 12.5) * Cylinder(5, 15)).named("block")
+peg = Pos(0, 0, 20) * Cylinder(5, 30).named("peg")
+lid = Pos(0, 0, 22.5) * Box(30, 30, 5).cut(Cylinder(5, 10)).named("lid")
+offsets = {"peg": (0, 0, 80), "lid": (0, 0, 40)}           # by name; or a list, one per part
+render_exploded([block, peg, lid], offsets, path="exploded.png", order=["block", "lid", "peg"])
+for axis in assembly_axes([block, peg, lid], offsets):
+    print(axis.first, axis.second, axis.contact, round(axis.area, 1))
+```
+
+The parts are given assembled. The axes are not drawn by hand: two parts that touch and move
+by different offsets get one, from the centroid of the area where they touch (the peg's bore
+and the bottom of its hole: z = 11.43), moved with the one part, to the same point moved with
+the other. `assembly_axes` gives them as numbers. A part that touches nothing is refused, and so
+is an `order` that misses a name. The picture is drawn by the library alone, in its own
+capitals, like the other pictures.
+[`examples/compass_armchair_exploded.py`](https://github.com/awv-informatik/smlibpy/tree/main/examples)
+takes a whole chair apart this way: twenty-four parts moved along the way each goes in at glue-up,
+numbered in that order, the 44 axes found from its joints.
+
 ## Viewer
 
 ```python

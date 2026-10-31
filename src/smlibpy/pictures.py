@@ -646,6 +646,7 @@ class _Scene:
         self.hl_tris: list[tuple[np.ndarray, np.ndarray]] = []
         self.hl_segs: list[np.ndarray] = []
         self.hl_points: list[np.ndarray] = []
+        self.owners: list[int] = []  # per body: the index in items of the shape it comes from
         self.tolerance = tolerance
         self._axes: list[tuple[np.ndarray, np.ndarray, float, float, float]] | None = None
         items = _flatten_all(shapes)
@@ -704,6 +705,7 @@ class _Scene:
                 n = mesh.normals if mesh.normals is not None else np.repeat(mesh.triangle_normals[:, None], 3, axis=1)
                 self.bodies.append(_Body(v, np.asarray(n, dtype=np.float64), rgb, closed, segs, mesh,
                                          None if isinstance(piece, Mesh) else source, face_rgb))
+                self.owners.append(len(self.items) - 1)
         pts = [b.tris.reshape(-1, 3) for b in self.bodies] + [b.segs.reshape(-1, 3) for b in self.bodies]
         pts += [s.reshape(-1, 3) for s, _ in self.overlays]
         allp = np.concatenate(pts) if pts else np.zeros((0, 3))

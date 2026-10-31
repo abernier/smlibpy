@@ -174,6 +174,7 @@ export { MachiningSetup, machiningSetup, type MachiningLeft, type MachiningReaso
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
 export { exportBrep, fromBrep, importBrep, toBrep, type BrepImportOptions } from './occt.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './pictures.ts'
+export { AssemblyAxis, assemblyAxes, renderExploded, type AssemblyAxesOptions, type ExplodedOffsets, type RenderExplodedOptions } from './exploded.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
 // errors, warnings and memory
 export { KernelError, ModelingError } from './_errors.ts'

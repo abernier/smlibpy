@@ -33,3 +33,6 @@ fuzz-asan-out/
 
 # examples/compass_armchair_machining.py output, when run from the repository
 compass_armchair_machining/
+
+# examples/compass_armchair_exploded.py output, when run from the repository
+compass_armchair_exploded/

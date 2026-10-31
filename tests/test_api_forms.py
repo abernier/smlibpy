@@ -69,7 +69,7 @@ FUNCTIONS_ONLY = {
               "from_step_model", "to_stl", "from_stl", "to_obj", "to_glb", "to_gltf", "to_smb", "from_smb", "to_smp",
               "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges", "to_brep",
               "from_brep", "to_svg", "to_file", "from_file"},
-    "pictures and the viewer": {"show", "render", "diff_images"},
+    "pictures and the viewer": {"show", "render", "diff_images", "render_exploded", "assembly_axes"},
 }
 
 

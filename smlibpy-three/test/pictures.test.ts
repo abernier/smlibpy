@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import * as sm from '@classcad/smlibwasm'
 import { Box, Cylinder, Segment, Part, Rectangle } from '../src/index.ts'
 import { TriangleMesh } from '../src/mesh.ts'
-import { ImageDiff, Picture, VIEWS, diffImages, render } from '../src/pictures.ts'
+import { AssemblyAxis, ImageDiff, Picture, VIEWS, assemblyAxes, diffImages, render, renderExploded } from '../src/pictures.ts'
 import { close, closeVector } from './_util.ts'
 
 // every class smlibwasm exports, to find any of them in what the package gives
@@ -309,4 +309,30 @@ test('nothing of smlibwasm comes out', () => {
   }
   assert.ok(error instanceof RangeError, String(error))
   noKernel(error, 'error')
+})
+
+test("assemblyAxes and renderExploded take three's world and give it back", () => {
+  // a 40 x 10 x 30 box standing on a 100 x 20 x 60 one (Y up), at x 10, z 5: the contact is the
+  // small box's bottom, 1200 square units at (10, 10, 5); the small box moves up 50
+  const base = new Box(100, 20, 60)
+  base.name = 'base'
+  const top = new Box(40, 10, 30)
+  top.name = 'top'
+  top.position.set(10, 15, 5)
+  const axes = assemblyAxes([base, top], { top: new THREE.Vector3(0, 50, 0) })
+  assert.equal(axes.length, 1)
+  assert.ok(axes[0] instanceof AssemblyAxis)
+  noKernel(axes)
+  closeVector(axes[0].contact, { x: 10, y: 10, z: 5 })
+  close(axes[0].area, 1200)
+  closeVector(axes[0].start, { x: 10, y: 10, z: 5 })
+  closeVector(axes[0].end, { x: 10, y: 60, z: 5 })
+  // the front view looks from +Z: x -50..50 and y -10..70 fit 800 x 600 at
+  // min(800 * 0.88 / 100, 600 * 0.88 / 80) = 6.6 px per unit, the middle at (0, 30)
+  const picture = renderExploded([base, top], new Map([[top, { x: 0, y: 50, z: 0 }]]), { view: 'front', size: [800, 600], balloons: false })
+  assert.ok(picture instanceof Picture)
+  noKernel(picture)
+  close(picture.frame!.scale, 6.6)
+  close(picture.frame!.midY, 30)
+  assert.throws(() => renderExploded([base, top], { lid: { x: 0, y: 1, z: 0 } }), /no part is named 'lid'/)
 })
