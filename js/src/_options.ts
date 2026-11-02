@@ -138,6 +138,7 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   importUsd: [1, ['heal', 'units', 'placement', 'check', 'strict']],
   imprint: [3, ['nearest']],
   loft: [1, ['ruled', 'smooth', 'startTangent', 'endTangent', 'closed', 'rails']],
+  machiningSetup: [2, ['xDir', 'label', 'labelSize']],
   matchEdge: [3, ['extent']],
   outline: [2, ['hidden', 'tangentEdges']],
   push: [3, ['by', 'to', 'normal', 'radius', 'continuity']],

@@ -145,6 +145,9 @@ undercut. `parting_line` finds the parting line.
     maps
 - `drawing_views` lays out the views of a part with exact visible and hidden lines, for SVG and
   DXF (layers VISIBLE and HIDDEN).
+- `machining_setup` lays a part on a 3-axis router and sorts its features into the layers of a
+  machining DXF: the outline, the holes through, the pockets by depth, a label with the grain; and
+  says what another setup must cut (the other face, an edge, a void, a slope).
 - `diff_images` compares two renders.
 - `show()` opens a 3D viewer in the browser or a notebook.
 

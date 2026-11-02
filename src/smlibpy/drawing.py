@@ -226,9 +226,14 @@ def _path(e: Any) -> tuple[str, np.ndarray]:
             return f"M{pt(a)} A{_num(r)} {_num(r)} 0 1 0 {pt(b)} A{_num(r)} {_num(r)} 0 1 0 {pt(a)}", box
         a0, a1 = np.radians(d["a0"]), np.radians(d["a1"])
         a, b = c + r * np.array([np.cos(a0), np.sin(a0)]), c + r * np.array([np.cos(a1), np.sin(a1)])
-        large = 1 if (d["a1"] - d["a0"]) % 360.0 > 180.0 else 0
+        sweep = (d["a1"] - d["a0"]) % 360.0
+        large = 1 if sweep > 180.0 else 0
+        # the arc's own extent, not its circle's: its ends and the quadrant points it passes (a
+        # shallow arc of a large radius would otherwise set the size of the whole drawing)
+        reach = [a, b] + [c + r * np.array([np.cos(np.radians(q)), np.sin(np.radians(q))])
+                          for q in (0.0, 90.0, 180.0, 270.0) if (q - d["a0"]) % 360.0 <= sweep]
         # (counterclockwise in the model: the SVG's negative direction, its y running down)
-        return f"M{pt(a)} A{_num(r)} {_num(r)} 0 {large} 0 {pt(b)}", box
+        return f"M{pt(a)} A{_num(r)} {_num(r)} 0 {large} 0 {pt(b)}", np.array(reach)
     p = _edge_points(e, max(_samples_for(e), 32))[:, :2]
     return "M" + " L".join(pt(q) for q in p), p
 

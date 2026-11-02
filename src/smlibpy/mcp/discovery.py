@@ -48,7 +48,7 @@ GUIDE_NAMES = {
     "Problem": "analysis/check", "NurbsSurface": "surfaces/nurbs_surface", "FitReport": "surfaces/surface",
     "StitchReport": "surfaces/stitch", "RepairReport": "files/repaired", "FlatPattern": "sheetmetal/flat_pattern",
     "StepModel": "files/read_step", "StepFrame": "files/read_step", "StepCurve": "files/read_step",
-    "StepPoint": "files/read_step", "DrawingView": "files/drawing_views", "FontError": "sketches/Text",
+    "StepPoint": "files/read_step", "DrawingView": "files/drawing_views", "MachiningSetup": "files/machining_setup", "FontError": "sketches/Text",
     "ModelingError": "SKILL", "KernelError": "SKILL",
     "fuse": "parts/booleans", "cut": "parts/booleans", "intersect": "parts/booleans", "xor": "sketches/generic",
     "fillet_preview": "features/fillet", "tessellate": "files/Mesh", "export_gltf": "files/export_glb",
