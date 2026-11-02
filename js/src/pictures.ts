@@ -69,7 +69,7 @@ export const VIEWS: Readonly<Record<string, readonly [number, number, number]>> 
 
 const _ORTHO = ['front', 'back', 'left', 'right', 'top', 'bottom']
 const _gray255 = (v: number): RGB => [v / 255, v / 255, v / 255]
-const _EDGE: RGB = [0.12, 0.14, 0.16]
+export const _EDGE: RGB = [0.12, 0.14, 0.16]
 const _INK: RGB = _gray255(20)
 const _HIDDEN_INK: RGB = _gray255(95)
 const _HATCH_INK: RGB = _gray255(70)
@@ -80,9 +80,9 @@ const _RED: RGB = [230 / 255, 40 / 255, 30 / 255] // highlighted edges
 const _MARKER: RGB = [220 / 255, 30 / 255, 30 / 255]
 const _OVERLAY: RGB = [0 / 255, 90 / 255, 220 / 255] // sketches drawn over solids
 const _DIVIDER: RGB = _gray255(190)
-const _WHITE: RGB = [1, 1, 1]
+export const _WHITE: RGB = [1, 1, 1]
 const _FIT = 0.88 // share of the picture the shapes fill
-const _MAX_CANVAS = 1 << 24 // subpixels of a supersampled picture; larger pictures get a lower factor
+export const _MAX_CANVAS = 1 << 24 // subpixels of a supersampled picture; larger pictures get a lower factor
 const _CAPTION = 34 // pixels kept free under the iso view of a drawing, for the projection method
 const _CURVATURES = ['gaussian', 'mean', 'max', 'min']
 // blue (concave) - white (flat) - red (convex), positions 0 to 1 with 0.5 = zero curvature
@@ -100,7 +100,7 @@ const _ZEBRA_EDGE: RGB = [0.5, 0.5, 0.5]
 
 // -------------------------------------------------------------------------------- small helpers
 /** numpy's rint: to the nearest integer, halves to the even one. */
-function _rint(x: number): number {
+export function _rint(x: number): number {
   const r = Math.round(x)
   return r - x === 0.5 && r % 2 !== 0 ? r - 1 : r
 }
@@ -632,7 +632,7 @@ interface _ZebraSpec {
   direction: string | Vec3
 }
 
-interface _Options {
+export interface _Options {
   k: number
   bg: RGB
   edges: boolean
@@ -695,7 +695,7 @@ export function _curvatureSpec(curvature: unknown): [string, [number, number] | 
   return [name, range]
 }
 
-function _vec3(p: unknown): Vec3 {
+export function _vec3(p: unknown): Vec3 {
   let v: unknown = p
   if (p instanceof Vector) v = p.toArray()
   else if (p instanceof BoundBox) v = p.center.toArray()
@@ -874,7 +874,7 @@ export class _Camera {
 }
 
 /** The frame that fits the scene into w x h pixels. */
-function _fit(scene: _Scene, cam: _Camera, w: number, h: number, zoom = 1.0, lookAt: unknown = null): Frame {
+export function _fit(scene: _Scene, cam: _Camera, w: number, h: number, zoom = 1.0, lookAt: unknown = null): Frame {
   if (!(zoom > 0)) throw new RangeError(`zoom must be positive, got ${_repr(zoom)}`)
   const x = _dots(scene.points, cam.right)
   const y = _dots(scene.points, cam.up)
@@ -1079,6 +1079,8 @@ export class _Scene {
   readonly hlTris: [Float64Array, Float64Array][] = []
   readonly hlSegs: Float64Array[] = []
   readonly hlPoints: Vec3[] = []
+  /** Per body: the index in items of the shape it comes from. */
+  readonly owners: number[] = []
   readonly tolerance: number | null
   _axes: _AxisLine[] | null = null
   /** What the scene made in the kernel: kept meshes, copies of faces (see `dispose`). */
@@ -1144,6 +1146,7 @@ export class _Scene {
         }
         const [v, n] = _meshArrays(mesh)
         this.bodies.push(new _Body(v, n, rgb, closed, segs, mesh, piece instanceof Mesh ? null : source, faceRgb))
+        this.owners.push(this.items.length - 1)
       }
     })
     const pts = [...this.bodies.map((b) => b.tris), ...this.bodies.map((b) => b.segs), ...this.overlays.map(([s]) => s)]
@@ -1379,7 +1382,7 @@ export interface _Img {
 type _Text = [number, number, string, RGB, number, string, RGB | null]
 
 /** The supersampled picture of one view: colors, depth buffer, the texts to draw. */
-class _Canvas {
+export class _Canvas {
   readonly w: number
   readonly h: number
   readonly k: number
@@ -1461,7 +1464,7 @@ class _Canvas {
   }
 }
 
-function _view(scene: _Scene, cam: _Camera, w: number, h: number, o: _Options, frame: Frame): _Img {
+export function _view(scene: _Scene, cam: _Camera, w: number, h: number, o: _Options, frame: Frame): _Img {
   const cv = new _Canvas(w, h, o.k, cam, frame, o.bg)
   const k = o.k
   const cut = o.section
@@ -1612,7 +1615,7 @@ function _filled<T extends Float32Array | Float64Array>(data: T, color: RGB): T 
 }
 
 /** The normal of each triangle (by its corners) along `back`: positive facing the camera. */
-function _facing(tris: Float64Array, back: Vec3): Float64Array {
+export function _facing(tris: Float64Array, back: Vec3): Float64Array {
   const n = tris.length / 9
   const out = new Float64Array(n)
   for (let t = 0; t < n; t++) {
@@ -1649,7 +1652,7 @@ function _select(p: _Part, value: Float64Array, test: (v: number) => boolean): _
 
 /** Triangles on the screen with what the fill and the shading need: the maps from a pixel to
  * barycentric coordinates and depth, normals in camera coordinates, colors. */
-class _Triangles {
+export class _Triangles {
   readonly n: number
   readonly sx: Float64Array
   readonly sy: Float64Array
@@ -1778,7 +1781,7 @@ function _forEachSpan(tri: _Triangles, W: number, H: number, visit: (t: number, 
 }
 
 /** The depth test: per pixel the nearest triangle (-1: none). */
-function _depthFill(cv: _Canvas, tri: _Triangles): Int32Array {
+export function _depthFill(cv: _Canvas, tri: _Triangles): Int32Array {
   const W = cv.W
   const tbuf = new Int32Array(cv.W * cv.H).fill(-1)
   const zbuf = cv.zbuf
@@ -2482,7 +2485,7 @@ function _stamp(cv: _Canvas, x: number, y: number, pen: [number, number][], colo
 }
 
 /** Segments in canvas pixels, drawn on top. */
-function _screenLines(cv: _Canvas, segs: readonly (readonly [number, number, number, number])[], color: RGB, radius: number): void {
+export function _screenLines(cv: _Canvas, segs: readonly (readonly [number, number, number, number])[], color: RGB, radius: number): void {
   if (!segs.length) return
   const pen = _disc(radius)
   for (const s of segs) {
@@ -2753,7 +2756,7 @@ export const _FONT: ReadonlyMap<string, readonly (readonly boolean[])[]> = new M
   Object.entries(_GLYPHS).map(([ch, rows]) => [ch, rows.map((row) => [...row].map((c) => c === '#'))]),
 )
 
-function _textWidth(text: string, scale = 1): number {
+export function _textWidth(text: string, scale = 1): number {
   const n = [...text].length
   return n ? n * 6 * scale - scale : 0
 }
@@ -2808,7 +2811,7 @@ export function _text(img: _Img, x: number, y: number, text: string, color: RGB,
 // -------------------------------------------------------------------------------- PNG
 /** The bytes of a float image (0 to 1): numpy's clip(img * 255 + 0.5, 0, 255) as uint8, in the
  * image's own precision. */
-function _toBytes(img: _Img): Uint8Array {
+export function _toBytes(img: _Img): Uint8Array {
   const { data } = img
   const out = new Uint8Array(data.length)
   if (data instanceof Float32Array) {

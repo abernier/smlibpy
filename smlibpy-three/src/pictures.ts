@@ -267,6 +267,105 @@ export function diffImages(a: Picture | ImageLike | Uint8Array | ArrayBuffer, b:
   return new ImageDiff(d.changed, d.total, d.fraction, d.bbox === null ? null : Object.freeze([...d.bbox] as [number, number, number, number]), pictureOf(d.picture))
 }
 
+// --------------------------------------------------------------------------------------- exploded views
+/** How far each part moves out in an exploded view, in three's world: a list of vectors in the
+ * order of the parts, or a mapping from part names (the objects' `name`) or from the parts
+ * themselves to vectors. Parts a mapping leaves out stay where they are. */
+export type ExplodedOffsets = readonly THREE.Vector3Like[] | ReadonlyMap<string | Body, THREE.Vector3Like> | Readonly<Record<string, THREE.Vector3Like>>
+
+/** The options of `renderExploded`. */
+export interface RenderExplodedOptions {
+  /** The camera, as for `render`. */
+  view?: RenderView
+  /** Width and height of the whole picture in pixels, the parts list included. */
+  size?: readonly [number, number]
+  /** The names in the order they are numbered; every name of the parts once. */
+  order?: readonly string[] | null
+  /** Draw the assembly axes. */
+  axes?: boolean
+  /** Draw the balloons and the parts list. */
+  balloons?: boolean
+  background?: THREE.ColorRepresentation
+  /** Factor on the scale that fits the moved parts into the space left by the balloons. */
+  zoom?: number
+  supersample?: number
+  /** The gap under which two surfaces touch, in the model's units. */
+  tolerance?: number
+}
+
+/**
+ * Where two parts of an assembly touch, and the axis an exploded view draws there (see
+ * `assemblyAxes`), in three's world: `first` and `second` (the parts' indices, `first < second`),
+ * `contact` (the centroid of the contact area in the assembled model), `area`, and `start` and
+ * `end` (`contact` moved by the first part's offset and by the second's).
+ */
+export class AssemblyAxis {
+  readonly first: number
+  readonly second: number
+  readonly contact: THREE.Vector3
+  readonly area: number
+  readonly start: THREE.Vector3
+  readonly end: THREE.Vector3
+
+  constructor(first: number, second: number, contact: THREE.Vector3, area: number, start: THREE.Vector3, end: THREE.Vector3) {
+    this.first = first
+    this.second = second
+    this.contact = contact
+    this.area = area
+    this.start = start
+    this.end = end
+  }
+}
+
+/** The parts where the scene shows them, on the stage and named as their objects, and the offsets
+ * turned onto the stage too. */
+function exploded(parts: Body | Iterable<Body>, offsets: ExplodedOffsets, fn: string): [unknown[], unknown] {
+  const list = isObject3D(parts) ? [parts] : [...(parts as Iterable<Body>)]
+  for (const p of list) if (!(p instanceof Body)) throw new TypeError(`${fn} takes parts, not ${describe(p)}`)
+  const items = list.map((p) => call(() => (staged(p) as sm.Part).named(p.name || null)))
+  const turned = (v: THREE.Vector3Like) => stagedVec(v)
+  let offs: unknown
+  if (offsets instanceof Map) {
+    offs = new Map([...offsets].map(([key, v]) => [typeof key === 'string' ? key : (items[list.indexOf(key as Body)] ?? key), turned(v)]))
+  } else if (Array.isArray(offsets)) offs = offsets.map(turned)
+  else if (offsets !== null && typeof offsets === 'object') offs = Object.fromEntries(Object.entries(offsets).map(([k, v]) => [k, turned(v as THREE.Vector3Like)]))
+  else offs = offsets
+  return [items, offs]
+}
+
+/** A kernel point of the stage as three's. */
+function unstaged(v: sm.Vector): THREE.Vector3 {
+  return new THREE.Vector3(v.x, v.y, v.z).applyMatrix4(UNSTAGE)
+}
+
+/**
+ * The assembly axes of an exploded view: one for every two parts that touch in the assembled
+ * scene and move by different offsets, from the centroid of where they touch moved by the one's
+ * offset to the same point moved by the other's. Parts that move together get none.
+ *
+ * Throws a RangeError for fewer than two parts, an offset list of another length than the parts,
+ * a name no part has, or a part that touches no other one (the parts are given assembled).
+ */
+export function assemblyAxes(parts: Body | Iterable<Body>, offsets: ExplodedOffsets, options: { tolerance?: number } = {}): AssemblyAxis[] {
+  const [items, offs] = exploded(parts, offsets, 'assemblyAxes')
+  const axes = call(() => sm.assemblyAxes(items as sm.Part[], offs as sm.ExplodedOffsets, options))
+  return axes.map((a) => new AssemblyAxis(a.first, a.second, unstaged(a.contact), a.area, unstaged(a.start), unstaged(a.end)))
+}
+
+/**
+ * An exploded view of an assembly as a PNG: each part moved by its offset (in three's world) and
+ * rendered as `render` does, the assembly axes (`assemblyAxes`) dashed, a numbered balloon on
+ * each part that shows and a parts list (number, the objects' name, how many) beside the
+ * picture. Drawn in software, with no browser.
+ */
+export function renderExploded(parts: Body | Iterable<Body>, offsets: ExplodedOffsets, options: RenderExplodedOptions = {}): Picture {
+  const [items, offs] = exploded(parts, offsets, 'renderExploded')
+  const o: Record<string, unknown> = { ...options }
+  if (options.view !== undefined) o.view = view(options.view)
+  if (options.background != null) o.background = hex(options.background)
+  return pictureOf(call(() => sm.renderExploded(items as sm.Part[], offs as sm.ExplodedOffsets, o as sm.RenderExplodedOptions)))
+}
+
 function image(x: Picture | ImageLike | Uint8Array | ArrayBuffer): ImageLike | Uint8Array | ArrayBuffer {
   if (x instanceof Picture) return { width: x.width, height: x.height, data: x.pixels }
   if (x instanceof Uint8Array || x instanceof ArrayBuffer) return x

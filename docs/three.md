@@ -197,7 +197,7 @@ The package follows smlibpy's rules for the API, as smlibwasm does:
 - What stays a method: selections and topology (`faces()`, `top()`), measuring and checking
   (`bbox`, `classify`, `check`), placing (three's transforms, `at`, `on`), representations (`toMesh`,
   `toNurbs`). What stays a function: what makes a shape of several (`loft`, `blend`, `network`,
-  `fitCurve`), files (loaders and exporters), pictures (`render`).
+  `fitCurve`), files (loaders and exporters), pictures (`render`, `renderExploded`).
 - **Parameters are named in full** (`tolerance`, `angleTolerance`), **choices are typed**
   (`corners: 'round' | 'sharp'`), and every export has a doc comment (the
   [three.js API](api/three.md) shows them).

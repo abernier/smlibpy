@@ -225,11 +225,16 @@ export {
 } from './sheetmetal.ts'
 export { TriangleMesh, tessellate, type DecimateOptions, type MeshHit, type RepairReport, type TessellateOptions } from './mesh.ts'
 export {
+  AssemblyAxis,
   ImageDiff,
   Picture,
   VIEWS,
+  assemblyAxes,
   diffImages,
   render,
+  renderExploded,
+  type ExplodedOffsets,
+  type RenderExplodedOptions,
   type Frame,
   type ImageLike,
   type RenderMarker,
