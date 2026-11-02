@@ -17,6 +17,7 @@ import {
   type MachiningSetup,
   type Part,
   Plane,
+  Polygon,
   Pos,
   Rectangle,
   Rot,
@@ -235,6 +236,45 @@ test('a shaped edge is reported apart from the pockets', () => {
     [['not a prism along the tool', 1]],
   ) // the chamfer
 })
+
+/** A 200 x 100 x 19 board with three dovetail sockets through its far end, cut along a direction
+ * that leans `lean` degrees from z in the y-z plane (as tails along a leaning back are): their
+ * floors lean `lean` from the tool, their cheeks (1 in 3) asin(sin(lean) / sqrt(10)). */
+function sockets(lean: number): Part {
+  let board = Box(200, 100, 19, MIN)
+  const a = (lean * Math.PI) / 180
+  const plane = new Plane([0, 90, -5], [1, 0, 0], [0, Math.sin(a), Math.cos(a)])
+  for (const x0 of [20, 80, 140]) {
+    board = board.cut(plane.mul(Polygon([x0, 0], [x0 + 30, 0], [x0 + 25, 15], [x0 + 5, 15])).extrude(40))
+  }
+  return board
+}
+
+for (const lean of [2.0, 8.0]) {
+  test(`walls leaning a little from the tool give the exact outline (${lean} degrees)`, () => {
+    // Fused one by one into the sections (taken 0.01 below the top), the shadows of the floors left
+    // a notch eps * tan(lean) long against the cheeks' sections: at 8 degrees the kernel failed
+    // ("extrude failed"), at 2 the planar Boolean found faces touching at a point.
+    const a = (lean * Math.PI) / 180
+    const [t, delta, end] = [19.0, 19.0 * Math.tan(a), 10 - 5 * Math.tan(a)]
+    // what no height of the board keeps of one socket: the socket at z = 0 and at z = 19, overlapping
+    // between delta and the board's end, its width 30 - 2/3 of its depth into the trapezoid
+    const gap = 30 * (end - delta) - (Math.cos(a) / 3) * (end ** 2 - delta ** 2)
+    const round3 = (v: number) => Math.round(v * 1000) / 1000
+    for (const setup of [machiningSetup(sockets(lean), [0, 0, 1], { xDir: [1, 0, 0] }), machiningSetup(sockets(lean))]) {
+      approx(setup.thickness, t)
+      const areas = byName(setup)
+      assert.deepEqual(Object.keys(areas), ['OUTLINE'])
+      approx(areas.OUTLINE, 200 * 100 - 3 * gap) // 19482.106 at 8 degrees
+      assert.equal(setup.elsewhere.length, 1)
+      const [why, direction, faces] = setup.elsewhere[0]
+      assert.deepEqual([why, direction, faces.length], ['not a prism along the tool', null, 9]) // 3 floors, 6 cheeks
+      const leans = faces.map((f) => round3((Math.asin(Math.abs(f.normalAt().z)) * 180) / Math.PI)).sort((x, y) => x - y)
+      const cheek = round3((Math.asin(Math.sin(a) / Math.sqrt(10)) * 180) / Math.PI) // 2.522 at 8 degrees
+      assert.deepEqual(leans, [...Array(6).fill(cheek), ...Array(3).fill(lean)])
+    }
+  })
+}
 
 test('the svg of a curved part is the size of the part', () => {
   const r = 1000.0

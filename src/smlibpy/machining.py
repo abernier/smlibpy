@@ -237,10 +237,21 @@ def _footprint(laid: Any, thickness: float, tol: float) -> Any:
             footprint = _fused(footprint, _slice(laid, z, eps))
         except ValueError:
             continue  # (the plane misses the part: a section between separate lumps)
+    # The shadows are fused with each other first, then with the sections. The sections stop eps
+    # short of the top and the bottom, so where a face leans from the tool they fall short of its
+    # edge by eps * tan(lean). Fused one by one into the sections, the shadow of one leaning face
+    # meets the section of a neighbour that leans too, and leaves a notch that small: on dovetail
+    # tails along a back leaning 8 degrees (ends leaning 8 degrees, cheeks 1.3), a notch 1.4 um by
+    # 0.23 um, on which the next planar Boolean failed in the kernel ("extrude failed") or found
+    # faces touching at a point. Neighbouring shadows share their edges exactly, and their union
+    # covers the sections' short edges, so no notch is left.
+    shadows: Sketch | None = None
     for f in laid.faces():
         if f.is_planar and not (_horizontal(f) or _vertical(f)):
             shadow = f.to_sketch().extrude(3 * thickness, direction=(0, 0, -1)).translate(0, 0, thickness)
-            footprint = _fused(footprint, _slice(shadow, thickness / 2))
+            shadows = _fused(shadows, _slice(shadow, thickness / 2))
+    if shadows is not None:
+        footprint = shadows if footprint is None else shadows + footprint
     if footprint is None:
         raise ValueError("machining_setup: the part has no section across the tool")
     return footprint
