@@ -1,5 +1,5 @@
 """The zigzag chair's machining files, read back: every part lies inside its outline, the tails and the grip are the
-model's, and what machining_setup leaves or refuses is what the README says.
+model's, and what machining_setup leaves is what the README says.
 
 The files are made once (without the drawings, which `test_machining` covers) and read with `import_dxf`; the
 volumes and sizes are the model's own.
@@ -40,17 +40,12 @@ def test_every_part_is_in_the_cut_list_once(files):
     assert boards == {"seat": 2, "back": 2, "slant": 2, "base": 2, "seat cleat": 1, "foot cleat": 1}
 
 
-def test_what_machining_setup_leaves_and_refuses(files):
+def test_what_machining_setup_leaves(files):
     module, _out, written = files
-    # On its face, the seat with its tails is refused, either way up; its blank is laid instead.
-    assert [(key, what.split(",")[0]) for key, what, _ in written["refused"]] == [
-        ("seat", "main face"),
-        ("seat", "the other face"),
-    ]
     flagged = sorted((key, setup, why.split(" (")[0]) for key, setup, why, _, _ in written["flagged"])
     assert flagged == sorted(
         [
-            ("seat", "`seat.dxf`", "not a prism along the tool"),  # the nose's mitre and the 8 degree rear end
+            ("seat", "`seat.dxf`", "not a prism along the tool"),  # the tails' cheeks and ends, the nose's mitre
             ("seat", "`seat_tails.dxf`", "not a prism along the tool"),  # the seat's faces, tilted
             ("back", "`back.dxf`", "not a prism along the tool"),  # the pins
             ("back", "(no DXF)", "not a prism along the tool"),  # on end: the pins' floors lean
@@ -62,9 +57,14 @@ def test_what_machining_setup_leaves_and_refuses(files):
             ("foot_cleat", "`foot_cleat.dxf`", "not a prism along the tool"),
         ]
     )
-    leans = {(key, setup): lean for key, setup, _, lean, _ in written["flagged"]}
-    assert leans[("slant", "`slant.dxf`")] == f"{90 - module.MITRE_ANGLE:g}"  # 22.5 degrees to the board's face
-    assert leans[("base", "`base.dxf`")] == f"{module.chair.BEVEL_ANGLE:.1f}, {90 - module.MITRE_ANGLE:g}"
+    leans = {(key, setup): [float(v) for v in lean.split(", ")] for key, setup, _, lean, _ in written["flagged"]}
+    assert leans[("slant", "`slant.dxf`")] == [90 - module.MITRE_ANGLE]  # 22.5 degrees to the board's face
+    assert leans[("base", "`base.dxf`")] == approx([module.chair.BEVEL_ANGLE, 90 - module.MITRE_ANGLE], abs=0.02)
+    # On its face, the tails' 25 faces and the nose's mitre are one feature: the tails' cheeks lean 1.311 degrees,
+    # their ends the back's 8, the mitre 67.5.
+    seat = next(kind for key, setup, kind, _, _ in written["flagged"] if setup == "`seat.dxf`")
+    assert seat == "not a prism along the tool (1 feature, 26 faces)"
+    assert leans[("seat", "`seat.dxf`")] == [1.311, module.chair.BACK_LEAN, 90 - module.MITRE_ANGLE]
 
 
 def test_every_part_lies_inside_its_outline(files):
@@ -80,10 +80,9 @@ def test_every_part_lies_inside_its_outline(files):
         assert (laid & prism).volume == approx(laid.volume, rel=1e-6), r["key"]
         assert outline.bbox().size.x == approx(laid.bbox().size.x, rel=1e-9)
         assert outline.bbox().size.y == approx(laid.bbox().size.y, rel=1e-9)
-    # The seat's main setup is its blank: the seat, and the back's sockets between its tails.
+    # The seat is laid on its face with its tails: the OUTLINE is their widest extent, the board's sides and nose.
     seat = next(r for r in written["records"] if r["key"] == "seat")
-    assert seat["laid"].volume > seat["part"].volume
-    assert (seat["laid"] & seat["part"]).volume == approx(seat["part"].volume, rel=1e-6)
+    assert seat["main"].layer("OUTLINE").area == approx(152462.445, abs=1e-3)
 
 
 def test_the_tails_and_the_grip_are_the_models(files):

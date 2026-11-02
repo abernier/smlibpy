@@ -171,6 +171,39 @@ def test_a_shaped_edge_is_reported_apart_from_the_pockets():
     ]  # the chamfer
 
 
+def sockets(lean: float) -> Part:
+    """A 200 x 100 x 19 board with three dovetail sockets through its far end, cut along a direction
+    that leans ``lean`` degrees from z in the y-z plane (as tails along a leaning back are): their
+    floors lean ``lean`` from the tool, their cheeks (1 in 3) asin(sin(lean) / sqrt(10))."""
+    board = Box(200, 100, 19, align=MIN)
+    a = math.radians(lean)
+    plane = Plane((0, 90, -5), x_dir=(1, 0, 0), z_dir=(0, math.sin(a), math.cos(a)))
+    for x0 in (20, 80, 140):
+        board -= (plane * Polygon((x0, 0), (x0 + 30, 0), (x0 + 25, 15), (x0 + 5, 15))).extrude(40)
+    return board
+
+
+@pytest.mark.parametrize("lean", [2.0, 8.0])
+def test_walls_leaning_a_little_from_the_tool_give_the_exact_outline(lean):
+    # Fused one by one into the sections (taken 0.01 below the top), the shadows of the floors left
+    # a notch eps * tan(lean) long against the cheeks' sections: at 8 degrees the kernel failed
+    # ("extrude failed"), at 2 the planar Boolean found faces touching at a point.
+    a = math.radians(lean)
+    t, delta, end = 19.0, 19.0 * math.tan(a), 10 - 5 * math.tan(a)
+    # what no height of the board keeps of one socket: the socket at z = 0 and at z = 19, overlapping
+    # between delta and the board's end, its width 30 - 2/3 of its depth into the trapezoid
+    gap = 30 * (end - delta) - math.cos(a) / 3 * (end**2 - delta**2)
+    for x_dir in ((1, 0, 0), None):
+        setup = machining_setup(sockets(lean), x_dir=x_dir)
+        assert setup.thickness == approx(t)
+        assert by_name(setup) == {"OUTLINE": approx(200 * 100 - 3 * gap)}  # 19482.106 at 8 degrees
+        ((why, direction, faces),) = setup.elsewhere
+        assert (why, direction, len(faces)) == ("not a prism along the tool", None, 9)  # 3 floors, 6 cheeks
+        leans = sorted(round(math.degrees(math.asin(abs(f.normal_at().z))), 3) for f in faces)
+        cheek = round(math.degrees(math.asin(math.sin(a) / math.sqrt(10))), 3)  # 2.522 at 8 degrees
+        assert leans == [cheek] * 6 + [lean] * 3
+
+
 def test_the_svg_of_a_curved_part_is_the_size_of_the_part():
     r, a = 1000.0, 200.0
     band = (Circle(r + 15) - Circle(r - 15)).translate(0, -r, 0)
