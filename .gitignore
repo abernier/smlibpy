@@ -31,5 +31,7 @@ fuzz-asan-out/
 .github/constraints.txt
 .github/build-constraints.txt
 
+# examples/zigzag_chair_machining.py output, when run from the repository
+zigzag_chair_machining/
 # examples/zigzag_chair_exploded.py output, when run from the repository
 zigzag_chair_exploded/
