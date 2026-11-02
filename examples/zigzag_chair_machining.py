@@ -4,8 +4,8 @@
 
 Everything is read off `zigzag_chair.py`'s model and constants, nothing is retyped. `machining_setup` lays each
 part on a 3-axis router and sorts its features into DXF layers: OUTLINE, THROUGH, POCKET_D<depth>, LABEL. What it
-cannot cut (the mitres, the base's planed sides, the dovetail pins, the cleats' long face) and what it refuses (the
-seat on its face) are listed with how they are made instead: a tilted saw blade, a tilted fixture, hand work.
+cannot cut along the tool (the mitres, the base's planed sides, the dovetails on the seat's face, the pins, the
+cleats' long face) is listed with how it is made instead: a tilted saw blade, a tilted fixture, hand work.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ def fmt(v: float) -> str:
 
 def fmt2(v: float) -> str:
     return f"{v:.2f}".rstrip("0").rstrip(".")
+
+
+def fmt3(v: float) -> str:
+    return f"{v:.3f}".rstrip("0").rstrip(".")
 
 
 NOTES = {  # what is on each part, in words (the sizes are in the README's tables)
@@ -88,13 +92,6 @@ def grain(normal: Vector) -> Vector:
     return Vector(1, 0, 0).cross(normal).normalized()
 
 
-def seat_blank() -> Part:
-    """The seat before its tails are cut: the board run on to the back's rear face, between the seat's sides."""
-    top, bottom = chair.SEAT_TOP, chair.SEAT_BOTTOM
-    profile = [chair.NOSE, (chair.rear(top), top), (chair.rear(bottom), bottom), chair.SEAT_INNER]
-    return (chair.side_prism(profile) & chair.SEAT_SIDES).named("seat")
-
-
 # Each part's main setup: the face the tool comes from (the board's outer face, away from its cleat; the back's rear
 # face, which has the grip; a cleat on the leg glued to its board) and the drawing's x (the grain).
 FACES = {
@@ -113,7 +110,7 @@ def leans(setup: MachiningSetup, faces) -> list[float]:
     for f in faces:
         if f.is_planar:
             n = f.normal_at()
-            out.add(round(abs(90.0 - math.degrees(math.acos(min(1.0, abs(n.z))))), 1))
+            out.add(round(abs(90.0 - math.degrees(math.acos(min(1.0, abs(n.z))))), 3))
     return sorted(out)
 
 
@@ -131,30 +128,16 @@ def tails_layer(setup: MachiningSetup) -> Sketch:
 
 
 def setups_of(key: str, part: Part) -> dict:
-    """The setups of one part, and what machining_setup refused for it."""
+    """The setups of one part: its main face, and the seat's tilted setup and the back on end."""
     name = part.name
     d = FACES[name]
     x_dir = (1, 0, 0) if name in SAWN else grain(d)
-    refused = []
-    main, laid = None, part
-    for towards, face in ((d, "main face"), (-d, "the other face")):
-        try:
-            main = machining_setup(part, towards, x_dir=x_dir, label=name.upper())
-            d = towards
-            break
-        except (ModelingError, KernelError) as error:
-            # The seat with its tails: their faces lean two ways at once (along the back, and 1 in 6), and the
-            # kernel fails on their shadows. It is said so in the README, and the seat's blank is laid instead.
-            refused.append(
-                (key, f"{face}, tool from {describe_direction(towards)}", f"{type(error).__name__}: {error}")
-            )
-    if main is None:
-        laid = seat_blank()
-        main = machining_setup(laid, d, x_dir=x_dir, label=name.upper())
-    setups = [("", main, d, "main face" if laid is part else "main face, the blank before its tails are cut")]
+    main = machining_setup(part, d, x_dir=x_dir, label=name.upper())
+    setups = [("", main, d, "main face")]
     if name == "seat":
-        # The tails are prisms along the back: with the seat on a wedge of the back's lean, the tool comes along the
-        # back, and every face of the joint is a wall it follows.
+        # On its face, the tails' cheeks and ends lean from the tool (machining_setup lists them): the OUTLINE is
+        # their widest extent. They are prisms along the back: with the seat on a wedge of the back's lean, the tool
+        # comes along the back, and every face of the joint is a wall it follows.
         up = Vector(*chair.UP)
         tilted = machining_setup(part, up, x_dir=(1, 0, 0), label="SEAT TAILS")
         layers = [*tilted.layers[:1], tails_layer(tilted), *tilted.layers[1:]]
@@ -166,7 +149,7 @@ def setups_of(key: str, part: Part) -> dict:
         down = -Vector(*chair.UP)
         on_end = machining_setup(part, down, x_dir=(1, 0, 0))
         setups.append(("_end", on_end, down, "on its top edge, the tool into the lower end"))
-    return {"key": key, "part": part, "laid": laid, "main": main, "setups": setups, "refused": refused}
+    return {"key": key, "part": part, "main": main, "setups": setups}
 
 
 def describe_direction(d: Vector) -> str:
@@ -430,14 +413,14 @@ def setup_tables(records: list[dict]) -> tuple[list[str], list[tuple[str, str, s
                 for faces in features[1:]:
                     b = b.union(faces.bbox())
                 where = ", ".join(f"{a} {fmt(lo)} … {fmt(hi)}" for a, lo, hi in zip("xyz", b.min, b.max))
-                lean = ", ".join(fmt(v) for v in sorted({x for f in features for x in leans(setup, f)})) or "curved"
+                lean = ", ".join(fmt3(v) for v in sorted({x for f in features for x in leans(setup, f)})) or "curved"
                 count = sum(len(f) for f in features)
                 kind = f"{why} ({len(features)} feature{'s' * (len(features) > 1)}, {count} faces)"
                 flagged.append((r["key"], name, kind, lean, where))
     return lines, flagged
 
 
-def readme(parts, rows, nests, tables, flagged, refused, finished, rough) -> str:
+def readme(parts, rows, nests, tables, flagged, finished, rough) -> str:
     """The README: how to read the files, the stock, the setups and the joints that need a word, the order of
     assembly, then the tables. Every number is the model's or one of this file's assumptions."""
     box = parts[0].bbox()
@@ -449,7 +432,11 @@ def readme(parts, rows, nests, tables, flagged, refused, finished, rough) -> str
     pl, pw = (fmt(v) for v in PLANK)
     wide = [r["part"] for r in rows if r["boards"] > 1]
     grip_r = chair.GRIP_HIGH / 2
-    tilt_t = by_name["seat"]["records"][0]["setups"][1][1].thickness
+    seat = by_name["seat"]["records"][0]
+    tilt_t = seat["setups"][1][1].thickness
+    seat_t = seat["main"].thickness
+    cheek = min(x for _, _, faces in seat["main"].elsewhere for x in leans(seat["main"], faces))
+    seat_outline = seat["main"].layer("OUTLINE").area
     text = (
         f"""# Zigzag chair — machining files
 
@@ -531,14 +518,17 @@ how each of those is made.
 - **The dovetails.** The seat carries {chair.TAILS} tails, the back the pins; the back leans {fmt(chair.BACK_LEAN)}
   degrees, so the tails are prisms along the back's faces, not square to the seat, and their walls also flare 1 in
   {fmt(1 / chair.SLOPE)} ({fmt(DOVETAIL)} degrees) across the back's thickness.
-  - On its face, `machining_setup` refuses the seat, either face up (below: the kernel fails on the shadows of
-    the tails' leaning faces). `seat.dxf` is the seat's blank instead, the board run on to the back's rear face: the
-    router cuts its tapered sides; the nose is mitred on the saw.
-  - `seat_tails.dxf`: the seat on a wedge of {fmt(chair.BACK_LEAN)} degrees, nose down, the tool along the back
-    (T = {fmt(tilt_t)}, the seat's extent along it). There every face of the joint is a wall the tool follows: the
-    tails' sides, their ends on the back's rear face, the shoulders between them on its front face. Cut through
-    along `TAILS`; square the inside corners at the shoulders with a chisel. Without a wedge fixture, saw the tails
-    by hand to the same lines.
+  - `seat.dxf`: the seat on its face, its OUTLINE {fmt3(seat_outline)} mm². The tails' faces are not walls the
+    tool follows there: their cheeks lean {fmt3(cheek)} degrees from it, {fmt2(seat_t * math.tan(math.radians(cheek)))} mm
+    over the thickness, and their ends {fmt(chair.BACK_LEAN)} degrees,
+    {fmt2(seat_t * math.tan(math.radians(chair.BACK_LEAN)))} mm; `machining_setup` lists them with the nose's mitre.
+    The OUTLINE is their widest extent: the router cuts the seat's tapered sides and roughs the tails to it, leaving
+    at most that much to take off; the nose is mitred on the saw.
+  - `seat_tails.dxf`, kept for that: the seat on a wedge of {fmt(chair.BACK_LEAN)} degrees, nose down, the tool
+    along the back (T = {fmt(tilt_t)}, the seat's extent along it). It is the one setup where the tails are cut to
+    size: every face of the joint is a wall the tool follows, the tails' sides, their ends on the back's rear face,
+    the shoulders between them on its front face. Cut through along `TAILS`; square the inside corners at the
+    shoulders with a chisel. Without a wedge fixture, saw the tails by hand to the same lines.
   - The pins (the back's sockets) lean both ways in every setup: on the rear face their walls flare
     {fmt(DOVETAIL)} degrees across the thickness and their floor, the seat's top, leans {fmt(chair.BACK_LEAN)}
     degrees; on end (the tool along the back) the floor still leans, and `machining_setup` finds no pocket. Rough
@@ -608,9 +598,6 @@ Every part, its setups and what each setup cuts. x, y are the DXF's axes (mm), z
     )
     text += "| Part | Setup | Why | Leans (degrees) | Where |\n|---|---|---|---|---|\n"
     text += "".join(f"| {k} | {f} | {w} | {lean} | {where} |\n" for k, f, w, lean, where in flagged)
-    text += "\n## Refused\n\n"
-    text += "| Part | Setup | What machining_setup raised |\n|---|---|---|\n"
-    text += "".join(f"| {k} | {what} | {msg} |\n" for k, what, msg in refused)
     text += (
         f"\n## Nests\n\nPlanks of {pl} × {pw} mm, blanks with their grain along the plank, {fmt(KERF)} mm apart; a "
         "panel's boards are named `<part>_a`, `_b`.\n\n"
@@ -629,8 +616,8 @@ Every part, its setups and what each setup cuts. x, y are the DXF's axes (mm), z
 
 def machining_files(out: str | Path, parts: list[Part] | None = None, *, pictures: bool = True) -> dict:
     """Write the machining files of the chair into `out`; `pictures=False` leaves out the drawings and the shaded
-    view. Returns what was written: the cut list's rows, the DXF names, the nests, the flagged features and what
-    machining_setup refused."""
+    view. Returns what was written: the cut list's rows, the DXF names, the nests, the flagged features and the
+    setups."""
     out = Path(out)
     parts = model() if parts is None else parts
     for sub in ("dxf", "step", "drawings", "nests"):
@@ -661,16 +648,15 @@ def machining_files(out: str | Path, parts: list[Part] | None = None, *, picture
         render(parts, path=out / "drawings" / "assembly_iso.png", size=(1600, 1200))
     nests = write_nests(rows, out)
     tables, flagged = setup_tables(records)
-    refused = [x for r in records for x in r["refused"]]
-    text = readme(parts, rows, nests, tables, flagged, refused, finished, rough)
+    text = readme(parts, rows, nests, tables, flagged, finished, rough)
     (out / "README.md").write_text(text, encoding="utf-8")
-    return {"rows": rows, "dxf": dxf, "nests": nests, "flagged": flagged, "refused": refused, "records": records}
+    return {"rows": rows, "dxf": dxf, "nests": nests, "flagged": flagged, "records": records}
 
 
 if __name__ == "__main__":
     written = machining_files(sys.argv[1] if len(sys.argv) > 1 else "zigzag_chair_machining")
     print(
         f"{sum(r['qty'] for r in written['rows'])} parts, {len(written['dxf'])} DXF setups, "
-        f"{len(written['flagged'])} features flagged, {len(written['refused'])} refused, "
+        f"{len(written['flagged'])} features flagged, "
         f"nests: {[(s, n) for s, n, _, _ in written['nests']]}"
     )
