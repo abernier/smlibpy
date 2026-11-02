@@ -605,6 +605,9 @@ and the bottom of its hole: z = 11.43), moved with the one part, to the same poi
 the other. `assembly_axes` gives them as numbers. A part that touches nothing is refused, and so
 is an `order` that misses a name. The picture is drawn by the library alone, in its own
 capitals, like the other pictures.
+[`examples/zigzag_chair_exploded.py`](https://github.com/awv-informatik/smlibpy/tree/main/examples)
+takes a whole chair apart this way: six parts moved along the way each goes in at glue-up,
+numbered in that order, the 7 axes found from its joints.
 
 ## Viewer
 
