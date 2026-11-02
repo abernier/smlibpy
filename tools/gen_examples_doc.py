@@ -4,7 +4,7 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-ORDER = ["bracket", "flange", "enclosure", "pipe", "spring", "bottle", "gear"]
+ORDER = ["bracket", "flange", "enclosure", "pipe", "spring", "bottle", "gear", "zigzag_chair"]
 
 
 def main() -> None:
