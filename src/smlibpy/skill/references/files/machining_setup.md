@@ -34,7 +34,12 @@ A `MachiningSetup`, a named tuple:
 ## Gotchas
 - The footprint is the union of the part's sections between its horizontal faces and the shadows
   of its sloping planar faces: exact for anything cut from flat stock; a curved face seen on its
-  side (a round-over) is drawn by its sections.
+  side (a round-over) is drawn by its sections. Walls that lean a little from the tool, side by
+  side, are exact too: a 200 x 100 x 19 board with three dovetail sockets cut through its end along
+  a direction 8 degrees from the tool (floors leaning 8 degrees, cheeks 2.5) has an `OUTLINE` of
+  19482.106 mm2, its closed form, and the sockets' 9 faces come back as one `"not a prism along the
+  tool"` entry: cut them with the part laid along that direction (`direction=`: the sockets then
+  run along the tool, on the outline, and the board's faces lean instead), or by hand.
 - A pocket is written at each floor it has (a stepped pocket on several layers), its contour the
   floor's outline with the islands that rise from it; a pocket open to the side (a rabbet, a tenon
   cheek) has its contour on the outline. The depth is from the top face (z = `thickness`), also where
