@@ -72,9 +72,10 @@ FOOT_CLEAT = [BASE_INNER, (BASE_INNER[0] - CLEAT, T), (BASE_INNER[0] - CLEAT, T 
 # narrow at the same rate along their faces, away from the mitre; so one rate for the seat and the slant, measured
 # from the nose (the seat backward, the slant downward). At the foot the slant widens upward, away from the bottom
 # mitre, so a square-edged base would have to widen forward, to 357 at its front: against the drawing and the
-# photographs, where it narrows. The chair is modelled as finished instead: a shop cuts the base square to its
-# widths (330 at the foot, 300 at the front) and glues it up; that leaves a step of about 3 mm a side at the bottom
-# mitre's inner edge (SQUARE_STEP), and the base's sides are planed flush with the slant's. They end up planes that
+# photographs, where it narrows. Cut square from 330 at the foot to 300 at the front, the base would fall short of
+# the slant at the mitre's inner edge by SQUARE_STEP a side, a gap that planing the base cannot close. So the base
+# is cut square to its top face's widths (wider than the slant's at the mitre's inner edge, 300 at the front), glued
+# up, and its sides planed flush with the slant's, taking BEVEL a side off the underside. They end up planes that
 # contain the bottom mitre's shared lines, so the mitre stays exact, but they are no longer square to the base's
 # faces: the top face is wider than the underside by BEVEL a side.
 def along_slant(y: float, z: float) -> float:
@@ -107,7 +108,8 @@ def base_half(y: float, z: float = 0.0) -> float:
 
 BEVEL = BASE_Z * T  # how much wider a side the base's top face is than its underside
 BEVEL_ANGLE = math.degrees(math.atan(BASE_Z))  # its side face to the vertical, across the chair
-# The step a square-edged base, 330 at the foot to 300 at the front, would leave at the mitre's inner edge.
+# How far a square-edged base, 330 at the foot to 300 at the front, would fall short of the slant at the mitre's
+# inner edge.
 SQUARE_STEP = slant_half(*BASE_INNER) - (W_FOOT + (W_BASE_FRONT - W_FOOT) * _DY_INNER / _DY_FRONT) / 2
 
 
