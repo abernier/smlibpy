@@ -205,7 +205,8 @@ def model(module: float = 2.0, teeth: int = 24, width: float = 12.0, bore: float
 
 Zig-zag chair after Rietveld's 1934 Zig-Zag chair, in the proportions of the current production drawing: four
 cherry boards 19 mm thick, the seat, the slant and the base tapered and mitred at 45 degrees, each mitre with a
-glued cleat in its acute angle; the back dovetailed through the seat, a hand grip carved in its rear face.
+glued cleat in its acute angle, the base's sides planed flush with the slant's after glue-up; the back dovetailed
+through the seat, a hand grip carved in its rear face.
 
 ![zigzag_chair](images/zigzag_chair.png)
 
@@ -221,6 +222,7 @@ from smlibpy import *
 # y = -240, so that the 480 of depth is -240..240.
 T = 19.0  # every board's thickness
 W_NOSE, W_FOOT = 370.0, 330.0  # the width at the nose (the drawing's 37 cm) and at the slant's rear bottom corner
+W_BASE_FRONT = 300.0  # the base's top face at its front edge: the base narrows forward, as the drawing and photos show
 SEAT_TOP, HEIGHT, DEPTH = 430.0, 740.0, 480.0  # the seat's top; the back's rear top corner: its height, behind the nose
 Y_NOSE = -DEPTH / 2
 SLANT, BACK_LEAN = 45.0, 8.0  # the slant to the floor; the back's lean from the vertical
@@ -275,9 +277,14 @@ FOOT_CLEAT = [BASE_INNER, (BASE_INNER[0] - CLEAT, T), (BASE_INNER[0] - CLEAT, T 
 
 
 # The widths. Two boards that share a mitre and have planar sides square to their own faces meet flush only if they
-# narrow at the same rate along their faces, away from the mitre; so one rate for the seat, the slant and the base.
-# Measured along each board from the nose (the seat backward, the slant downward), both narrow; at the foot the
-# slant widens upward, away from the bottom mitre, so the base widens forward, away from it, at the same rate.
+# narrow at the same rate along their faces, away from the mitre; so one rate for the seat and the slant, measured
+# from the nose (the seat backward, the slant downward). At the foot the slant widens upward, away from the bottom
+# mitre, so a square-edged base would have to widen forward, to 357 at its front: against the drawing and the
+# photographs, where it narrows. The chair is modelled as finished instead: a shop cuts the base square to its
+# widths (330 at the foot, 300 at the front) and glues it up; that leaves a step of about 3 mm a side at the bottom
+# mitre's inner edge (SQUARE_STEP), and the base's sides are planed flush with the slant's. They end up planes that
+# contain the bottom mitre's shared lines, so the mitre stays exact, but they are no longer square to the base's
+# faces: the top face is wider than the underside by BEVEL a side.
 def along_slant(y: float, z: float) -> float:
     """Distance from the nose along the slant, downward."""
     return ((y - Y_NOSE) - (z - SEAT_TOP)) / S2
@@ -294,8 +301,22 @@ def slant_half(y: float, z: float) -> float:
     return W_NOSE / 2 - RATE * along_slant(y, z)
 
 
+# The base's side: x = W_FOOT / 2 + BASE_Y (y - FOOT_y) + BASE_Z z, through the foot (its mitre's outer corner),
+# through the mitre's inner corner at the slant's width there, and W_BASE_FRONT wide on the top face's front edge.
+_DY_INNER, _DY_FRONT = BASE_INNER[0] - FOOT[0], BASE_FRONT - FOOT[0]
+_AT_INNER, _AT_FRONT = slant_half(*BASE_INNER) - W_FOOT / 2, W_BASE_FRONT / 2 - W_FOOT / 2
+BASE_Y = (_AT_INNER - _AT_FRONT) / (_DY_INNER - _DY_FRONT)
+BASE_Z = (_AT_INNER - BASE_Y * _DY_INNER) / T
+
+
 def base_half(y: float, z: float = 0.0) -> float:
-    return W_FOOT / 2 + RATE * (FOOT[0] - y)
+    return W_FOOT / 2 + BASE_Y * (y - FOOT[0]) + BASE_Z * z
+
+
+BEVEL = BASE_Z * T  # how much wider a side the base's top face is than its underside
+BEVEL_ANGLE = math.degrees(math.atan(BASE_Z))  # its side face to the vertical, across the chair
+# The step a square-edged base, 330 at the foot to 300 at the front, would leave at the mitre's inner edge.
+SQUARE_STEP = slant_half(*BASE_INNER) - (W_FOOT + (W_BASE_FRONT - W_FOOT) * _DY_INNER / _DY_FRONT) / 2
 
 
 # The back is not tapered: as wide as the seat at its front face, at the seat's mid-thickness. Its edges are the
@@ -321,9 +342,18 @@ def sides(plane: Plane, half) -> Part:
     return outline.on(plane.offset(-BIG / 2)).extrude(BIG)
 
 
-# The seat's and the base's sides are vertical; the slant's contain its normal (0, 1, 1).
+def base_sides() -> Part:
+    """The body between the base's two planed sides, which lean in toward the floor."""
+    body = Box(BIG, BIG, BIG)
+    for side in (1, -1):
+        plane = Plane((side * W_FOOT / 2, FOOT[0], 0), None, (side, -BASE_Y, -BASE_Z))
+        body = body.split(plane, keep="below")
+    return body
+
+
+# The seat's sides are vertical; the slant's contain its normal (0, 1, 1).
 SEAT_SIDES = sides(Plane((0, Y_NOSE, 0), (1, 0, 0), (0, 0, 1)), lambda s: seat_half(Y_NOSE + s))
-BASE_SIDES = sides(Plane((0, Y_NOSE, 0), (1, 0, 0), (0, 0, 1)), lambda s: base_half(Y_NOSE + s))
+BASE_SIDES = base_sides()
 SLANT_SIDES = sides(Plane((0, *NOSE), (1, 0, 0), (0, 1, 1)), lambda s: W_NOSE / 2 - RATE * s)
 
 
@@ -395,8 +425,10 @@ def centroid(polygon: list[tuple[float, float]]) -> tuple[float, float]:
 
 
 def tapered(polygon: list[tuple[float, float]], half) -> float:
-    """A side-view profile between side planes whose half-width is linear over the profile: the volume is the area
-    times the width at the centroid, exact (Cavalieri, slice by slice across the profile)."""
+    """A side-view profile P between two side planes x = +-h(y, z), h linear in y and z (the seat's and the base's
+    vertical sides, the slant's square to its faces, the base's planed sides alike): the volume is
+    integral over P of 2 h(y, z) dA = 2 h(centroid) area(P), since a linear function's mean over P is its value at
+    the centroid. Exact, with the area by the shoelace formula and the centroid from the same cross products."""
     return area(polygon) * 2 * half(*centroid(polygon))
 
 
@@ -505,6 +537,17 @@ def check(parts: list[Part]) -> None:
     size = whole.bbox().size
     assert abs(size.x - W_NOSE) < 1e-6 and abs(size.y - DEPTH) < 1e-6 and abs(size.z - HEIGHT) < 5, size
     assert BACK_STEP < 0.05, BACK_STEP
+    # The base as built: its top face's front edge 300 wide, the underside narrower by the bevel, measured on it.
+    base_box = by_name["base"].bbox()
+    front_edges = {
+        z: max(v.x for v in by_name["base"].vertices() if abs(v.y - BASE_FRONT) < 1e-6 and abs(v.z - z) < 1e-6)
+        for z in (0.0, T)
+    }
+    assert abs(2 * front_edges[T] - W_BASE_FRONT) < 1e-6, front_edges
+    measured_bevel = base_half(FOOT[0], T) - base_half(FOOT[0], 0.0)
+    assert abs(front_edges[T] - front_edges[0.0] - BEVEL) < 1e-6 and abs(measured_bevel - BEVEL) < 1e-9
+    assert 2.5 < BEVEL < 4.5 and 7 < BEVEL_ANGLE < 12, (BEVEL, BEVEL_ANGLE)
+    assert abs(base_box.size.x - 2 * base_half(*BASE_INNER)) < 1e-6  # widest at the mitre's inner corner
     assembly_order(by_name)
     mass = sum(p.mass_properties(density=CHERRY).mass for p in parts)
     print(f"{len(parts)} parts, {size} mm over all, cherry {mass / 1000:.2f} kg")
@@ -514,8 +557,12 @@ def check(parts: list[Part]) -> None:
     )
     print(
         f"widths: {W_NOSE:.1f} at the nose, {2 * seat_half(front(SEAT_TOP)):.1f} at the back, back {W_BACK:.2f},"
-        f" {W_FOOT:.1f} at the foot, base front {2 * base_half(BASE_FRONT):.1f}; taper {RATE:.5f} a side;"
-        f" step at the back's edges {BACK_STEP:.3f}"
+        f" {W_FOOT:.1f} at the foot; taper {RATE:.5f} a side; step at the back's edges {BACK_STEP:.3f}"
+    )
+    print(
+        f"base: {2 * base_half(FOOT[0], 0):.1f} at the foot, {2 * base_half(*BASE_INNER):.2f} at the mitre's inner"
+        f" corner, front edge {2 * base_half(BASE_FRONT, T):.1f} on top, {2 * base_half(BASE_FRONT, 0):.2f} underneath;"
+        f" bevel {BEVEL:.2f} a side ({BEVEL_ANGLE:.1f} deg); square-cut it would step {SQUARE_STEP:.2f} at the mitre"
     )
     print(f"tails {TAIL_REAR:.2f} at the back's rear face, {TAIL_FRONT:.2f} at its front face")
 ```
